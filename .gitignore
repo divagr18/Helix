@@ -1,0 +1,21 @@
+# General
+.DS_Store
+.env
+*.env
+
+# Python / Django
+__pycache__/
+*.pyc
+venv/
+.venv/
+instance/
+
+# Node / React
+node_modules/
+dist/
+.npm
+npm-debug.log*
+
+# Rust
+target/
+Cargo.lock # We might commit this later, but for now, ignore it.
