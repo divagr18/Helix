@@ -1,3 +1,9 @@
-from django.contrib import admin
+# backend/repositories/admin.py
 
-# Register your models here.
+from django.contrib import admin
+from .models import Repository
+
+@admin.register(Repository)
+class RepositoryAdmin(admin.ModelAdmin):
+    list_display = ('full_name', 'user', 'status', 'updated_at')
+    list_filter = ('status', 'user')
