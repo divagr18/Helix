@@ -1,7 +1,7 @@
 // frontend/src/pages/DashboardPage.tsx
 import { useState, useEffect } from 'react';
 import axios from 'axios';
-
+import { Link } from 'react-router-dom';
 // Define types for our data for type safety
 interface TrackedRepository {
     id: number;
@@ -95,7 +95,8 @@ export function DashboardPage() {
                     <ul>
                         {trackedRepos.map(repo => (
                             <li key={repo.id}>
-                                {repo.full_name} - <i>{repo.status}</i>
+                            <Link to={`/repository/${repo.id}`}>{repo.full_name}</Link>
+                            {' '}- <i>{repo.status}</i>
                             </li>
                         ))}
                     </ul>

@@ -2,7 +2,7 @@
 from django.utils.decorators import method_decorator
 from rest_framework import viewsets, permissions
 from .models import Repository
-from .serializers import RepositorySerializer
+from .serializers import RepositorySerializer,RepositoryDetailSerializer
 from rest_framework.views import APIView
 from django.views.decorators.csrf import csrf_exempt
 from rest_framework.response import Response
@@ -11,25 +11,23 @@ import requests
 @method_decorator(csrf_exempt, name="dispatch")
 
 class RepositoryViewSet(viewsets.ModelViewSet):
-    """
-    API endpoint that allows a user's repositories to be viewed or created.
-    """
-    serializer_class = RepositorySerializer
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        """
-        This view should return a list of all the repositories
-        for the currently authenticated user.
-        """
-        return Repository.objects.filter(user=self.request.user)
+        # This logic is now correct from our last fix.
+        if self.action == 'list':
+            return Repository.objects.filter(user=self.request.user)
+        return Repository.objects.all()
+
+    def get_serializer_class(self):
+        # If we are just listing repos, use the simple summary serializer.
+        if self.action == 'list':
+            return RepositorySerializer
+        # For ALL other actions (retrieve, create, update), use the detailed one.
+        return RepositoryDetailSerializer
 
     def perform_create(self, serializer):
-        """
-        When a new repository is created, automatically associate it
-        with the currently authenticated user.
-        """
-        # We will add more logic here later to fetch from GitHub API
+        # This is fine, it just associates the user.
         serializer.save(user=self.request.user)
 
 @method_decorator(csrf_exempt, name="dispatch")

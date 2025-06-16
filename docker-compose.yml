@@ -17,7 +17,10 @@ services:
     image: redis:7
 
   backend:
-    build: ./backend
+    build:
+      context: ./backend
+      # The backend uses its own simple Dockerfile located in its context
+      dockerfile: Dockerfile 
     command: python manage.py runserver 0.0.0.0:8000
     volumes:
       - ./backend:/app # Mount local code for hot-reloading
@@ -43,14 +46,14 @@ services:
       - CHOKIDAR_USEPOLLING=true
 
   worker:
-    build: ./backend # Uses the same image as the backend!
-    command: celery -A config worker -l info
-    volumes:
-      - ./backend:/app
+    build:
+      context: .
+      dockerfile: backend/worker.Dockerfile
+    command: python3 -m celery -A config worker -l info
     env_file:
       - ./.env
     depends_on:
-      - backend # It needs the code and DB to be ready
+      - backend
       - cache
 
 volumes:
