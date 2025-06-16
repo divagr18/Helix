@@ -2,6 +2,8 @@
 import { useState, useEffect } from 'react';
 import axios from 'axios';
 import { Link } from 'react-router-dom';
+import { getCookie } from '../utils'; // Adjust path as needed
+
 // Define types for our data for type safety
 interface TrackedRepository {
     id: number;
@@ -15,7 +17,6 @@ interface GithubRepository {
     full_name: string;
     private: boolean;
 }
-
 export function DashboardPage() {
     // State for repos we are already tracking in our DB
     const [trackedRepos, setTrackedRepos] = useState<TrackedRepository[]>([]);
@@ -31,7 +32,7 @@ export function DashboardPage() {
     // Function to fetch the repos we are already tracking
     const fetchTrackedRepos = () => {
         setTrackedLoading(true);
-        axios.get('http://localhost:8000/api/v1/repositories/')
+        axios.get('http://localhost:8000/api/v1/repositories/', { withCredentials: true })
             .then(response => {
                 setTrackedRepos(response.data);
                 setTrackedLoading(false);
@@ -51,7 +52,7 @@ export function DashboardPage() {
     const handleFetchGithubRepos = () => {
         setShowAddRepo(true);
         setGithubLoading(true);
-        axios.get('http://localhost:8000/api/v1/github-repos/')
+        axios.get('http://localhost:8000/api/v1/github-repos/', { withCredentials: true })
             .then(response => {
                 setGithubRepos(response.data);
                 setGithubLoading(false);
@@ -70,7 +71,16 @@ export function DashboardPage() {
             github_id: repo.id,
         };
 
-        axios.post('http://localhost:8000/api/v1/repositories/', payload)
+        axios.post(
+            'http://localhost:8000/api/v1/repositories/',
+            payload,
+            {
+                withCredentials: true,
+                headers: {
+                    'X-CSRFToken': getCookie('csrftoken'),
+                },
+            }
+        )
             .then(() => {
                 // Success! Hide the add list and refresh our tracked repos
                 setShowAddRepo(false);
@@ -95,8 +105,8 @@ export function DashboardPage() {
                     <ul>
                         {trackedRepos.map(repo => (
                             <li key={repo.id}>
-                            <Link to={`/repository/${repo.id}`}>{repo.full_name}</Link>
-                            {' '}- <i>{repo.status}</i>
+                                <Link to={`/repository/${repo.id}`}>{repo.full_name}</Link>
+                                {' '}- <i>{repo.status}</i>
                             </li>
                         ))}
                     </ul>

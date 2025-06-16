@@ -15,7 +15,8 @@ class Repository(models.Model):
         FAILED = 'FAILED', 'Failed'
 
     status = models.CharField(max_length=10, choices=Status.choices, default=Status.PENDING)
-    
+    root_merkle_hash = models.CharField(max_length=64, blank=True, null=True)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     class Meta:
@@ -28,7 +29,8 @@ class CodeFile(models.Model):
     file_path = models.CharField(max_length=1024)
     
     # We can add more fields later, like a hash of the file content
-    
+    structure_hash = models.CharField(max_length=64, blank=True, null=True)
+
     class Meta:
         db_table = 'code_files'
         # Ensure a file path is unique within a repository
@@ -36,17 +38,48 @@ class CodeFile(models.Model):
 
     def __str__(self):
         return self.file_path
-
-class CodeFunction(models.Model):
-    code_file = models.ForeignKey(CodeFile, on_delete=models.CASCADE, related_name='functions')
+class CodeClass(models.Model):
+    code_file = models.ForeignKey(CodeFile, on_delete=models.CASCADE, related_name='classes')
     name = models.CharField(max_length=255)
     start_line = models.IntegerField()
     end_line = models.IntegerField()
+    structure_hash = models.CharField(max_length=64, blank=True, null=True)
+
     class Meta:
-        db_table = 'code_functions'
-    
-    # This is where we will eventually store the generated documentation
-    documentation = models.TextField(blank=True, null=True)
+        db_table = 'code_classes'
 
     def __str__(self):
         return f"{self.name} ({self.code_file.file_path})"
+class CodeSymbol(models.Model):
+    # A symbol can belong directly to a file (top-level function)
+    code_file = models.ForeignKey(CodeFile, on_delete=models.CASCADE, related_name='symbols', null=True, blank=True)
+    # OR it can belong to a class (method)
+    code_class = models.ForeignKey(CodeClass, on_delete=models.CASCADE, related_name='methods', null=True, blank=True)
+    
+    name = models.CharField(max_length=255)
+    start_line = models.IntegerField()
+    end_line = models.IntegerField()
+    content_hash = models.CharField(max_length=64, blank=True, null=True)
+    documentation_hash = models.CharField(max_length=64, blank=True, null=True)
+    documentation = models.TextField(blank=True, null=True)
+
+    class Meta:
+        db_table = 'code_symbols'
+
+    def __str__(self):
+        parent = self.code_class.name if self.code_class else self.code_file.file_path
+        return f"{self.name} in {parent}"
+    
+class CodeDependency(models.Model):
+    # The symbol that is making the call
+    caller = models.ForeignKey(CodeSymbol, on_delete=models.CASCADE, related_name='outgoing_calls')
+    # The symbol that is being called
+    callee = models.ForeignKey(CodeSymbol, on_delete=models.CASCADE, related_name='incoming_calls')
+    
+    class Meta:
+        db_table = 'code_dependencies'
+        # Prevent duplicate dependency entries for the same caller/callee pair
+        unique_together = ('caller', 'callee')
+
+    def __str__(self):
+        return f"{self.caller.name} -> {self.callee.name}"

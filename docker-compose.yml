@@ -20,10 +20,11 @@ services:
     build:
       context: ./backend
       # The backend uses its own simple Dockerfile located in its context
-      dockerfile: Dockerfile 
+      dockerfile: Dockerfile
     command: python manage.py runserver 0.0.0.0:8000
     volumes:
-      - ./backend:/app # Mount local code for hot-reloading
+      - ./backend:/app
+      - repo_cache:/var/repos # Mount local code for hot-reloading
     ports:
       - "8000:8000"
     env_file:
@@ -50,6 +51,10 @@ services:
       context: .
       dockerfile: backend/worker.Dockerfile
     command: python3 -m celery -A config worker -l info
+    volumes:
+      # We can now re-introduce the backend volume for hot-reloading if we want,
+      # but the key is the shared repo_cache volume.
+      - repo_cache:/var/repos
     env_file:
       - ./.env
     depends_on:
@@ -58,3 +63,4 @@ services:
 
 volumes:
   postgres_data:
+  repo_cache: {}

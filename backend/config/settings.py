@@ -165,16 +165,21 @@ CORS_ALLOW_CREDENTIALS = True
 
 ACCOUNT_EMAIL_VERIFICATION = 'none'
 SOCIALACCOUNT_AUTO_SIGNUP = True
-class CsrfExemptSessionAuthentication(SessionAuthentication):
-    def enforce_csrf(self, request):
-        return
+CSRF_TRUSTED_ORIGINS = [
+    "https://example.com",
+    "https://www.example.com",
+    "https://subdomain.example.com",
+    "http://localhost:3000",  # if you're using React/Vite locally
+    "http://127.0.0.1:5173",
+    "http://localhost:5173"  # for Vite dev server
+]
+
     
 REST_FRAMEWORK = {
-    'DEFAULT_AUTHENTICATION_CLASSES': (
-        # Use our custom class to disable CSRF for development
-        'config.settings.CsrfExemptSessionAuthentication', 
-    ),
-    'DEFAULT_PERMISSION_CLASSES': (
+    'DEFAULT_AUTHENTICATION_CLASSES': [
+        'rest_framework.authentication.SessionAuthentication',
+    ],
+    'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.IsAuthenticated',
-    )
+    ]
 }
