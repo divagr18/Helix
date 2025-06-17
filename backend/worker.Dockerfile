@@ -11,7 +11,7 @@ RUN apt-get update && apt-get install -y python3 python3-pip git
 
 # Copy Python requirements and install them.
 COPY backend/requirements.txt .
-RUN pip3 install --no-cache-dir --break-system-packages -r requirements.txt
+RUN pip3 install --break-system-packages -r requirements.txt
 
 # Copy ALL source code needed for the build.
 COPY backend/ .

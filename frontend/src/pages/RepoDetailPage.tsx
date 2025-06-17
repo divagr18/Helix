@@ -237,7 +237,9 @@ export function RepoDetailPage() {
               {selectedFile.symbols.map(func => (
                 <div key={`func-${func.id}`} style={{ marginBottom: '15px', border: '1px solid #444', padding: '10px', borderRadius: '5px' }}>
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '5px' }}>
-                    <strong style={{ wordBreak: 'break-all' }}>{func.name}</strong>
+                    <strong style={{ wordBreak: 'break-all' }}>
+                      <Link to={`/symbol/${func.id}`} style={{ color: '#d4d4d4' }}>{func.name}</Link>
+                    </strong>
                     <StatusIcon hasDoc={!!func.documentation} contentHash={func.content_hash} docHash={func.documentation_hash} />
                   </div>
                   <small>Lines: {func.start_line} - {func.end_line}</small>
@@ -269,7 +271,9 @@ export function RepoDetailPage() {
                     {cls.methods.map(method => (
                       <div key={`method-${method.id}`} style={{ marginBottom: '15px' }}>
                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '5px' }}>
-                          <strong style={{ wordBreak: 'break-all' }}>{method.name}</strong>
+                          <strong style={{ wordBreak: 'break-all' }}>
+                            <Link to={`/symbol/${method.id}`} style={{ color: '#d4d4d4' }}>{method.name}</Link>
+                          </strong>
                           <StatusIcon hasDoc={!!method.documentation} contentHash={method.content_hash} docHash={method.documentation_hash} />
                         </div>
                         <small>Lines: {method.start_line} - {method.end_line}</small>

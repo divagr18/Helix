@@ -1,9 +1,12 @@
 # backend/repositories/views.py
 import os
 import subprocess
+from django.db.models import Q  # <--- ADD THIS IMPORT
+from rest_framework import generics, permissions
+
 from django.utils.decorators import method_decorator
 from rest_framework import viewsets, permissions
-from .models import CodeFile, CodeSymbol as CodeFunction, Repository
+from .models import CodeFile, CodeSymbol as CodeFunction, Repository, CodeSymbol
 from .serializers import CodeSymbolSerializer, RepositorySerializer,RepositoryDetailSerializer
 from rest_framework.views import APIView
 from django.views.decorators.csrf import csrf_exempt
@@ -13,7 +16,6 @@ import requests
 from django.http import HttpResponse
 from django.http import StreamingHttpResponse # Import Django's native streaming class
 from openai import OpenAI
-import os
 import tempfile,hashlib
 REPO_CACHE_BASE_PATH = "/var/repos" # Use the same constant
 
@@ -182,3 +184,19 @@ class SaveDocstringView(APIView):
         # Return the updated function data
         serializer = CodeSymbolSerializer(code_function)
         return Response(serializer.data)
+class CodeSymbolDetailView(generics.RetrieveAPIView):
+    """
+    API view to retrieve a single, detailed CodeSymbol, including its call graph.
+    """
+    serializer_class = CodeSymbolSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    # The 'pk' in the URL will be used to look up the object.
+    lookup_url_kwarg = 'pk'
+
+    def get_queryset(self):
+        # This queryset ensures a user can only ever access symbols
+        # that belong to repositories they own.
+        return CodeSymbol.objects.filter(
+            Q(code_file__repository__user=self.request.user) |
+            Q(code_class__code_file__repository__user=self.request.user)
+        ).distinct()

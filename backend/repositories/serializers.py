@@ -1,15 +1,56 @@
 # backend/repositories/serializers.py
 from rest_framework import serializers
-from .models import Repository, CodeFile, CodeClass, CodeSymbol
+from .models import Repository, CodeFile, CodeClass, CodeSymbol, CodeDependency
+from rest_framework import generics, permissions
 
 # A serializer for our most granular item: a function or method.
-class CodeSymbolSerializer(serializers.ModelSerializer):
+
+
+class DependencyLinkSerializer(serializers.ModelSerializer):
+    # We'll represent the other end of the link by its unique_id and name
+    unique_id = serializers.CharField(source='__str__', read_only=True)
+    name = serializers.CharField(source='name', read_only=True)
+    
     class Meta:
         model = CodeSymbol
         fields = [
-            'id', 'name', 'start_line', 'end_line',
-            'documentation', 'content_hash', 'documentation_hash'
+            'id', 'unique_id', 'name', 'start_line', 'end_line',
+            'documentation', 'content_hash', 'documentation_hash',
+            'incoming_calls', 'outgoing_calls' # Add the new fields
         ]
+class LinkedSymbolSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CodeSymbol
+        fields = ['id', 'name', 'unique_id']
+
+# Main CodeSymbolSerializer
+class CodeSymbolSerializer(serializers.ModelSerializer):
+    incoming_calls = serializers.SerializerMethodField()
+    outgoing_calls = serializers.SerializerMethodField()
+
+    class Meta:
+        model = CodeSymbol
+        fields = [
+            'id', 'unique_id', 'name', 'start_line', 'end_line',
+            'documentation', 'content_hash', 'documentation_hash',
+            'incoming_calls', 'outgoing_calls'
+        ]
+
+    def get_incoming_calls(self, obj):
+        # 'obj' is the CodeSymbol instance (the one being called).
+        # We need to find all CodeDependency records where 'obj' is the 'callee'.
+        # Then, for each of these dependencies, we get the 'caller' CodeSymbol.
+        dependencies = CodeDependency.objects.filter(callee=obj)
+        callers = [dep.caller for dep in dependencies]
+        return LinkedSymbolSerializer(callers, many=True).data
+
+    def get_outgoing_calls(self, obj):
+        # 'obj' is the CodeSymbol instance (the one making the call).
+        # We need to find all CodeDependency records where 'obj' is the 'caller'.
+        # Then, for each of these dependencies, we get the 'callee' CodeSymbol.
+        dependencies = CodeDependency.objects.filter(caller=obj)
+        callees = [dep.callee for dep in dependencies]
+        return LinkedSymbolSerializer(callees, many=True).data
 
 # A serializer for a class, which will nest its methods.
 class ClassSerializer(serializers.ModelSerializer):

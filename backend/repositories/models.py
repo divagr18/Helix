@@ -1,5 +1,6 @@
 from django.db import models
 from django.conf import settings
+from pgvector.django import VectorField # Import VectorField
 
 class Repository(models.Model):
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
@@ -55,13 +56,15 @@ class CodeSymbol(models.Model):
     code_file = models.ForeignKey(CodeFile, on_delete=models.CASCADE, related_name='symbols', null=True, blank=True)
     # OR it can belong to a class (method)
     code_class = models.ForeignKey(CodeClass, on_delete=models.CASCADE, related_name='methods', null=True, blank=True)
-    
+    unique_id = models.CharField(max_length=1024, blank=True, null=True, db_index=True) # Must be exactly 'unique_id'
     name = models.CharField(max_length=255)
     start_line = models.IntegerField()
     end_line = models.IntegerField()
     content_hash = models.CharField(max_length=64, blank=True, null=True)
     documentation_hash = models.CharField(max_length=64, blank=True, null=True)
     documentation = models.TextField(blank=True, null=True)
+    embedding = VectorField(dimensions=1536, blank=True, null=True)
+
 
     class Meta:
         db_table = 'code_symbols'

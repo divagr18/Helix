@@ -12,9 +12,10 @@ from django.db import transaction # Import the transaction module
 from .models import CodeFile, CodeSymbol, CodeClass,CodeDependency 
 # Define the path to our compiled Rust binary INSIDE the container
 REPO_CACHE_BASE_PATH = "/var/repos"
-
+from openai import OpenAI # Import the OpenAI library
 RUST_ENGINE_PATH = "/app/engine/helix-engine/target/release/helix-engine"
-
+OPENAI_CLIENT = OpenAI()
+OPENAI_EMBEDDING_MODEL = "text-embedding-3-small"
 @app.task
 def process_repository(repo_id):
     try:
@@ -109,7 +110,42 @@ def process_repository(repo_id):
                         call_map[unique_id] = method_data.get('calls', [])
             
             print(f"Finished Pass 1. Created {len(symbol_map)} symbols.")
+            print(f"Starting Pass 1.5: Generating OpenAI Embeddings using model {OPENAI_EMBEDDING_MODEL}...")
+            
+            # OpenAI API can handle batch requests, but for simplicity and to avoid
+            # very large single requests, we'll process symbol by symbol or in small batches.
+            # For now, symbol by symbol:
+            symbols_to_update = []
+            for unique_id, symbol_obj in symbol_map.items():
+                text_to_embed = symbol_obj.name
+                if symbol_obj.documentation:
+                    # OpenAI recommends replacing newlines with spaces for their embedding models
+                    doc_cleaned = symbol_obj.documentation.replace("\\n", " ")
+                    text_to_embed += f"\\n\\n{doc_cleaned}"
+                
+                try:
+                    response = OPENAI_CLIENT.embeddings.create(
+                        input=text_to_embed,
+                        model=OPENAI_EMBEDDING_MODEL
+                    )
+                    embedding_vector = response.data[0].embedding
+                    
+                    symbol_obj.embedding = embedding_vector # pgvector expects a list, OpenAI returns it
+                    symbols_to_update.append(symbol_obj)
 
+                except Exception as e:
+                    print(f"Error generating OpenAI embedding for symbol {symbol_obj.unique_id}: {e}")
+                    # Decide if you want to skip this symbol or fail the task
+                    continue 
+            
+            # Bulk update the embeddings if possible, or save one by one
+            # For simplicity, saving one by one after collecting:
+            if symbols_to_update:
+                print(f"Saving embeddings for {len(symbols_to_update)} symbols...")
+                for sym_obj in symbols_to_update:
+                    sym_obj.save(update_fields=['embedding'])
+            
+            print(f"Finished Pass 1.5. Processed embeddings for {len(symbol_map)} symbols.")
             # PASS 2: Create all Dependency Links
             print("Starting Pass 2: Linking Dependencies...")
             
