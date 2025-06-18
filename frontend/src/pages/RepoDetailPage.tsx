@@ -5,7 +5,7 @@ import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { FaFileCode, FaRobot } from 'react-icons/fa';
 import { StatusIcon } from '../components/StatusIcon';
-import { FaSave } from 'react-icons/fa'; // Import the save icon
+import { FaSave, FaSpinner } from 'react-icons/fa'; // Added FaSpinner for loading state
 import { getCookie } from '../utils';
 
 // --- Type Definitions ---
@@ -53,6 +53,7 @@ export function RepoDetailPage() {
   const [selectedFile, setSelectedFile] = useState<CodeFile | null>(null);
   const [fileContent, setFileContent] = useState<string>('');
   const [contentLoading, setContentLoading] = useState(false);
+  const [savingDocId, setSavingDocId] = useState<number | null>(null); // New state for save loading
 
   const [generatingDocId, setGeneratingDocId] = useState<number | null>(null);
   const [generatedDocs, setGeneratedDocs] = useState<Record<number, string>>({});
@@ -82,36 +83,38 @@ export function RepoDetailPage() {
         });
     }
   };
-  const handleSaveDoc = (funcId: number) => {
+  const handleSaveDoc = async (funcId: number) => { // Made async for await
     const docText = generatedDocs[funcId];
     if (!docText) return;
 
-    axios.patch(
-      `http://localhost:8000/api/v1/functions/${funcId}/save-docstring/`,
-      { documentation: docText },
-      {
-        withCredentials: true,                 // ← send session+csrf cookies
-        headers: {
-          'X-CSRFToken': getCookie('csrftoken') // ← required for PATCH
+    setSavingDocId(funcId); // Set saving state
+
+    try {
+      await axios.patch( // Added await
+        `http://localhost:8000/api/v1/functions/${funcId}/save-docstring/`,
+        { documentation: docText },
+        {
+          withCredentials: true,                 // ← send session+csrf cookies
+          headers: {
+            'X-CSRFToken': getCookie('csrftoken') // ← required for PATCH
+          }
         }
-      }
-    )
-      .then(() => {
-        // Success! Clear the temporary generated doc and refetch the repo data
-        // to get the updated state (including the new hashes).
-        setGeneratedDocs(prev => {
-          const newDocs = { ...prev };
-          delete newDocs[funcId];
-          return newDocs;
-        });
-        // This will re-run the main useEffect to get fresh data from the DB
-        fetchRepoDetails();
-      })
-      .catch(err => {
-        console.error("Error saving documentation:", err);
-        alert("Failed to save documentation.");
+      );
+
+      setGeneratedDocs(prev => {
+        const newDocs = { ...prev };
+        delete newDocs[funcId];
+        return newDocs;
       });
+      fetchRepoDetails();
+    } catch (err) {
+      console.error("Error saving documentation:", err);
+      alert("Failed to save documentation.");
+    } finally {
+      setSavingDocId(null); // Clear saving state
+    }
   };
+
   useEffect(() => {
     setLoading(true); // Set loading true only on initial mount
     fetchRepoDetails();
@@ -225,38 +228,106 @@ export function RepoDetailPage() {
       {/* ============================================= */}
       {/* Analysis Panel                              */}
       {/* ============================================= */}
-      <div style={{ width: '350px', borderLeft: '1px solid #333', padding: '10px', overflowY: 'auto' }}>
+      <div style={{ width: '350px', borderLeft: '1px solid #333', padding: '10px', overflowY: 'auto' /* Ensure this panel is scrollable if content overflows */ }}>
         <h3>Analysis for {selectedFile ? selectedFile.file_path : '...'}</h3>
         <hr style={{ borderColor: '#333' }} />
-
         {selectedFile ? (
-          Array.isArray(selectedFile.symbols) && Array.isArray(selectedFile.classes) &&
-            (selectedFile.symbols.length > 0 || selectedFile.classes.length > 0) ? (
+          (selectedFile.symbols.length > 0 || selectedFile.classes.length > 0) ? (
             <div style={{ paddingLeft: 0 }}>
               {/* --- Render Top-Level Functions (Symbols) --- */}
               {selectedFile.symbols.map(func => (
-                <div key={`func-${func.id}`} style={{ marginBottom: '15px', border: '1px solid #444', padding: '10px', borderRadius: '5px' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '5px' }}>
-                    <strong style={{ wordBreak: 'break-all' }}>
-                      <Link to={`/symbol/${func.id}`} style={{ color: '#d4d4d4' }}>{func.name}</Link>
+                <div key={`func-${func.id}`} style={{ marginBottom: '20px', border: '1px solid #444', padding: '15px', borderRadius: '8px', backgroundColor: '#252526' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
+                    <strong style={{ wordBreak: 'break-all', color: '#d4d4d4', fontSize: '1.1em' }}>
+                      <Link to={`/symbol/${func.id}`} style={{ color: '#9cdcfe', textDecoration: 'none' }}>{func.name}</Link>
                     </strong>
-                    <StatusIcon hasDoc={!!func.documentation} contentHash={func.content_hash} docHash={func.documentation_hash} />
+                    <StatusIcon
+                      hasDoc={!!func.documentation}
+                      contentHash={func.content_hash}
+                      docHash={func.documentation_hash}
+                    />
                   </div>
-                  <small>Lines: {func.start_line} - {func.end_line}</small>
+                  <small style={{ color: '#888' }}>Lines: {func.start_line} - {func.end_line}</small>
+
+                  {/* Display existing documentation from DB if not currently generating for this func */}
                   {func.documentation && !generatedDocs[func.id] && (
-                    <div style={{ marginTop: '10px', whiteSpace: 'pre-wrap', backgroundColor: '#2a2a2a', padding: '8px', borderRadius: '3px', borderLeft: '3px solid #555', fontFamily: 'monospace', fontSize: '0.9em' }}>
+                    <div style={{
+                      marginTop: '12px', whiteSpace: 'pre-wrap',
+                      backgroundColor: '#1e1e1e', padding: '10px',
+                      borderRadius: '4px', borderLeft: '3px solid #555',
+                      fontFamily: 'monospace', fontSize: '0.9em', color: '#ccc',
+                      maxHeight: '150px', overflowY: 'auto' // Scrollable if long
+                    }}>
                       {func.documentation}
                     </div>
                   )}
-                  <button onClick={() => handleGenerateDoc(func.id)} disabled={generatingDocId !== null} style={{ display: 'flex', alignItems: 'center', marginTop: '10px', cursor: 'pointer', width: '100%', justifyContent: 'center', padding: '8px', border: '1px solid #555', backgroundColor: '#333', color: '#d4d4d4', borderRadius: '4px' }}>
-                    <FaRobot style={{ marginRight: '5px' }} />
+
+                  <button
+                    onClick={() => handleGenerateDoc(func.id)}
+                    disabled={generatingDocId != null || savingDocId != null} // Disable if any AI op is in progress
+                    style={{
+                      display: 'flex', alignItems: 'center', marginTop: '12px',
+                      cursor: 'pointer', width: '100%', justifyContent: 'center',
+                      padding: '8px', border: '1px solid #555',
+                      backgroundColor: generatingDocId === func.id ? '#094771' : '#333', // Highlight if generating for this
+                      color: '#d4d4d4', borderRadius: '4px',
+                      opacity: (generatingDocId != null || savingDocId != null) && generatingDocId !== func.id ? 0.5 : 1, // Dim if other op
+                    }}
+                  >
+                    <FaRobot style={{ marginRight: '8px' }} />
                     {generatingDocId === func.id ? 'Generating...' : (func.documentation ? 'Regenerate' : 'Generate Docstring')}
                   </button>
+
+                  {/* --- ENHANCED DISPLAY FOR GENERATED DOCSTRING --- */}
                   {generatedDocs[func.id] && (
-                    <div style={{ marginTop: '10px', whiteSpace: 'pre-wrap', backgroundColor: '#2a2a2a', padding: '8px', borderRadius: '3px', borderLeft: '3px solid #094771', fontFamily: 'monospace', fontSize: '0.9em' }}>
-                      {generatedDocs[func.id]}
-                      <button onClick={() => handleSaveDoc(func.id)} style={{ display: 'flex', alignItems: 'center', marginTop: '10px', cursor: 'pointer', border: '1px solid #555', backgroundColor: '#094771', color: '#fff', borderRadius: '4px', padding: '5px 10px' }}>
-                        <FaSave style={{ marginRight: '5px' }} /> Save
+                    <div style={{
+                      marginTop: '12px',
+                      backgroundColor: '#1e1e1e', // Darker background for contrast
+                      padding: '15px',
+                      borderRadius: '4px',
+                      border: '1px solid #094771', // Accent border
+                      fontFamily: 'Menlo, Monaco, "Courier New", monospace',
+                      fontSize: '0.9em',
+                      color: '#d4d4d4',
+                      lineHeight: '1.6',
+                    }}>
+                      <h4 style={{ marginTop: 0, marginBottom: '10px', color: '#569cd6', borderBottom: '1px dashed #444', paddingBottom: '8px' }}>
+                        AI Generated Suggestion:
+                      </h4>
+                      <div style={{ whiteSpace: 'pre-wrap', maxHeight: '200px', overflowY: 'auto' }}>
+                        {/* Simple attempt to format common docstring parts */}
+                        {generatedDocs[func.id].split('\\n').map((line, index, arr) => {
+                          const trimmedLine = line.trim();
+                          if (trimmedLine.startsWith('Args:') || trimmedLine.startsWith('Returns:') || trimmedLine.startsWith('Raises:')) {
+                            return <strong key={index} style={{ display: 'block', marginTop: '8px', color: '#4ec9b0' }}>{line}</strong>;
+                          }
+                          if (trimmedLine.startsWith('- ') || trimmedLine.match(/^\s*\w+\s*\(.+\):/)) { // Parameter lines
+                            return <div key={index} style={{ marginLeft: '15px', color: '#c586c0' }}>{line}</div>;
+                          }
+                          // First line (summary) could be bold or slightly larger
+                          if (index === 0 && !arr[index + 1]?.trim().startsWith('Args:')) { // Check if it's a single line summary
+                            return <p key={index} style={{ margin: '0 0 10px 0', fontWeight: 'bold' }}>{line}</p>;
+                          }
+                          return <span key={index}>{line}{index < arr.length - 1 && <br />}</span>;
+                        })}
+                      </div>
+                      <button
+                        onClick={() => handleSaveDoc(func.id)}
+                        disabled={savingDocId != null}
+                        style={{
+                          display: 'flex', alignItems: 'center', marginTop: '15px',
+                          cursor: 'pointer', border: '1px solid #3c7a3c',
+                          backgroundColor: savingDocId === func.id ? '#2a522a' : '#3c7a3c', // Greenish
+                          color: '#fff', borderRadius: '4px', padding: '8px 12px',
+                          opacity: savingDocId != null && savingDocId !== func.id ? 0.5 : 1,
+                        }}
+                      >
+                        {savingDocId === func.id ? (
+                          <FaSpinner className="animate-spin" style={{ marginRight: '8px' }} />
+                        ) : (
+                          <FaSave style={{ marginRight: '8px' }} />
+                        )}
+                        {savingDocId === func.id ? 'Saving...' : 'Save Suggestion'}
                       </button>
                     </div>
                   )}

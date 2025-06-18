@@ -3,7 +3,7 @@ import os
 import subprocess
 from django.db.models import Q  # <--- ADD THIS IMPORT
 from rest_framework import generics, permissions
-
+from .tasks import create_documentation_pr_task # We will create this task soon
 from django.utils.decorators import method_decorator
 from rest_framework import viewsets, permissions
 from .models import CodeFile, CodeSymbol as CodeFunction, Repository, CodeSymbol
@@ -17,8 +17,15 @@ from django.http import HttpResponse
 from django.http import StreamingHttpResponse # Import Django's native streaming class
 from openai import OpenAI
 import tempfile,hashlib
-REPO_CACHE_BASE_PATH = "/var/repos" # Use the same constant
+from rest_framework import status  # if using Django REST Framework
 
+from openai import OpenAI as OpenAIClient # Renaming to avoid conflict if you have an 'OpenAI' model
+from pgvector.django import L2Distance # Or CosineDistance, MaxInnerProduct
+from .serializers import CodeSymbolSerializer # We can reuse this for results
+import os
+REPO_CACHE_BASE_PATH = "/var/repos" # Use the same constant
+OPENAI_CLIENT_INSTANCE = OpenAIClient()
+OPENAI_EMBEDDING_MODEL_FOR_SEARCH = "text-embedding-3-small"
 @method_decorator(csrf_exempt, name="dispatch")
 class RepositoryViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
@@ -200,3 +207,82 @@ class CodeSymbolDetailView(generics.RetrieveAPIView):
             Q(code_file__repository__user=self.request.user) |
             Q(code_class__code_file__repository__user=self.request.user)
         ).distinct()
+
+class SemanticSearchView(generics.ListAPIView):
+    serializer_class = CodeSymbolSerializer # We'll return a list of matching symbols
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        query_text = self.request.query_params.get('q', None)
+
+        if not query_text:
+            return CodeSymbol.objects.none() # Return empty if no query
+
+        try:
+            # 1. Get the embedding for the search query from OpenAI
+            response = OPENAI_CLIENT_INSTANCE.embeddings.create(
+                input=query_text,
+                model=OPENAI_EMBEDDING_MODEL_FOR_SEARCH
+            )
+            query_embedding = response.data[0].embedding
+
+            # 2. Find symbols in the user's repositories that are semantically similar
+            # We need to ensure we only search within repositories the user has access to.
+            # This can be complex if a symbol doesn't directly link to a user.
+            # For now, let's assume we search all symbols and filter later,
+            # or ideally, filter by repositories owned by request.user.
+
+            # Get repositories owned by the user
+            user_repos = Repository.objects.filter(user=self.request.user)
+            
+            # Filter CodeSymbols that belong to these repositories
+            # This query ensures we only search within the user's accessible symbols.
+            # It uses L2Distance, but CosineDistance is often preferred for semantic similarity.
+            # For CosineDistance, lower is better (more similar).
+            # For L2Distance, lower is better.
+            # For MaxInnerProduct, higher is better.
+            
+            # Using CosineDistance: 1 - (embedding <=> query_embedding)
+            # We want to order by similarity (ascending for distance, descending for similarity score)
+            # pgvector's <=> operator gives cosine distance.
+            # A common way to order is by this distance.
+            
+            # Let's use L2Distance for this example, order by distance ascending
+            # Ensure the CodeSymbol model has an 'embedding' field
+            similar_symbols = CodeSymbol.objects.filter(
+                Q(code_file__repository__in=user_repos) | Q(code_class__code_file__repository__in=user_repos)
+            ).annotate(
+                distance=L2Distance('embedding', query_embedding)
+            ).order_by('distance')[:5] # Get top 10 results
+
+            return similar_symbols
+
+        except Exception as e:
+            print(f"Error during semantic search: {e}")
+            return CodeSymbol.objects.none()
+
+
+# backend/repositories/views.py
+# ... other imports ...
+from .tasks import create_documentation_pr_task
+
+class CreateDocPRView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, *args, **kwargs):
+        symbol_id = kwargs.get('symbol_id')
+        try:
+            # Ensure the user owns the symbol
+            symbol = CodeSymbol.objects.get(
+                id=symbol_id,
+            )
+            if not symbol.documentation: # Or check if documentation_hash matches content_hash
+                return Response({"error": "Documentation must be saved and up-to-date before creating a PR."}, status=status.HTTP_400_BAD_REQUEST)
+
+        except CodeSymbol.DoesNotExist:
+            return Response({"error": "Symbol not found or permission denied."}, status=status.HTTP_404_NOT_FOUND)
+
+        # Trigger the Celery task
+        task = create_documentation_pr_task.delay(symbol_id, request.user.id)
+        
+        return Response({"message": "Pull Request creation initiated.", "task_id": task.id}, status=status.HTTP_202_ACCEPTED)

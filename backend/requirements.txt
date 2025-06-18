@@ -16,3 +16,5 @@ dj-rest-auth
 openai
 google-genai
 pgvector
+PyGithub
+astor

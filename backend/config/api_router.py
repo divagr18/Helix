@@ -4,9 +4,9 @@ from rest_framework.routers import DefaultRouter
 from repositories.views import RepositoryViewSet,GithubReposView,FileContentView,GenerateDocstringView, CodeSymbolDetailView
 router = DefaultRouter()
 from django.urls import path # Make sure path is imported
-
+from users.views import AuthCheckView
 router.register(r'repositories', RepositoryViewSet, basename='repository')
-from repositories.views import SaveDocstringView # Import the new view
+from repositories.views import SaveDocstringView,SemanticSearchView,CreateDocPRView # Import the new view
 
 # The variable name 'urlpatterns' is what Django expects to find.
 urlpatterns = router.urls
@@ -16,6 +16,10 @@ urlpatterns += [
     path('functions/<int:function_id>/generate-docstring/', GenerateDocstringView.as_view(), name='generate-docstring'),
     path('functions/<int:function_id>/save-docstring/', SaveDocstringView.as_view(), name='save-docstring'),
     path('symbols/<int:pk>/', CodeSymbolDetailView.as_view(), name='symbol-detail'),
+    path('search/semantic/', SemanticSearchView.as_view(), name='semantic-search'),
+    path('auth/check/', AuthCheckView.as_view(), name='auth-check'),
+    path('symbols/<int:symbol_id>/create-pr/', CreateDocPRView.as_view(), name='symbol-create-pr'),
+
 
 
 

@@ -7,7 +7,13 @@ import shutil # Import the shutil module for removing directories
 from allauth.socialaccount.models import SocialToken # Import SocialToken
 import json
 from django.db.models import Q  # <--- ADD THIS IMPORT
+import ast # Python's Abstract Syntax Tree module
+import astor
 
+from github import Github, GithubException, UnknownObjectException
+from django.contrib.auth import get_user_model
+import datetime
+from itertools import takewhile
 from django.db import transaction # Import the transaction module
 from .models import CodeFile, CodeSymbol, CodeClass,CodeDependency 
 # Define the path to our compiled Rust binary INSIDE the container
@@ -188,3 +194,162 @@ def process_repository(repo_id):
         print(f"An unexpected error occurred while processing repo_id={repo_id}: {e}")
         repo.status = Repository.Status.FAILED
         repo.save()
+
+User = get_user_model()
+def update_docstring_in_ast(source_code: str, target_symbol_name: str, new_docstring: str, target_class_name: str = None):
+    tree = ast.parse(source_code)
+    
+    new_docstring = new_docstring.strip()
+    if new_docstring.startswith('"""') and new_docstring.endswith('"""'):
+        new_docstring = new_docstring[3:-3].strip()
+    elif new_docstring.startswith("'''") and new_docstring.endswith("'''"):
+        new_docstring = new_docstring[3:-3].strip()
+
+    class DocstringUpdater(ast.NodeTransformer):
+        def __init__(self, current_target_symbol_name, current_target_docstring, current_target_class_name=None):
+            self.current_target_symbol_name = current_target_symbol_name
+            self.current_target_docstring = current_target_docstring
+            self.current_target_class_name = current_target_class_name
+            self.is_in_target_class_scope = (current_target_class_name is None) # True if looking for top-level
+
+        def visit_ClassDef(self, node):
+            if self.current_target_class_name and node.name == self.current_target_class_name:
+                self.is_in_target_class_scope = True
+                self.generic_visit(node) # Process children (methods) of this class
+                self.is_in_target_class_scope = False # Reset after leaving the class
+                return node
+            elif self.current_target_class_name is None:
+                # If looking for a top-level function, don't descend into classes' bodies
+                # for the purpose of setting is_in_target_class_scope for methods.
+                # However, we still need to visit children in case of nested classes (though less common).
+                # Let's refine: only visit children if not specifically targeting a class.
+                # If we are targeting a class, we only care about *that* class.
+                pass # Do not visit children if we are looking for a specific class and this is not it.
+            
+            # If not targeting a class, or if this class is not the target,
+            # still visit its children in case of nested structures or other elements.
+            # However, the actual docstring update logic is guarded by is_in_target_class_scope.
+            return self.generic_visit(node)
+
+
+        def visit_FunctionDef(self, node):
+            if self.is_in_target_class_scope and node.name == self.current_target_symbol_name:
+                docstring_node = ast.Expr(value=ast.Constant(value=self.current_target_docstring))
+                
+                if node.body and isinstance(node.body[0], ast.Expr) and \
+                   isinstance(node.body[0].value, (ast.Constant, ast.Str)): # ast.Str for Py < 3.8
+                    node.body[0] = docstring_node
+                else:
+                    node.body.insert(0, docstring_node)
+            
+            # It's important to call generic_visit to process the rest of the function body,
+            # especially if there are nested functions (though we don't target them for docstrings here).
+            return self.generic_visit(node)
+
+    updater = DocstringUpdater(target_symbol_name, new_docstring, target_class_name)
+    new_tree = updater.visit(tree)
+    ast.fix_missing_locations(new_tree)
+    
+    return astor.to_source(new_tree)
+
+@app.task(bind=True, max_retries=3, default_retry_delay=60)
+def create_documentation_pr_task(self, symbol_id, user_id):
+    try:
+        user = User.objects.get(id=user_id)
+        symbol = CodeSymbol.objects.select_related(
+            'code_file__repository', 
+            'code_class__code_file__repository'
+        ).get(id=symbol_id)
+        
+        if not symbol.documentation:
+            return {"status": "error", "message": "No documentation found for symbol."}
+
+        if symbol.code_file:
+            repo_model = symbol.code_file.repository
+            file_path_in_repo = symbol.code_file.file_path
+        elif symbol.code_class and symbol.code_class.code_file:
+            repo_model = symbol.code_class.code_file.repository
+            file_path_in_repo = symbol.code_class.code_file.file_path
+        else:
+            raise Exception(f"Symbol {symbol_id} is not properly linked to a file or repository.")
+
+        social_account = user.socialaccount_set.filter(provider='github').first()
+        if not social_account:
+            raise Exception("GitHub account not linked or token not found.")
+        
+        github_token = social_account.socialtoken_set.first().token
+        g = Github(github_token)
+        gh_repo = g.get_repo(repo_model.full_name)
+        
+        timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+        # Use unique_id for branch name to make it more specific
+        sanitized_symbol_name_for_branch = symbol.name.replace('_', '-').lower()
+        new_branch_name = f"helix-docs/{sanitized_symbol_name_for_branch}-{timestamp}"
+        
+        default_branch_name = gh_repo.default_branch
+        default_branch = gh_repo.get_branch(default_branch_name)
+        base_sha = default_branch.commit.sha
+        
+        gh_repo.create_git_ref(ref=f"refs/heads/{new_branch_name}", sha=base_sha)
+        print(f"Created branch: {new_branch_name}")
+        
+        file_contents_obj = gh_repo.get_contents(file_path_in_repo, ref=new_branch_name)
+        original_content = file_contents_obj.decoded_content.decode('utf-8')
+        file_sha = file_contents_obj.sha
+
+        # --- Use AST to update docstring ---
+        print(f"Attempting to update docstring for: {symbol.name} in class {symbol.code_class.name if symbol.code_class else 'None'}")
+        target_symbol_name = symbol.name
+        target_class_name = None # Assume top-level function initially
+
+        # Check if the symbol is a method by inspecting its unique_id or relationships
+        actual_symbol_name_for_ast = symbol.name # The actual name of the function/method
+        target_class_name_for_ast = None
+        if symbol.code_class: # If it's a method, its code_class field will be set
+            target_class_name_for_ast = symbol.code_class.name
+
+        print(f"Attempting to update docstring for: {target_symbol_name} in class {target_class_name or 'None'}")
+        updated_content = update_docstring_in_ast(
+            original_content, 
+            actual_symbol_name_for_ast, 
+            symbol.documentation, 
+            target_class_name_for_ast
+        )
+        
+        if updated_content == original_content:
+            print("Warning: Docstring injection via AST did not change file content. Check logic.")
+            # This might happen if the symbol wasn't found by the AST visitor.
+            # You might want to fall back to a simpler method or log an error.
+            # For now, we'll proceed, but the PR won't have changes.
+
+        commit_message = f"Docs: Add/Update docstring for {symbol.unique_id or symbol.name} via Helix CME"
+        gh_repo.update_file(
+            path=file_path_in_repo, message=commit_message,
+            content=updated_content, sha=file_sha, branch=new_branch_name
+        )
+        print(f"Committed changes to {new_branch_name}")
+
+        pr_title = f"Helix CME: Documentation for {symbol.unique_id or symbol.name}"
+        pr_body = (
+            f"This Pull Request was automatically generated by Helix CME to add or update documentation for the symbol `{symbol.unique_id or symbol.name}` "
+            f"in file `{file_path_in_repo}`.\\n\\n"
+            f"**Generated Documentation:**\\n```python\\n{symbol.documentation}\\n```"
+        )
+        
+        pull_request = gh_repo.create_pull(
+            title=pr_title, body=pr_body,
+            head=new_branch_name, base=default_branch_name
+        )
+        print(f"Created Pull Request: {pull_request.html_url}")
+        
+        return {"status": "success", "pr_url": pull_request.html_url}
+
+    except GithubException as e:
+        print(f"GitHub API error for symbol {symbol_id}: {e.status} - {e.data}")
+        self.retry(exc=e, countdown=60) # Retry on GitHub errors
+        raise # Re-raise to mark task as failed if retries exhausted
+    except Exception as e:
+        print(f"Error in create_documentation_pr_task for symbol {symbol_id}: {e}")
+        # Optionally retry for other types of errors too
+        # self.retry(exc=e)
+        raise
