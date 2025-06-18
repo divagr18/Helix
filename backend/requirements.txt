@@ -18,3 +18,4 @@ google-genai
 pgvector
 PyGithub
 astor
+ruff

@@ -2,7 +2,8 @@
 from rest_framework import serializers
 from .models import Repository, CodeFile, CodeClass, CodeSymbol, CodeDependency
 from rest_framework import generics, permissions
-
+import os # Ensure os is imported
+REPO_CACHE_BASE_PATH = "/var/repos" # Use the same constant
 # A serializer for our most granular item: a function or method.
 
 
@@ -27,13 +28,15 @@ class LinkedSymbolSerializer(serializers.ModelSerializer):
 class CodeSymbolSerializer(serializers.ModelSerializer):
     incoming_calls = serializers.SerializerMethodField()
     outgoing_calls = serializers.SerializerMethodField()
+    source_code = serializers.SerializerMethodField() # Add this new field
+
 
     class Meta:
         model = CodeSymbol
         fields = [
             'id', 'unique_id', 'name', 'start_line', 'end_line',
             'documentation', 'content_hash', 'documentation_hash',
-            'incoming_calls', 'outgoing_calls'
+            'incoming_calls', 'outgoing_calls','source_code' # Add to fields list
         ]
 
     def get_incoming_calls(self, obj):
@@ -51,6 +54,40 @@ class CodeSymbolSerializer(serializers.ModelSerializer):
         dependencies = CodeDependency.objects.filter(caller=obj)
         callees = [dep.callee for dep in dependencies]
         return LinkedSymbolSerializer(callees, many=True).data
+    def get_source_code(self, obj: CodeSymbol) -> str | None:
+        # 'obj' is the CodeSymbol instance
+        actual_code_file = None
+        if obj.code_file:
+            actual_code_file = obj.code_file
+        elif obj.code_class and obj.code_class.code_file:
+            actual_code_file = obj.code_class.code_file
+        
+        if not actual_code_file:
+            return None
+
+        # Construct the path to the cached file
+        # REPO_CACHE_BASE_PATH should be accessible here (e.g., from settings or models)
+        repo_path = os.path.join(REPO_CACHE_BASE_PATH, str(actual_code_file.repository.id))
+        full_file_path = os.path.join(repo_path, actual_code_file.file_path)
+
+        if os.path.exists(full_file_path):
+            try:
+                with open(full_file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    lines = f.readlines()
+                # Extract the specific lines of code for the symbol
+                # Ensure start_line and end_line are valid 1-based indices
+                if obj.start_line > 0 and obj.end_line >= obj.start_line and obj.end_line <= len(lines):
+                    symbol_code_lines = lines[obj.start_line - 1 : obj.end_line]
+                    return "".join(symbol_code_lines)
+                else:
+                    print(f"Warning: Invalid start/end lines for symbol {obj.unique_id} in file {full_file_path}. Start: {obj.start_line}, End: {obj.end_line}, Total lines: {len(lines)}")
+                    return f"# Error: Could not extract source due to invalid line numbers ({obj.start_line}-{obj.end_line})."
+            except Exception as e:
+                print(f"Error reading file content for symbol {obj.unique_id}: {e}")
+                return f"# Error reading file: {e}"
+        else:
+            print(f"Warning: Source file not found in cache for symbol {obj.unique_id}: {full_file_path}")
+            return "# Error: Source file not found in cache."
 
 # A serializer for a class, which will nest its methods.
 class ClassSerializer(serializers.ModelSerializer):

@@ -6,7 +6,7 @@ router = DefaultRouter()
 from django.urls import path # Make sure path is imported
 from users.views import AuthCheckView
 router.register(r'repositories', RepositoryViewSet, basename='repository')
-from repositories.views import SaveDocstringView,SemanticSearchView,CreateDocPRView # Import the new view
+from repositories.views import SaveDocstringView,SemanticSearchView,CreateDocPRView,GenerateArchitectureDiagramView # Import the new view
 
 # The variable name 'urlpatterns' is what Django expects to find.
 urlpatterns = router.urls
@@ -19,6 +19,7 @@ urlpatterns += [
     path('search/semantic/', SemanticSearchView.as_view(), name='semantic-search'),
     path('auth/check/', AuthCheckView.as_view(), name='auth-check'),
     path('symbols/<int:symbol_id>/create-pr/', CreateDocPRView.as_view(), name='symbol-create-pr'),
+    path('symbols/<int:symbol_id>/generate-diagram/', GenerateArchitectureDiagramView.as_view(), name='generate-architecture-diagram'),
 
 
 

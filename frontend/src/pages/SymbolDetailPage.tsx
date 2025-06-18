@@ -5,14 +5,38 @@ import { StatusIcon } from '../components/StatusIcon';
 import { FaArrowLeft, FaExternalLinkAlt, FaCodeBranch } from 'react-icons/fa'; // Added icons
 import { FaGithub } from 'react-icons/fa'; // For PR button
 import { getCookie } from '../utils';
-
+import { PrismLight as SyntaxHighlighter } from 'react-syntax-highlighter';
+import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import jsx from 'react-syntax-highlighter/dist/esm/languages/prism/jsx';
+import tsx from 'react-syntax-highlighter/dist/esm/languages/prism/tsx';
+import python from 'react-syntax-highlighter/dist/esm/languages/prism/python';
+import { FaProjectDiagram, FaSpinner, FaExclamationTriangle } from 'react-icons/fa'; // For button and loading/error states
+import Mermaid from 'react-mermaid2'; // The Mermaid component
+SyntaxHighlighter.registerLanguage('jsx', jsx);
+SyntaxHighlighter.registerLanguage('tsx', tsx);
+SyntaxHighlighter.registerLanguage('python', python);
 // --- Type Definitions for the Symbol Detail API response ---
 interface LinkedSymbol {
     id: number;
     name: string;
     unique_id: string; // Ensure this matches your LinkedSymbolSerializer
 }
-
+const customStyle = {
+    ...vscDarkPlus,
+    'code[class*="language-"]': {
+        ...vscDarkPlus['code[class*="language-"]'],
+        background: '#1f1f1f',        // slightly lighter than #1e1e1e
+        borderRadius: '8px',
+        padding: '1rem',
+    },
+    'pre[class*="language-"]::-webkit-scrollbar': {
+        height: '8px',
+    },
+    'pre[class*="language-"]::-webkit-scrollbar-thumb': {
+        background: '#3c3c3c',
+        borderRadius: '4px',
+    },
+};
 interface SymbolDetail {
     id: number;
     unique_id: string;
@@ -24,6 +48,8 @@ interface SymbolDetail {
     documentation_hash: string | null;
     incoming_calls: LinkedSymbol[];
     outgoing_calls: LinkedSymbol[];
+    source_code: string | null; // Add this
+
     // We'll add file_path and repo_id if we want to link back or show code
     // For now, let's assume the API provides them or we derive them.
     // For simplicity, we'll omit direct code viewing on this page for this step.
@@ -38,6 +64,79 @@ export function SymbolDetailPage() {
     const [error, setError] = useState<string | null>(null);
     const [prStatus, setPrStatus] = useState<{ message: string, pr_url?: string, task_id?: string, error?: string } | null>(null);
     const [isCreatingPR, setIsCreatingPR] = useState(false);
+    const [mermaidCode, setMermaidCode] = useState<string | null>(null);
+    const [diagramLoading, setDiagramLoading] = useState<boolean>(false);
+    const [diagramError, setDiagramError] = useState<string | null>(null);
+    const getLanguageFromUniqueId = (uniqueId: string | undefined): string => {
+        if (!uniqueId) {
+            console.log(`detectLanguage: no uniqueId → plaintext`);
+            return 'plaintext';
+        }
+
+        const filePathPart = uniqueId.split('::')[0];
+        const extension = filePathPart.split('.').pop()?.toLowerCase() || '';
+
+        let lang: string;
+        switch (extension) {
+            case 'py': lang = 'python'; break;
+            case 'js': lang = 'javascript'; break;
+            case 'ts': lang = 'typescript'; break;
+            case 'jsx': lang = 'jsx'; break;
+            case 'tsx': lang = 'typescript'; break;
+            case 'java': lang = 'clike'; break;
+            case 'c': lang = 'clike'; break;
+            case 'cpp': lang = 'clike'; break;
+            case 'cs': lang = 'clike'; break;
+            case 'json': lang = 'json'; break;
+            case 'html': lang = 'markup'; break;
+            case 'xml': lang = 'markup'; break;
+            default: lang = 'plaintext'; break;
+        }
+
+        console.log(`detectLanguage: ext="${extension}" → lang="${lang}"`);
+        return lang;
+    };
+    const handleGenerateDiagram = () => {
+        if (!symbol) return; // symbol should be your state variable holding the current symbol's details
+        setDiagramLoading(true);
+        setMermaidCode(null);
+        setDiagramError(null);
+        const cacheBuster = `_cb=${new Date().getTime()}`;
+        const apiUrl = `http://localhost:8000/api/v1/symbols/${symbol.id}/generate-diagram/?${cacheBuster}`;
+        axios.get(apiUrl, { withCredentials: true }) // Use the new apiUrl
+            .then(response => {
+                console.log("Diagram API Response Status:", response.status);
+                console.log("Diagram API Response Data (raw):", response.data);
+                console.log("Type of response.data:", typeof response.data);
+
+                if (response.data && typeof response.data === 'object') {
+                    console.log("Keys in response.data:", Object.keys(response.data));
+                    console.log("Value of response.data.mermaid_code:", response.data.mermaid_code);
+                    console.log("Type of response.data.mermaid_code:", typeof response.data.mermaid_code);
+                }
+
+                if (response.status === 200 && response.data && response.data.mermaid_code) {
+                    setMermaidCode(response.data.mermaid_code);
+                } else if (response.status === 304) {
+
+                    console.warn("Received 304 Not Modified for diagram, but expected new data. This might indicate server-side caching still active despite cache buster.");
+                    // Fallback to error or try to use a previously stored mermaidCode if that's desired.
+                    setDiagramError("Diagram data was not refreshed by the server.");
+                }
+                else {
+                    setDiagramError("Received empty or invalid diagram data from server.");
+                }
+                setDiagramLoading(false);
+            })
+            .catch(error => {
+                console.error("Error generating diagram:", error);
+                const errorMsg = error.response?.data?.error || "Failed to generate diagram.";
+                // Optionally set mermaidCode to an error diagram string for visual feedback
+                setMermaidCode(`graph TD;\n    error_node["${errorMsg.replace(/"/g, "'")}"];\n style error_node fill:#ffcccc,stroke:#cc0000,color:#330000`);
+                setDiagramError(errorMsg);
+                setDiagramLoading(false);
+            });
+    };
     const handleCreatePR = () => {
         if (!symbol) return;
         setIsCreatingPR(true);
@@ -195,6 +294,47 @@ export function SymbolDetailPage() {
                     )}
                 </div>
             )}
+            {symbol.source_code && (
+                <div style={{ marginTop: '30px', marginBottom: '30px' }}>
+                    <h2 style={{ color: '#d4d4d4', borderBottom: '1px solid #444', paddingBottom: '10px', marginBottom: '15px' }}>
+                        Source Code
+                    </h2>
+                    <div style={{
+                        backgroundColor: '#1e1e1e', // Match editor background
+                        borderRadius: '8px',
+                        border: '1px solid #333',
+                        overflow: 'hidden' // For rounded corners on highlighter
+                    }}>
+                        <SyntaxHighlighter
+                            language={getLanguageFromUniqueId(symbol.unique_id)}
+                            style={vscDarkPlus}
+                            showLineNumbers
+                            wrapLongLines
+                            lineNumberStyle={{
+                                color: '#6a9955',
+                                backgroundColor: '#2d2d2d',
+                                paddingRight: '10px',
+                            }}
+                            customStyle={{
+                                margin: 0,
+                                padding: '1rem',
+                                lineHeight: 1.5,
+                                background: 'transparent'
+                            }}
+                            codeTagProps={{
+                                style: {
+                                    fontFamily: `'Fira Code', 'Source Code Pro', monospace`,
+                                    fontSize: '0.95em',
+                                    fontVariantLigatures: 'common-ligatures',
+                                    WebkitFontSmoothing: 'antialiased'
+                                }
+                            }}
+                        >
+                            {symbol.source_code.trimEnd()} {/* Trim trailing newlines for cleaner display */}
+                        </SyntaxHighlighter>
+                    </div>
+                </div>
+            )}
             {/* Dependencies Section - Grid Layout */}
             <div style={{ marginBottom: '30px' }}>
                 <h2 style={{ color: '#d4d4d4', borderBottom: '1px solid #444', paddingBottom: '10px', marginBottom: '20px' }}>
@@ -205,7 +345,42 @@ export function SymbolDetailPage() {
                     {renderDependencyList(symbol.incoming_calls, "Called By (Dependents)")}
                 </div>
             </div>
+            {/* Architecture Diagram Section */}
+            <div style={{ marginTop: '30px', marginBottom: '30px' }}>
+                <h2 style={{ color: '#c9d1d9', borderBottom: '1px solid #30363d', paddingBottom: '10px', marginBottom: '15px' }}>
+                    Local Architecture
+                </h2>
+                <button
+                    onClick={handleGenerateDiagram}
+                    disabled={diagramLoading || !symbol} // Disable if no symbol or already loading
+                    style={{
+                        backgroundColor: '#238636', color: 'white', border: 'none', padding: '10px 15px',
+                        borderRadius: '6px', cursor: 'pointer', marginBottom: '15px', display: 'flex', alignItems: 'center',
+                        opacity: (diagramLoading || !symbol) ? 0.7 : 1
+                    }}
+                >
+                    {diagramLoading ?
+                        <FaSpinner className="animate-spin" style={{ marginRight: '8px' }} /> :
+                        <FaProjectDiagram style={{ marginRight: '8px' }} />
+                    }
+                    {diagramLoading ? 'Generating...' : (mermaidCode ? 'Regenerate Diagram' : 'Generate Diagram')}
+                </button>
 
+                {diagramLoading && !mermaidCode && <p style={{ color: '#8b949e' }}>Loading diagram...</p>}
+
+                {mermaidCode && (
+                    <div style={{
+                        marginTop: '15px', border: '1px solid #30363d', padding: '20px',
+                        backgroundColor: '#0d1117', borderRadius: '6px', // Dark background for the diagram container
+                        boxShadow: '0 4px 12px rgba(0,0,0,0.3)'
+                    }}>
+                        <Mermaid chart={mermaidCode} />
+                    </div>
+                )}
+                {diagramError && !diagramLoading && (
+                    <p style={{ color: 'red', marginTop: '10px' }}><FaExclamationTriangle style={{ marginRight: '5px' }} /> {diagramError}</p>
+                )}
+            </div>
             {/* Placeholder for future "View Source" or "Related Files" */}
             {/* 
       <div style={{ marginTop: '30px' }}>

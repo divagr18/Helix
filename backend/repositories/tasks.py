@@ -9,6 +9,7 @@ import json
 from django.db.models import Q  # <--- ADD THIS IMPORT
 import ast # Python's Abstract Syntax Tree module
 import astor
+import subprocess # To call ruff CLI
 
 from github import Github, GithubException, UnknownObjectException
 from django.contrib.auth import get_user_model
@@ -48,7 +49,19 @@ def process_repository(repo_id):
         else:
             print(f"Cloning new repository: {repo.full_name} to {repo_path}")
             subprocess.run(["git", "clone", "--depth", "1", clone_url, repo_path], check=True, capture_output=True)
-
+        print(f"DEBUG: Celery Task - Processing for Repository ID: {repo.id}, Name: {repo.full_name}")
+        print(f"DEBUG: Target repo_path for Rust engine: {repo_path}") # repo_path is /var/repos/<repo.id>
+        
+        # Ensure repo_path actually contains the correct repo's files before calling Rust
+        print(f"DEBUG: Listing contents of {repo_path} before Rust call:")
+        try:
+            for item in os.listdir(repo_path):
+                print(f"DEBUG:   - {item}")
+        except FileNotFoundError:
+            print(f"DEBUG: ERROR - repo_path {repo_path} does not exist before Rust call!")
+            # This would be a major issue with the git clone/pull logic
+        except Exception as e:
+            print(f"DEBUG: Error listing {repo_path}: {e}")
         # --- Call Rust Engine ---
         print(f"Calling Rust engine for directory: {repo_path}")
         command = [RUST_ENGINE_PATH, "--dir-path", repo_path]
@@ -63,15 +76,12 @@ def process_repository(repo_id):
 
         # --- Database Transaction: Two-Pass Processing ---
         with transaction.atomic():
-            # PASS 1: Create all Files, Classes, and Symbols
+        # PASS 1: Create all Files, Classes, and Symbols
             print("Starting Pass 1: Creating Files, Classes, and Symbols...")
             
-            # Clear old analysis data for this repository
             repo.files.all().delete()
             
-            # This map will store the unique_id from Rust and the created symbol object
             symbol_map = {}
-            # This map will store the calls for each unique_id
             call_map = {}
 
             for file_data in repo_analysis_data.get('files', []):
@@ -83,16 +93,24 @@ def process_repository(repo_id):
                 
                 # Process top-level functions
                 for func_data in file_data.get('functions', []):
-                    unique_id = func_data.get('unique_id')
+                    uid_from_json = func_data.get('unique_id') # Get it
+                    if not uid_from_json:
+                        print(f"WARNING: Missing unique_id in JSON for top-level function: {func_data.get('name')} in file {new_file.file_path}")
+                    
                     new_symbol = CodeSymbol.objects.create(
                         code_file=new_file,
+                        unique_id=uid_from_json,  # <<<<<<<<<<< ADDED THIS
                         name=func_data.get('name'),
                         start_line=func_data.get('start_line'),
                         end_line=func_data.get('end_line'),
                         content_hash=func_data.get('content_hash')
                     )
-                    symbol_map[unique_id] = new_symbol
-                    call_map[unique_id] = func_data.get('calls', [])
+                    if uid_from_json:
+                        symbol_map[uid_from_json] = new_symbol
+                        call_map[uid_from_json] = func_data.get('calls', [])
+                    else:
+                        print(f"ERROR: Cannot map symbol {func_data.get('name')} for dependency linking due to missing unique_id.")
+
 
                 # Process classes and their methods
                 for class_data in file_data.get('classes', []):
@@ -104,18 +122,25 @@ def process_repository(repo_id):
                         structure_hash=class_data.get('structure_hash')
                     )
                     for method_data in class_data.get('methods', []):
-                        unique_id = method_data.get('unique_id')
+                        uid_from_json = method_data.get('unique_id') # Get it
+                        if not uid_from_json:
+                            print(f"WARNING: Missing unique_id in JSON for method: {method_data.get('name')} in class {new_class.name}")
+
                         new_symbol = CodeSymbol.objects.create(
                             code_class=new_class,
+                            unique_id=uid_from_json,  # <<<<<<<<<<< ADDED THIS
                             name=method_data.get('name'),
                             start_line=method_data.get('start_line'),
                             end_line=method_data.get('end_line'),
                             content_hash=method_data.get('content_hash')
                         )
-                        symbol_map[unique_id] = new_symbol
-                        call_map[unique_id] = method_data.get('calls', [])
-            
-            print(f"Finished Pass 1. Created {len(symbol_map)} symbols.")
+                        if uid_from_json:
+                            symbol_map[uid_from_json] = new_symbol
+                            call_map[uid_from_json] = method_data.get('calls', [])
+                        else:
+                            print(f"ERROR: Cannot map method {method_data.get('name')} for dependency linking due to missing unique_id.")
+        
+            print(f"Finished Pass 1. Created {len(symbol_map)} symbols. symbol_map keys: {list(symbol_map.keys())[:20]}")
             print(f"Starting Pass 1.5: Generating OpenAI Embeddings using model {OPENAI_EMBEDDING_MODEL}...")
             
             # OpenAI API can handle batch requests, but for simplicity and to avoid
@@ -308,33 +333,82 @@ def create_documentation_pr_task(self, symbol_id, user_id):
         if symbol.code_class: # If it's a method, its code_class field will be set
             target_class_name_for_ast = symbol.code_class.name
 
-        print(f"Attempting to update docstring for: {target_symbol_name} in class {target_class_name or 'None'}")
-        updated_content = update_docstring_in_ast(
+        print(f"Attempting to update docstring for symbol: {actual_symbol_name_for_ast} in class: {target_class_name_for_ast or 'N/A (top-level)'}")
+        
+        # --- 1. Update docstring using AST ---
+        content_after_ast_update = update_docstring_in_ast(
             original_content, 
             actual_symbol_name_for_ast, 
             symbol.documentation, 
             target_class_name_for_ast
         )
         
-        if updated_content == original_content:
-            print("Warning: Docstring injection via AST did not change file content. Check logic.")
-            # This might happen if the symbol wasn't found by the AST visitor.
-            # You might want to fall back to a simpler method or log an error.
-            # For now, we'll proceed, but the PR won't have changes.
+        if content_after_ast_update.strip() == original_content.strip():
+            print("Warning: Docstring injection via AST did not change file content.")
+            # Decide how to handle: proceed with original content or raise an error/warning
+            # For now, we'll proceed, meaning the commit might have no changes if Ruff also sees no diff.
+        
+        # --- 2. Format the updated content using Ruff ---
+        formatted_content = content_after_ast_update # Default if Ruff fails
+        try:
+            # Ruff can take input from stdin and output to stdout
+            # We use `ruff format -` to read from stdin
+            # Ensure ruff is in the PATH or provide full path if necessary
+            # The worker's Dockerfile should ensure Python and its packages (including ruff) are in PATH
+            process = subprocess.run(
+                ['ruff', 'format', '-'], 
+                input=content_after_ast_update, 
+                capture_output=True, 
+                text=True, 
+                check=True # Will raise CalledProcessError if ruff exits with non-zero
+            )
+            formatted_content = process.stdout
+            print(f"Successfully formatted content with Ruff for {file_path_in_repo}")
+        except subprocess.CalledProcessError as e:
+            print(f"Error formatting with Ruff for {file_path_in_repo}: {e.stderr}")
+            print("Proceeding with unformatted (but AST-updated) content.")
+            # formatted_content remains content_after_ast_update
+        except FileNotFoundError:
+            print("Error: Ruff command not found. Ensure it's installed and in PATH in the worker container.")
+            print("Proceeding with unformatted (but AST-updated) content.")
+            # formatted_content remains content_after_ast_update
 
+        # --- 3. Commit the (potentially AST-updated and Ruff-formatted) content ---
         commit_message = f"Docs: Add/Update docstring for {symbol.unique_id or symbol.name} via Helix CME"
-        gh_repo.update_file(
-            path=file_path_in_repo, message=commit_message,
-            content=updated_content, sha=file_sha, branch=new_branch_name
-        )
-        print(f"Committed changes to {new_branch_name}")
+        
+        # Only update if content actually changed after formatting
+        if formatted_content.strip() != original_content.strip():
+            gh_repo.update_file(
+                path=file_path_in_repo, message=commit_message,
+                content=formatted_content, # Use the Ruff-formatted content
+                sha=file_sha, branch=new_branch_name
+            )
+            print(f"Committed changes (AST + Ruff) to {new_branch_name}")
+        else:
+            print(f"No effective changes to commit for {file_path_in_repo} after AST update and Ruff formatting.")
+            # If no changes, you might choose not to create a PR, or create one noting no effective change.
+            # For now, we'll proceed to create the PR even if the file content is identical,
+            # as the intent was to update docs. GitHub will show "0 changed files" if so.
 
+        # --- 4. Create Pull Request (logic remains the same) ---
         pr_title = f"Helix CME: Documentation for {symbol.unique_id or symbol.name}"
-        pr_body = (
+        # Use the original symbol.documentation for the PR body, as it's the source of truth for the doc.
+        doc_for_pr_body = symbol.documentation.strip()
+        if doc_for_pr_body.startswith('"""') and doc_for_pr_body.endswith('"""'):
+            doc_for_pr_body = doc_for_pr_body[3:-3].strip()
+        elif doc_for_pr_body.startswith("'''") and doc_for_pr_body.endswith("'''"):
+            doc_for_pr_body = doc_for_pr_body[3:-3].strip()
+
+        pr_body_lines = [
             f"This Pull Request was automatically generated by Helix CME to add or update documentation for the symbol `{symbol.unique_id or symbol.name}` "
-            f"in file `{file_path_in_repo}`.\\n\\n"
-            f"**Generated Documentation:**\\n```python\\n{symbol.documentation}\\n```"
-        )
+            f"in file `{file_path_in_repo}`.",
+            "", 
+            "**Generated Documentation:**",
+            "```python",
+            doc_for_pr_body,
+            "```"
+        ]
+        pr_body = "\n".join(pr_body_lines)
         
         pull_request = gh_repo.create_pull(
             title=pr_title, body=pr_body,

@@ -6,12 +6,11 @@ FROM rust:1.78
 # Set ONE work directory for the entire build.
 WORKDIR /app
 
-# Install Python and pip.
-RUN apt-get update && apt-get install -y python3 python3-pip git
-
-# Copy Python requirements and install them.
+# Install Python, git, UV, and Python requirements in one step
 COPY backend/requirements.txt .
-RUN pip3 install --break-system-packages -r requirements.txt
+RUN apt-get update && apt-get install -y python3 python3-pip git curl && \
+    curl -LsSf https://astral.sh/uv/install.sh | sh && \
+    /root/.local/bin/uv pip install --system --break-system-packages -r requirements.txt
 
 # Copy ALL source code needed for the build.
 COPY backend/ .
