@@ -17,6 +17,8 @@ import datetime
 from itertools import takewhile
 from django.db import transaction,models  # Import the transaction module
 from .models import CodeFile, CodeSymbol, CodeClass,CodeDependency 
+from .models import Notification, AsyncTaskStatus # Ensure Notification is imported
+
 # Define the path to our compiled Rust binary INSIDE the container
 REPO_CACHE_BASE_PATH = "/var/repos"
 from openai import OpenAI # Import the OpenAI library
@@ -29,195 +31,284 @@ def process_repository(repo_id):
         repo = Repository.objects.get(id=repo_id)
     except Repository.DoesNotExist:
         print(f"Error: Repository with id={repo_id} not found.")
+        # Optionally update AsyncTaskStatus if this task is tracked
+        # For now, just return as per original logic
         return
+
+    # --- Update AsyncTaskStatus if this task is tracked ---
+    # This task itself could be tracked, or it could be a sub-step of a larger tracked task.
+    # For now, let's assume it's not directly tracked by AsyncTaskStatus, but sub-tasks it calls might be.
+    # If you want to track process_repository itself:
+    # task_id_for_process_repo = self.request.id # If bind=True
+    # AsyncTaskStatus.objects.update_or_create(task_id=task_id_for_process_repo, defaults={...})
 
     repo_path = os.path.join(REPO_CACHE_BASE_PATH, str(repo.id))
 
     try:
-        print(f"Processing repository: {repo.full_name}")
+        print(f"PROCESS_REPO_TASK: Processing repository: {repo.full_name} (ID: {repo.id})")
         repo.status = Repository.Status.INDEXING
-        repo.save()
+        repo.save(update_fields=['status'])
 
         # --- Git Cache Management ---
-        social_token = SocialToken.objects.get(account__user=repo.user, account__provider='github')
+        # (Your existing git clone/pull logic - seems okay)
+        # ... (ensure SocialToken and token logic is robust) ...
+        social_account = repo.user.socialaccount_set.filter(provider='github').first()
+        if not social_account:
+            raise Exception(f"No GitHub social account found for user {repo.user.username} to process repo {repo.full_name}")
+        
+        social_token = SocialToken.objects.filter(account=social_account).first()
+        if not social_token:
+            raise Exception(f"No GitHub token found for user {repo.user.username} to process repo {repo.full_name}")
+        
         token = social_token.token
         clone_url = f"https://oauth2:{token}@github.com/{repo.full_name}.git"
 
         if os.path.exists(repo_path):
-            print(f"Pulling latest changes for {repo.full_name}")
-            subprocess.run(["git", "-C", repo_path, "pull"], check=True, capture_output=True)
+            print(f"PROCESS_REPO_TASK: Pulling latest changes for {repo.full_name}")
+            # Added timeout to git commands
+            subprocess.run(["git", "-C", repo_path, "pull"], check=True, capture_output=True, timeout=300)
         else:
-            print(f"Cloning new repository: {repo.full_name} to {repo_path}")
-            subprocess.run(["git", "clone", "--depth", "1", clone_url, repo_path], check=True, capture_output=True)
-        print(f"DEBUG: Celery Task - Processing for Repository ID: {repo.id}, Name: {repo.full_name}")
-        print(f"DEBUG: Target repo_path for Rust engine: {repo_path}") # repo_path is /var/repos/<repo.id>
+            print(f"PROCESS_REPO_TASK: Cloning new repository: {repo.full_name} to {repo_path}")
+            subprocess.run(["git", "clone", "--depth", "1", clone_url, repo_path], check=True, capture_output=True, timeout=300)
         
-        # Ensure repo_path actually contains the correct repo's files before calling Rust
-        print(f"DEBUG: Listing contents of {repo_path} before Rust call:")
-        try:
-            for item in os.listdir(repo_path):
-                print(f"DEBUG:   - {item}")
-        except FileNotFoundError:
-            print(f"DEBUG: ERROR - repo_path {repo_path} does not exist before Rust call!")
-            # This would be a major issue with the git clone/pull logic
-        except Exception as e:
-            print(f"DEBUG: Error listing {repo_path}: {e}")
         # --- Call Rust Engine ---
-        print(f"Calling Rust engine for directory: {repo_path}")
+        # (Your existing Rust engine call logic - seems okay)
+        # ...
+        print(f"PROCESS_REPO_TASK: Calling Rust engine for directory: {repo_path}")
         command = [RUST_ENGINE_PATH, "--dir-path", repo_path]
-        result = subprocess.run(command, capture_output=True, text=True, check=True)
+        result = subprocess.run(command, capture_output=True, text=True, check=True, timeout=600) # Added timeout
         json_output_string = result.stdout
-
-        # (Optional) Write debug output file
-        with open(f"/app/rust_output_{repo_id}.json", "w") as f:
-            f.write(json_output_string)
-
         repo_analysis_data = json.loads(json_output_string)
 
-        # --- Database Transaction: Two-Pass Processing ---
+
+        # --- Database Transaction: Processing ---
         with transaction.atomic():
-        # PASS 1: Create all Files, Classes, and Symbols
-            print("Starting Pass 1: Creating Files, Classes, and Symbols...")
-            
-            repo.files.all().delete()
-            
-            symbol_map = {}
-            call_map = {}
+            print("PROCESS_REPO_TASK: Starting Pass 1: Creating/Updating Files, Classes, and Symbols...")
+
+            # --- MODIFIED APPROACH: Update or Create Symbols to preserve documentation ---
+            # Map existing symbols for efficient lookup and deletion tracking
+            existing_symbols_in_repo_map = {
+                s.unique_id: s for s in CodeSymbol.objects.filter(
+                    Q(code_file__repository=repo) | Q(code_class__code_file__repository=repo)
+                ).select_related('code_file', 'code_class__code_file') # Ensure we can trace back to repo
+            }
+            processed_unique_ids_from_rust = set()
+
+            # Delete old files not present in new analysis
+            current_file_paths_from_rust = {file_data.get('path') for file_data in repo_analysis_data.get('files', [])}
+            CodeFile.objects.filter(repository=repo).exclude(file_path__in=current_file_paths_from_rust).delete()
+
+            symbol_map_for_deps = {} # For dependency linking, using newly created/updated symbol objects
+            call_map_for_deps = {}
 
             for file_data in repo_analysis_data.get('files', []):
-                new_file = CodeFile.objects.create(
+                code_file_obj, _ = CodeFile.objects.update_or_create(
                     repository=repo,
                     file_path=file_data.get('path'),
-                    structure_hash=file_data.get('structure_hash')
+                    defaults={'structure_hash': file_data.get('structure_hash')}
                 )
                 
                 # Process top-level functions
                 for func_data in file_data.get('functions', []):
-                    uid_from_json = func_data.get('unique_id') # Get it
-                    if not uid_from_json:
-                        print(f"WARNING: Missing unique_id in JSON for top-level function: {func_data.get('name')} in file {new_file.file_path}")
+                    uid = func_data.get('unique_id')
+                    if not uid: 
+                        print(f"WARNING: Missing unique_id for function {func_data.get('name')} in {code_file_obj.file_path}")
+                        continue
+                    processed_unique_ids_from_rust.add(uid)
                     
-                    new_symbol = CodeSymbol.objects.create(
-                        code_file=new_file,
-                        unique_id=uid_from_json,  # <<<<<<<<<<< ADDED THIS
-                        name=func_data.get('name'),
-                        start_line=func_data.get('start_line'),
-                        end_line=func_data.get('end_line'),
-                        content_hash=func_data.get('content_hash')
+                    # update_or_create based on unique_id AND its direct parent (CodeFile)
+                    # This assumes unique_id is unique within the context of its direct parent type.
+                    symbol_obj, created = CodeSymbol.objects.update_or_create(
+                        unique_id=uid,
+                        code_file=code_file_obj, # Key for uniqueness if uid is not global
+                        defaults={
+                            'code_class': None,
+                            'name': func_data.get('name'), 'start_line': func_data.get('start_line'),
+                            'end_line': func_data.get('end_line'), 'content_hash': func_data.get('content_hash')
+                        }
                     )
-                    if uid_from_json:
-                        symbol_map[uid_from_json] = new_symbol
-                        call_map[uid_from_json] = func_data.get('calls', [])
-                    else:
-                        print(f"ERROR: Cannot map symbol {func_data.get('name')} for dependency linking due to missing unique_id.")
+                    if created: print(f"Created Symbol: {uid}")
+                    else: print(f"Updated Symbol: {uid}")
 
+                    symbol_map_for_deps[uid] = symbol_obj
+                    call_map_for_deps[uid] = func_data.get('calls', [])
 
                 # Process classes and their methods
                 for class_data in file_data.get('classes', []):
-                    new_class = CodeClass.objects.create(
-                        code_file=new_file,
-                        name=class_data.get('name'),
-                        start_line=class_data.get('start_line'),
-                        end_line=class_data.get('end_line'),
-                        structure_hash=class_data.get('structure_hash')
+                    class_obj, _ = CodeClass.objects.update_or_create(
+                        code_file=code_file_obj, 
+                        name=class_data.get('name'), # Assuming (file, class_name) is unique
+                        defaults={
+                            'start_line': class_data.get('start_line'), 'end_line': class_data.get('end_line'),
+                            'structure_hash': class_data.get('structure_hash')
+                        }
                     )
                     for method_data in class_data.get('methods', []):
-                        uid_from_json = method_data.get('unique_id') # Get it
-                        if not uid_from_json:
-                            print(f"WARNING: Missing unique_id in JSON for method: {method_data.get('name')} in class {new_class.name}")
+                        uid = method_data.get('unique_id')
+                        if not uid: 
+                            print(f"WARNING: Missing unique_id for method {method_data.get('name')} in class {class_obj.name}")
+                            continue
+                        processed_unique_ids_from_rust.add(uid)
 
-                        new_symbol = CodeSymbol.objects.create(
-                            code_class=new_class,
-                            unique_id=uid_from_json,  # <<<<<<<<<<< ADDED THIS
-                            name=method_data.get('name'),
-                            start_line=method_data.get('start_line'),
-                            end_line=method_data.get('end_line'),
-                            content_hash=method_data.get('content_hash')
+                        # update_or_create based on unique_id AND its direct parent (CodeClass)
+                        symbol_obj, created = CodeSymbol.objects.update_or_create(
+                            unique_id=uid,
+                            code_class=class_obj, # Key for uniqueness if uid is not global
+                            defaults={
+                                'code_file': None, # Method belongs to a class, not directly to a file
+                                'name': method_data.get('name'), 'start_line': method_data.get('start_line'),
+                                'end_line': method_data.get('end_line'), 'content_hash': method_data.get('content_hash')
+                            }
                         )
-                        if uid_from_json:
-                            symbol_map[uid_from_json] = new_symbol
-                            call_map[uid_from_json] = method_data.get('calls', [])
-                        else:
-                            print(f"ERROR: Cannot map method {method_data.get('name')} for dependency linking due to missing unique_id.")
-        
-            print(f"Finished Pass 1. Created {len(symbol_map)} symbols. symbol_map keys: {list(symbol_map.keys())[:20]}")
-            print(f"Starting Pass 1.5: Generating OpenAI Embeddings using model {OPENAI_EMBEDDING_MODEL}...")
+                        if created: print(f"Created Method Symbol: {uid}")
+                        else: print(f"Updated Method Symbol: {uid}")
+                        
+                        symbol_map_for_deps[uid] = symbol_obj
+                        call_map_for_deps[uid] = method_data.get('calls', [])
             
-            # OpenAI API can handle batch requests, but for simplicity and to avoid
-            # very large single requests, we'll process symbol by symbol or in small batches.
-            # For now, symbol by symbol:
-            symbols_to_update = []
-            for unique_id, symbol_obj in symbol_map.items():
-                text_to_embed = symbol_obj.name
-                if symbol_obj.documentation:
-                    # OpenAI recommends replacing newlines with spaces for their embedding models
-                    doc_cleaned = symbol_obj.documentation.replace("\\n", " ")
-                    text_to_embed += f"\\n\\n{doc_cleaned}"
-                
-                try:
-                    response = OPENAI_CLIENT.embeddings.create(
-                        input=text_to_embed,
-                        model=OPENAI_EMBEDDING_MODEL
-                    )
-                    embedding_vector = response.data[0].embedding
-                    
-                    symbol_obj.embedding = embedding_vector # pgvector expects a list, OpenAI returns it
-                    symbols_to_update.append(symbol_obj)
+            # Delete symbols that were in the DB (for this repo) but not in the new Rust output
+            unique_ids_to_delete = set(existing_symbols_in_repo_map.keys()) - processed_unique_ids_from_rust
+            if unique_ids_to_delete:
+                print(f"PROCESS_REPO_TASK: Deleting {len(unique_ids_to_delete)} old symbols for repo {repo.id}")
+                # This delete needs to be careful if unique_id is not globally unique.
+                # We need to ensure we only delete symbols belonging to THIS repo.
+                # The existing_symbols_in_repo_map already filtered by repo.
+                CodeSymbol.objects.filter(
+    Q(unique_id__in=unique_ids_to_delete) &
+    (Q(code_file__repository=repo) | Q(code_class__code_file__repository=repo))
+).delete()
 
-                except Exception as e:
-                    print(f"Error generating OpenAI embedding for symbol {symbol_obj.unique_id}: {e}")
-                    # Decide if you want to skip this symbol or fail the task
-                    continue 
-            
-            # Bulk update the embeddings if possible, or save one by one
-            # For simplicity, saving one by one after collecting:
-            if symbols_to_update:
-                print(f"Saving embeddings for {len(symbols_to_update)} symbols...")
-                for sym_obj in symbols_to_update:
-                    sym_obj.save(update_fields=['embedding'])
-            
-            print(f"Finished Pass 1.5. Processed embeddings for {len(symbol_map)} symbols.")
-            # PASS 2: Create all Dependency Links
-            print("Starting Pass 2: Linking Dependencies...")
-            
-            # This map is needed to resolve callees by their simple name.
-            # This is naive and won't handle multiple functions with the same name perfectly.
-            name_to_symbol_map = {s.name: s for s in symbol_map.values()}
 
-            for caller_uid, callee_names in call_map.items():
-                caller_symbol = symbol_map.get(caller_uid)
-                if not caller_symbol:
-                    continue
+            print(f"PROCESS_REPO_TASK: Finished Pass 1. Processed {len(processed_unique_ids_from_rust)} symbols from Rust output.")
+
+            # PASS 1.5: Generate Embeddings
+            if OPENAI_CLIENT:
+                print(f"PROCESS_REPO_TASK: Starting Pass 1.5: Generating Embeddings...")
+                symbols_for_embedding_update = []
+                # Iterate over symbols that were just processed (present in symbol_map_for_deps)
+                for symbol_obj in symbol_map_for_deps.values():
+                    text_to_embed = symbol_obj.name
+                    if symbol_obj.documentation:
+                        doc_cleaned = symbol_obj.documentation.replace("\n", " ") # OpenAI recommendation
+                        text_to_embed += f"\n\n{doc_cleaned}"
+                    try:
+                        response = OPENAI_CLIENT.embeddings.create(input=text_to_embed, model=OPENAI_EMBEDDING_MODEL)
+                        symbol_obj.embedding = response.data[0].embedding
+                        symbols_for_embedding_update.append(symbol_obj)
+                    except Exception as e:
+                        print(f"Error generating OpenAI embedding for symbol {symbol_obj.unique_id}: {e}")
                 
+                if symbols_for_embedding_update:
+                    print(f"PROCESS_REPO_TASK: Saving embeddings for {len(symbols_for_embedding_update)} symbols...")
+                    CodeSymbol.objects.bulk_update(symbols_for_embedding_update, ['embedding'], batch_size=100)
+                print(f"PROCESS_REPO_TASK: Finished Pass 1.5.")
+            else:
+                print("PROCESS_REPO_TASK: Skipping Pass 1.5 (Embeddings) as OpenAI client is not available.")
+
+            # PASS 2: Link Dependencies
+            print("PROCESS_REPO_TASK: Starting Pass 2: Linking Dependencies...")
+            # Clear old dependencies for this repo before creating new ones
+            # This relies on symbols having a clear path back to the repo
+            CodeDependency.objects.filter(
+                Q(caller__code_file__repository=repo) | Q(caller__code_class__code_file__repository=repo) |
+                Q(callee__code_file__repository=repo) | Q(callee__code_class__code_file__repository=repo)
+            ).distinct().delete()
+
+            name_to_symbol_map_for_deps = {s.name: s for s in symbol_map_for_deps.values()}
+
+            for caller_uid, callee_names in call_map_for_deps.items():
+                caller_symbol = symbol_map_for_deps.get(caller_uid)
+                if not caller_symbol: continue
                 for callee_name in callee_names:
-                    # Naive lookup by name. A more advanced system would resolve imports.
-                    callee_symbol = name_to_symbol_map.get(callee_name)
+                    callee_symbol = name_to_symbol_map_for_deps.get(callee_name) # Naive name lookup
                     if callee_symbol and callee_symbol.id != caller_symbol.id:
-                        CodeDependency.objects.get_or_create(
-                            caller=caller_symbol,
-                            callee=callee_symbol
-                        )
-            
-            print("Finished Pass 2.")
+                        CodeDependency.objects.get_or_create(caller=caller_symbol, callee=callee_symbol)
+            print("PROCESS_REPO_TASK: Finished Pass 2.")
 
-            # --- Finalize Repository Status ---
+            # --- Staleness Detection and Notification Logic ---
+            print(f"PROCESS_REPO_TASK: Starting staleness check for repository {repo.id} ({repo.full_name})")
+            stale_symbols_count = 0
+            newly_stale_symbol_details = []
+
+            # Fetch all symbols in this repo that have documentation and a content_hash
+            symbols_with_docs_in_repo = CodeSymbol.objects.filter(
+                (Q(code_file__repository=repo) | Q(code_class__code_file__repository=repo)),
+                documentation__isnull=False,
+                documentation__iregex=r'\S',
+                content_hash__isnull=False
+            ).select_related('code_file', 'code_class__code_file') # For file path in notification
+
+            symbols_to_bulk_update_status = []
+
+            for symbol in symbols_with_docs_in_repo:
+                is_freshly_documented = (
+                    symbol.documentation_hash is not None and
+                    symbol.documentation_hash == symbol.content_hash
+                )
+                current_db_status = symbol.documentation_status
+                new_status = current_db_status
+
+                if is_freshly_documented:
+                    if current_db_status != CodeSymbol.DocStatus.FRESH:
+                        new_status = CodeSymbol.DocStatus.FRESH
+                else: # Documentation exists, but it's now stale
+                    if current_db_status != CodeSymbol.DocStatus.STALE:
+                        new_status = CodeSymbol.DocStatus.STALE
+                        stale_symbols_count += 1
+                        file_rel_path = symbol.code_file.file_path if symbol.code_file else \
+                                        (symbol.code_class.code_file.file_path if symbol.code_class and symbol.code_class.code_file else "N/A")
+                        newly_stale_symbol_details.append(f"- `{symbol.name}` in `{file_rel_path}`")
+                
+                if new_status != current_db_status:
+                    symbol.documentation_status = new_status
+                    symbols_to_bulk_update_status.append(symbol)
+            
+            if symbols_to_bulk_update_status:
+                CodeSymbol.objects.bulk_update(symbols_to_bulk_update_status, ['documentation_status'], batch_size=100)
+                print(f"PROCESS_REPO_TASK: Updated documentation_status for {len(symbols_to_bulk_update_status)} symbols.")
+
+            print(f"PROCESS_REPO_TASK: Staleness check complete. Found {stale_symbols_count} newly stale symbols.")
+
+            if stale_symbols_count > 0:
+                details_for_message = "\n".join(newly_stale_symbol_details[:5])
+                if len(newly_stale_symbol_details) > 5:
+                    details_for_message += f"\n... and {len(newly_stale_symbol_details) - 5} more."
+                notification_message = (
+                    f"{stale_symbols_count} docstring(s) became stale in repository '{repo.full_name}' "
+                    f"after recent updates. Consider regenerating or reviewing them.\n\nExamples:\n{details_for_message}"
+                )
+                Notification.objects.create(
+                    user=repo.user, repository=repo, message=notification_message,
+                    notification_type=Notification.NotificationType.STALENESS_ALERT
+                )
+            # --- END Staleness Detection ---
+
             repo.root_merkle_hash = repo_analysis_data.get('root_merkle_hash')
             repo.status = Repository.Status.COMPLETED
-            repo.save()
+            repo.last_processed = datetime.datetime.now(datetime.timezone.utc) # Added timezone
+            repo.save(update_fields=['root_merkle_hash', 'status', 'last_processed'])
 
-        print(f"Successfully processed and saved analysis for repository: {repo.full_name}")
+        print(f"PROCESS_REPO_TASK: Successfully processed and saved analysis for repository: {repo.full_name}")
 
     except subprocess.CalledProcessError as e:
-        print(f"Error calling Rust engine for repo_id={repo_id}. Stderr: {e.stderr}")
+        error_message = f"Error calling Rust engine for repo_id={repo_id}. Return code: {e.returncode}. Stderr: {e.stderr[:500]}..."
+        print(error_message)
         repo.status = Repository.Status.FAILED
+        # repo.error_message = error_message # If you have an error message field
         repo.save()
     except json.JSONDecodeError as e:
-        print(f"Error decoding JSON for repo_id={repo_id}. Error: {e}")
+        error_message = f"Error decoding JSON from Rust engine for repo_id={repo_id}. Error: {e}. Output: {result.stdout[:500]}..."
+        print(error_message)
         repo.status = Repository.Status.FAILED
+        # repo.error_message = error_message
         repo.save()
     except Exception as e:
-        print(f"An unexpected error occurred while processing repo_id={repo_id}: {e}")
+        error_message = f"An unexpected error occurred while processing repo_id={repo_id}: {str(e)}"
+        print(error_message)
+        import traceback
+        traceback.print_exc() # Print full traceback for unexpected errors
         repo.status = Repository.Status.FAILED
+        # repo.error_message = error_message
         repo.save()
 
 User = get_user_model()

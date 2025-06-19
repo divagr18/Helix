@@ -16,7 +16,11 @@ class Repository(models.Model):
         INDEXING = 'INDEXING', 'Indexing'
         COMPLETED = 'COMPLETED', 'Completed'
         FAILED = 'FAILED', 'Failed'
-
+    last_processed = models.DateTimeField(
+        null=True, 
+        blank=True, 
+        help_text="Timestamp of the last successful processing by the Celery task."
+    )
     status = models.CharField(max_length=10, choices=Status.choices, default=Status.PENDING)
     root_merkle_hash = models.CharField(max_length=64, blank=True, null=True)
 
@@ -24,6 +28,7 @@ class Repository(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
     class Meta:
         db_table = 'repositories'
+        verbose_name_plural = "Repositories"
     def __str__(self):
         return self.full_name
     
@@ -138,3 +143,35 @@ class AsyncTaskStatus(models.Model):
 
     def __str__(self):
         return f"Task {self.task_name} ({self.task_id}) for {self.user.username} - {self.status}"
+    
+class Notification(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="notifications")
+    repository = models.ForeignKey(Repository, on_delete=models.CASCADE, null=True, blank=True, related_name="notifications_on_repo") # Changed related_name
+    
+    # Optional: Link directly to a symbol if the notification is about a specific one
+    # symbol = models.ForeignKey(CodeSymbol, on_delete=models.CASCADE, null=True, blank=True, related_name="notifications")
+
+    class NotificationType(models.TextChoices):
+        STALENESS_ALERT = 'STALENESS_ALERT', 'Documentation Staleness Alert'
+        TASK_COMPLETED = 'TASK_COMPLETED', 'Task Completed'
+        # Add more types as needed
+
+    notification_type = models.CharField(
+        max_length=30, 
+        choices=NotificationType.choices, 
+        default=NotificationType.STALENESS_ALERT # Example default
+    )
+    message = models.TextField()
+    is_read = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    
+    # Optional: A URL the user can click to go to the relevant page
+    link_url = models.URLField(max_length=512, blank=True, null=True)
+
+
+    class Meta:
+        db_table = 'user_notifications'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"Notification for {self.user.username} ({self.get_notification_type_display()}): {self.message[:50]}..."
