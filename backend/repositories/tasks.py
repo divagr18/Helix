@@ -1,12 +1,12 @@
 # backend/repositories/tasks.py
 from config.celery import app
-from .models import Repository
+from .models import Repository,AsyncTaskStatus
 import subprocess # Import the subprocess module
 import os # Import the os module
 import shutil # Import the shutil module for removing directories
 from allauth.socialaccount.models import SocialToken # Import SocialToken
 import json
-from django.db.models import Q ,F # <--- ADD THIS IMPORT
+from django.db.models import Q ,F,Count # <--- ADD THIS IMPORT
 import ast # Python's Abstract Syntax Tree module
 import astor
 import subprocess # To call ruff CLI
@@ -765,48 +765,93 @@ def create_docs_pr_for_file_task(self, code_file_id: int, user_id: int):
     
 @app.task(bind=True, max_retries=1, default_retry_delay=300)
 def batch_generate_docstrings_for_files_task(self, repo_id: int, user_id: int, file_ids: list[int]):
-
-    print(f"BATCH_DOC_GEN_TASK: Started for repo_id={repo_id}, user_id={user_id}, file_ids={file_ids}")
+    task_id = self.request.id
+    print(f"BATCH_DOC_GEN_TASK: Started (ID: {task_id}) for repo_id={repo_id}, user_id={user_id}, file_ids={file_ids}")
     
-    openai_client = OPENAI_CLIENT
+    task_status_obj = None
+    try:
+        user_obj = User.objects.get(id=user_id)
+        repo_obj = Repository.objects.get(id=repo_id)
+        task_status_obj, created = AsyncTaskStatus.objects.update_or_create(
+            task_id=task_id,
+            defaults={
+                'user': user_obj, 'repository': repo_obj,
+                'task_name': AsyncTaskStatus.TaskName.BATCH_GENERATE_DOCS,
+                'status': AsyncTaskStatus.TaskStatus.IN_PROGRESS,
+                'message': f'Initiated batch documentation generation for {len(file_ids)} file(s).', 'progress': 0
+            }
+        )
+        print(f"BATCH_DOC_GEN_TASK: {'Created' if created else 'Updated'} AsyncTaskStatus for {task_id}")
+    except (User.DoesNotExist, Repository.DoesNotExist) as e:
+        print(f"BATCH_DOC_GEN_TASK: ERROR - User or Repo not found for task {task_id}: {e}")
+        return {"status": "error", "message": "User or Repository for task status not found."}
+    except Exception as e:
+        print(f"BATCH_DOC_GEN_TASK: ERROR - Creating/updating AsyncTaskStatus for {task_id}: {e}")
+        # Allow task to proceed but status won't be fully tracked if task_status_obj is None
+
+    # Use the globally initialized OPENAI_CLIENT if available
+    current_openai_client = OPENAI_CLIENT 
+    if not current_openai_client:
+        message = "OpenAI client not available (OPENAI_API_KEY not set or init failed)."
+        print(f"BATCH_DOC_GEN_TASK: {message}")
+        if task_status_obj:
+            task_status_obj.status = AsyncTaskStatus.TaskStatus.FAILURE
+            task_status_obj.message = message
+            task_status_obj.progress = 100
+            task_status_obj.save()
+        return {"status": "error", "message": message}
 
     overall_successful_symbol_generations = 0
     overall_failed_symbol_generations = 0
     files_processed_count = 0
-    files_with_new_docs_paths = set() # Store relative paths
+    files_with_new_docs_paths = set()
+    total_files_to_process = len(file_ids)
 
-    for code_file_id in file_ids:
+    for i, code_file_id in enumerate(file_ids):
         try:
             code_file = CodeFile.objects.select_related('repository').get(
-                id=code_file_id, 
-                repository_id=repo_id # Ensure it's for the correct repo
-                # User check is implicitly handled by the view before calling the task
+                id=code_file_id, repository_id=repo_id
             )
         except CodeFile.DoesNotExist:
             print(f"BATCH_DOC_GEN_TASK: Skipping file ID {code_file_id}: Not found for repo {repo_id}.")
-            overall_failed_symbol_generations += 1 # Count as a failure if file not found for this context
+            overall_failed_symbol_generations += 1 
+            files_processed_count += 1
+            if task_status_obj and total_files_to_process > 0:
+                task_status_obj.progress = int(((i + 1) / total_files_to_process) * 100)
+                task_status_obj.message = f"Processed {i+1}/{total_files_to_process} files. Current: {code_file.file_path if 'code_file' in locals() else 'ID '+str(code_file_id)} (File not found)"
+                task_status_obj.save(update_fields=['progress', 'message', 'updated_at'])
             continue
         
         files_processed_count += 1
-        print(f"BATCH_DOC_GEN_TASK: Processing file: {code_file.file_path} (ID: {code_file_id}) for repo {repo_id}")
+        current_progress_message = f"Processing file {files_processed_count}/{total_files_to_process}: {code_file.file_path}"
+        print(f"BATCH_DOC_GEN_TASK: {current_progress_message}")
+        if task_status_obj:
+            task_status_obj.message = current_progress_message
+            # Calculate progress more granularly if possible, or update per file
+            task_status_obj.progress = int(((i + 0.5) / total_files_to_process) * 100) # Mid-file processing
+            task_status_obj.save(update_fields=['progress', 'message', 'updated_at'])
 
         symbols_to_document = CodeSymbol.objects.filter(
             Q(code_file=code_file) | Q(code_class__code_file=code_file),
             content_hash__isnull=False
         ).filter(
             Q(documentation__isnull=True) | Q(documentation__exact='') |
-            (Q(documentation_hash__isnull=False) & ~Q(documentation_hash=models.F('content_hash'))) |
+            (Q(documentation_hash__isnull=False) & ~Q(documentation_hash=F('content_hash'))) |
             (Q(documentation_hash__isnull=True) & ~Q(documentation__isnull=True) & ~Q(documentation__exact=''))
         ).select_related('code_class', 'code_file__repository')
 
         if not symbols_to_document.exists():
             print(f"BATCH_DOC_GEN_TASK: No symbols to document in file {code_file.file_path}.")
+            # Update progress for this file completion
+            if task_status_obj and total_files_to_process > 0:
+                task_status_obj.progress = int(((i + 1) / total_files_to_process) * 100)
+                task_status_obj.save(update_fields=['progress', 'updated_at'])
             continue
 
         print(f"BATCH_DOC_GEN_TASK: Found {symbols_to_document.count()} symbols to document in {code_file.file_path}.")
         
         file_had_successful_generation_this_run = False
-        for symbol in symbols_to_document:
+        for symbol_idx, symbol in enumerate(symbols_to_document):
             source_code = get_source_for_symbol_in_task(symbol)
             if not source_code or source_code.startswith("# Error:"):
                 print(f"BATCH_DOC_GEN_TASK: Skipping symbol {symbol.unique_id or symbol.name}: Could not get source code ({source_code}).")
@@ -819,7 +864,7 @@ def batch_generate_docstrings_for_files_task(self, repo_id: int, user_id: int, f
             prompt = f"Generate a Python docstring for the following code snippet (file: {symbol_file_path_for_prompt}, symbol: {symbol.name}):\n\n```python\n{source_code}\n```"
             
             print(f"BATCH_DOC_GEN_TASK: Generating doc for: {symbol.unique_id or symbol.name} (ID: {symbol.id})")
-            docstring_content = call_openai_for_docstring(prompt, openai_client)
+            docstring_content = call_openai_for_docstring(prompt, current_openai_client)
 
             if docstring_content:
                 symbol.documentation = docstring_content
@@ -836,135 +881,196 @@ def batch_generate_docstrings_for_files_task(self, repo_id: int, user_id: int, f
                 print(f"BATCH_DOC_GEN_TASK: Failed to generate doc for: {symbol.unique_id or symbol.name}")
                 overall_failed_symbol_generations += 1
             
-            time.sleep(0.25) # Slightly reduced sleep, adjust based on API limits
+            time.sleep(0.25) 
 
         if file_had_successful_generation_this_run:
             files_with_new_docs_paths.add(code_file.file_path)
+        # --- End of per-file processing ---
+        if task_status_obj and total_files_to_process > 0:
+            task_status_obj.progress = int(((i + 1) / total_files_to_process) * 100)
+            task_status_obj.save(update_fields=['progress', 'updated_at'])
 
-    summary_message = (
+
+    final_summary_message = (
         f"Batch documentation generation for repo {repo_id} complete. "
         f"Files targeted: {len(file_ids)}. Files processed: {files_processed_count}. "
         f"Symbols successfully documented: {overall_successful_symbol_generations}. "
         f"Symbols failed/skipped: {overall_failed_symbol_generations}."
     )
-    print(f"BATCH_DOC_GEN_TASK: {summary_message}")
+    print(f"BATCH_DOC_GEN_TASK: {final_summary_message}")
+
+    final_status = AsyncTaskStatus.TaskStatus.SUCCESS
+    if overall_failed_symbol_generations > 0 and overall_successful_symbol_generations == 0:
+        final_status = AsyncTaskStatus.TaskStatus.FAILURE
+    elif overall_failed_symbol_generations > 0:
+        # Could add a "PARTIAL_SUCCESS" status if desired
+        final_status = AsyncTaskStatus.TaskStatus.SUCCESS # Treat as success if at least one worked
+
+    if task_status_obj:
+        task_status_obj.status = final_status
+        task_status_obj.message = final_summary_message
+        task_status_obj.progress = 100
+        task_status_obj.result_data = {
+            "successful_symbol_count": overall_successful_symbol_generations,
+            "failed_symbol_count": overall_failed_symbol_generations,
+            "files_processed_count": files_processed_count,
+            "updated_file_paths": list(files_with_new_docs_paths)
+        }
+        task_status_obj.save()
     
-    return {
-        "status": "success", 
-        "message": summary_message, 
-        "successful_symbol_count": overall_successful_symbol_generations, 
-        "failed_symbol_count": overall_failed_symbol_generations,
-        "updated_file_paths": list(files_with_new_docs_paths)
-    }
+    return task_status_obj.result_data if task_status_obj else {"status": "error", "message": "Task status object not available."}
     
 from github import InputGitTreeElement # Ensure this is imported
 
-@app.task(bind=True, max_retries=1, default_retry_delay=180)
+@app.task(bind=True, max_retries=1, default_retry_delay=180) # Max 1 retry for PR creation issues
 def create_pr_for_multiple_files_task(self, repo_id: int, user_id: int, file_ids_for_pr: list[int]):
-    print(f"BATCH_PR_TASK: Started for repo_id={repo_id}, user_id={user_id}, file_ids_for_pr={file_ids_for_pr}")
+    task_id = self.request.id
+    print(f"BATCH_PR_TASK: Started (ID: {task_id}) for repo_id={repo_id}, user_id={user_id}, file_ids_for_pr={file_ids_for_pr}")
+
+    task_status_obj = None # Define before try-finally or try-except for broader scope
+    user_obj = None
+    repo_obj = None
+
     try:
-        user = User.objects.get(id=user_id)
-        repo_model = Repository.objects.get(id=repo_id, user=user)
-    except (Repository.DoesNotExist, User.DoesNotExist):
-        print(f"BATCH_PR_TASK: ERROR - Repository {repo_id} or User {user_id} not found.")
-        return {"status": "error", "message": "Repository or user not found."}
-
-    # Fetch CodeFile objects that are in file_ids_for_pr AND have at least one symbol with fresh docs
-    code_files_to_process = CodeFile.objects.filter(
-        id__in=file_ids_for_pr,
-        repository=repo_model
-    ).annotate(
-        # Count fresh symbols directly associated with the file
-        fresh_direct_symbols_count=models.Count('symbols', filter=Q(
-            symbols__documentation_hash=models.F('symbols__content_hash'),
-            symbols__documentation__isnull=False, symbols__documentation__iregex=r'\S'
-        )),
-        # Count fresh symbols associated via classes in the file
-        fresh_method_symbols_count=models.Count('classes__methods', filter=Q(
-            classes__methods__documentation_hash=models.F('classes__methods__content_hash'),
-            classes__methods__documentation__isnull=False, classes__methods__documentation__iregex=r'\S'
-        ))
-    ).filter(
-        Q(fresh_direct_symbols_count__gt=0) | Q(fresh_method_symbols_count__gt=0)
-    ).distinct()
-
-
-    if not code_files_to_process.exists():
-        print(f"BATCH_PR_TASK: No files found in the selection with freshly documented symbols for repo {repo_id}.")
-        return {"status": "info", "message": "No selected files had new/updated documentation to commit."}
-
-    print(f"BATCH_PR_TASK: Found {code_files_to_process.count()} files with fresh docs to include in PR for repo {repo_id}.")
-
-    actual_files_to_commit_content = {} # Dict: {"path/in/repo.py": "full new content string"}
-
-    for code_file in code_files_to_process:
-        print(f"BATCH_PR_TASK: Preparing file for PR: {code_file.file_path}")
+        user_obj = User.objects.get(id=user_id)
+        repo_obj = Repository.objects.get(id=repo_id) # Assuming user check was done in view
         
-        # Get the full current content of the file from our cache
-        # This assumes the cache is reasonably up-to-date.
-        # For maximum safety against race conditions, one might fetch from GitHub default branch here,
-        # then apply local DB docstrings, then diff against that fetched version.
-        # But that adds more API calls. Let's proceed with cache for now.
-        original_content_from_cache = get_source_for_file_in_task(code_file) # Defined earlier
-        if original_content_from_cache is None:
-            print(f"BATCH_PR_TASK: Could not get source for {code_file.file_path} from cache. Skipping.")
-            continue
+        task_status_obj, created = AsyncTaskStatus.objects.update_or_create(
+            task_id=task_id,
+            defaults={
+                'user': user_obj, 
+                'repository': repo_obj,
+                'task_name': AsyncTaskStatus.TaskName.CREATE_BATCH_PR,
+                'status': AsyncTaskStatus.TaskStatus.IN_PROGRESS,
+                'message': f'Initiated PR creation for {len(file_ids_for_pr)} selected file(s).', 
+                'progress': 0
+            }
+        )
+        print(f"BATCH_PR_TASK: {'Created' if created else 'Updated'} AsyncTaskStatus for {task_id}")
 
-        content_with_all_docs = original_content_from_cache
-        
-        # Get all symbols for this file that have documentation (fresh or not, we need their text)
-        symbols_in_file_with_docs = CodeSymbol.objects.filter(
-            Q(code_file=code_file) | Q(code_class__code_file=code_file),
-            documentation__isnull=False, 
-            documentation__iregex=r'\S' # Non-empty documentation
-        ).select_related('code_class').order_by('start_line')
+    except (User.DoesNotExist, Repository.DoesNotExist) as e:
+        # This case means we can't even create a status object linked to user/repo
+        print(f"BATCH_PR_TASK: ERROR - User or Repository not found for task {task_id}. Cannot create status record. Error: {e}")
+        # We can't update task_status_obj if it wasn't created.
+        # The task should fail and Celery will handle it based on ack_late etc.
+        # For now, just return an error structure.
+        return {"status": "error", "message": f"User or Repository for task status not found: {e}"}
+    except Exception as e:
+        print(f"BATCH_PR_TASK: ERROR - Could not create/update AsyncTaskStatus for {task_id}. Error: {e}")
+        # Task can proceed but status won't be fully tracked if task_status_obj is None.
+        # This is problematic. Better to fail if status tracking can't be initialized.
+        return {"status": "error", "message": f"Failed to initialize task status tracking: {e}"}
 
-        if not symbols_in_file_with_docs.exists():
-            print(f"BATCH_PR_TASK: Re-checked and no symbols with documentation found in {code_file.file_path}. Skipping file from PR.")
-            continue
+    # Use the fetched user_obj and repo_obj (renamed to repo_model for consistency with your original code)
+    user = user_obj
+    repo_model = repo_obj
+
+    try:
+        # Fetch CodeFile objects that are in file_ids_for_pr AND have at least one symbol with fresh docs
+        code_files_to_process = CodeFile.objects.filter(
+            id__in=file_ids_for_pr,
+            repository=repo_model # Ensure files belong to the target repository
+        ).annotate(
+            fresh_direct_symbols_count=Count('symbols', filter=Q(
+                symbols__documentation_hash=F('symbols__content_hash'),
+                symbols__documentation__isnull=False, symbols__documentation__iregex=r'\S'
+            )),
+            fresh_method_symbols_count=Count('classes__methods', filter=Q(
+                classes__methods__documentation_hash=F('classes__methods__content_hash'),
+                classes__methods__documentation__isnull=False, classes__methods__documentation__iregex=r'\S'
+            ))
+        ).filter(
+            Q(fresh_direct_symbols_count__gt=0) | Q(fresh_method_symbols_count__gt=0)
+        ).distinct()
+
+        if not code_files_to_process.exists():
+            message = f"No files found in the selection with freshly documented symbols for repo {repo_id}."
+            print(f"BATCH_PR_TASK: {message}")
+            task_status_obj.status = AsyncTaskStatus.TaskStatus.SUCCESS # No error, just no action
+            task_status_obj.message = message
+            task_status_obj.progress = 100
+            task_status_obj.save()
+            return {"status": "info", "message": message}
+
+        print(f"BATCH_PR_TASK: Found {code_files_to_process.count()} files with fresh docs to include in PR for repo {repo_id}.")
+        task_status_obj.message = f"Found {code_files_to_process.count()} files with docs for PR. Preparing content..."
+        task_status_obj.progress = 10
+        task_status_obj.save(update_fields=['message', 'progress', 'updated_at'])
+
+        actual_files_to_commit_content = {} 
+        total_files_for_pr = code_files_to_process.count()
+        files_prepared_for_pr = 0
+
+        for code_file in code_files_to_process:
+            print(f"BATCH_PR_TASK: Preparing file for PR: {code_file.file_path}")
+            original_content_from_cache = get_source_for_file_in_task(code_file)
+            if original_content_from_cache is None:
+                print(f"BATCH_PR_TASK: Could not get source for {code_file.file_path} from cache. Skipping.")
+                # Consider how to update overall progress/status if a file is skipped
+                continue
+
+            content_with_all_docs = original_content_from_cache
+            symbols_in_file_with_docs = CodeSymbol.objects.filter(
+                Q(code_file=code_file) | Q(code_class__code_file=code_file),
+                documentation__isnull=False, 
+                documentation__iregex=r'\S' 
+            ).select_related('code_class').order_by('start_line')
+
+            if not symbols_in_file_with_docs.exists():
+                print(f"BATCH_PR_TASK: Re-checked and no symbols with documentation found in {code_file.file_path}. Skipping file from PR.")
+                continue
+                
+            print(f"BATCH_PR_TASK: Injecting {symbols_in_file_with_docs.count()} docstrings into {code_file.file_path}")
+            for symbol in symbols_in_file_with_docs:
+                if symbol.documentation and symbol.documentation.strip():
+                    content_with_all_docs = update_docstring_in_ast(
+                        content_with_all_docs, symbol.name,
+                        symbol.documentation, symbol.code_class.name if symbol.code_class else None
+                    )
             
-        print(f"BATCH_PR_TASK: Injecting {symbols_in_file_with_docs.count()} docstrings into {code_file.file_path}")
-        for symbol in symbols_in_file_with_docs:
-            # Ensure documentation is not just whitespace
-            if symbol.documentation and symbol.documentation.strip():
-                content_with_all_docs = update_docstring_in_ast(
-                    content_with_all_docs,
-                    symbol.name,
-                    symbol.documentation, # Use the documentation from the DB
-                    symbol.code_class.name if symbol.code_class else None
+            final_formatted_content = content_with_all_docs
+            try:
+                process = subprocess.run(
+                    ['ruff', 'format', '-'], input=content_with_all_docs, 
+                    capture_output=True, text=True, check=False 
                 )
-        
-        # Ruff format
-        final_formatted_content = content_with_all_docs
-        try:
-            process = subprocess.run(
-                ['ruff', 'format', '-'], input=content_with_all_docs, 
-                capture_output=True, text=True, check=False 
-            )
-            if process.returncode == 0:
-                final_formatted_content = process.stdout
-                print(f"BATCH_PR_TASK: Ruff formatted {code_file.file_path}")
+                if process.returncode == 0:
+                    final_formatted_content = process.stdout
+                    print(f"BATCH_PR_TASK: Ruff formatted {code_file.file_path}")
+                else:
+                    print(f"BATCH_PR_TASK: Ruff failed for {code_file.file_path}: {process.stderr}. Using unformatted (AST-updated) content.")
+            except Exception as e:
+                print(f"BATCH_PR_TASK: Ruff exception for {code_file.file_path}: {e}. Using unformatted (AST-updated) content.")
+                
+            if final_formatted_content != original_content_from_cache:
+                actual_files_to_commit_content[code_file.file_path] = final_formatted_content
+                print(f"BATCH_PR_TASK: File {code_file.file_path} has effective changes and will be included in PR.")
             else:
-                print(f"BATCH_PR_TASK: Ruff failed for {code_file.file_path}: {process.stderr}. Using unformatted (AST-updated) content.")
-        except Exception as e:
-            print(f"BATCH_PR_TASK: Ruff exception for {code_file.file_path}: {e}. Using unformatted (AST-updated) content.")
-            
-        # Only add if content actually changed from the cached original
-        # This is important to avoid committing files that had docs but AST/Ruff made no effective change
-        if final_formatted_content != original_content_from_cache:
-            actual_files_to_commit_content[code_file.file_path] = final_formatted_content
-            print(f"BATCH_PR_TASK: File {code_file.file_path} has effective changes and will be included in PR.")
-        else:
-            print(f"BATCH_PR_TASK: File {code_file.file_path} has no effective changes after doc injection and formatting. Skipping from PR commit content.")
+                print(f"BATCH_PR_TASK: File {code_file.file_path} has no effective changes. Skipping from PR commit content.")
 
-    if not actual_files_to_commit_content:
-        print("BATCH_PR_TASK: No files with effective changes to commit after processing all selected files.")
-        return {"status": "info", "message": "No files had effective changes to include in PR."}
+            files_prepared_for_pr +=1
+            if total_files_for_pr > 0:
+                task_status_obj.progress = 10 + int((files_prepared_for_pr / total_files_for_pr) * 40) # Progress up to 50%
+                task_status_obj.message = f"Prepared file {files_prepared_for_pr}/{total_files_for_pr}: {code_file.file_path}"
+                task_status_obj.save(update_fields=['progress', 'message', 'updated_at'])
+        
+        if not actual_files_to_commit_content:
+            message = "No files with effective changes to commit after processing all selected files."
+            print(f"BATCH_PR_TASK: {message}")
+            task_status_obj.status = AsyncTaskStatus.TaskStatus.SUCCESS # No error, just no action
+            task_status_obj.message = message
+            task_status_obj.progress = 100
+            task_status_obj.save()
+            return {"status": "info", "message": message}
 
-    # --- GitHub API Interaction for Multi-File Commit ---
-    try:
+        task_status_obj.message = f"Committing {len(actual_files_to_commit_content)} files to new branch..."
+        task_status_obj.progress = 50 
+        task_status_obj.save(update_fields=['message', 'progress', 'updated_at'])
+        
+        # --- GitHub API Interaction for Multi-File Commit ---
         social_account = user.socialaccount_set.filter(provider='github').first()
-        if not social_account: raise Exception("GitHub account not linked for PR creation.")
+        if not social_account: 
+            raise Exception("GitHub account not linked for PR creation.")
         github_token = social_account.socialtoken_set.first().token
         g = Github(github_token)
         gh_repo = g.get_repo(repo_model.full_name)
@@ -973,24 +1079,26 @@ def create_pr_for_multiple_files_task(self, repo_id: int, user_id: int, file_ids
         default_branch_obj = gh_repo.get_branch(default_branch_name)
         base_commit_sha = default_branch_obj.commit.sha
         base_commit = gh_repo.get_commit(base_commit_sha)
-        base_tree_sha = base_commit.commit.tree.sha # SHA of the tree of the base commit
-        print(f"BATCH_PR_TASK: base_tree_sha: '{base_tree_sha}', type: {type(base_tree_sha)}")
+        base_tree_sha = base_commit.commit.tree.sha
+        print(f"BATCH_PR_TASK: Base commit SHA: {base_commit_sha}, Base tree SHA: {base_tree_sha} on branch '{default_branch_name}'")
 
         timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
-        # Make branch name more generic for batch
-        new_branch_name = f"helix-batch-docs/{repo_model.name.lower().replace(' ','-').replace('/','-')}-{timestamp}"
+        sanitized_repo_name = repo_model.name.lower().replace(' ','-').replace('/','-')
+        new_branch_name = f"helix-batch-docs/{sanitized_repo_name}-{timestamp}"
         
         try:
             gh_repo.create_git_ref(ref=f"refs/heads/{new_branch_name}", sha=base_commit_sha)
             print(f"BATCH_PR_TASK: Created branch {new_branch_name}")
         except GithubException as e:
-            if e.status == 422 and "Reference already exists" in str(e.data): # Check if this is the exact message
+            if e.status == 422 and e.data and "Reference already exists" in e.data.get("message", ""):
                 print(f"BATCH_PR_TASK: Branch {new_branch_name} already exists. Attempting to use it.")
-                # If branch exists, we might need to get its latest commit SHA to avoid issues,
-                # or ensure our changes are based on the default branch.
-                # For now, proceeding, but this could be a point of failure if branch has diverged.
             else:
                 raise 
+        
+        if task_status_obj:
+            task_status_obj.message = f"Created branch {new_branch_name}. Preparing commit..."
+            task_status_obj.progress = 60
+            task_status_obj.save(update_fields=['message', 'progress', 'updated_at'])
 
         tree_elements = []
         for file_path_in_repo, new_content_string in actual_files_to_commit_content.items():
@@ -998,41 +1106,23 @@ def create_pr_for_multiple_files_task(self, repo_id: int, user_id: int, file_ids
             tree_elements.append(InputGitTreeElement(path=file_path_in_repo, mode='100644', type='blob', sha=blob.sha))
             print(f"BATCH_PR_TASK: Prepared blob for {file_path_in_repo} (Blob SHA: {blob.sha})")
         
-        if not tree_elements:
-            print("BATCH_PR_TASK: No tree elements to commit (all files resulted in no effective change). Aborting PR.")
-            # Clean up branch if created
-            try:
-                ref = gh_repo.get_git_ref(f"heads/{new_branch_name}")
-                ref.delete()
-                print(f"BATCH_PR_TASK: Cleaned up branch {new_branch_name} as no content was committed.")
-            except Exception as branch_delete_e:
-                print(f"BATCH_PR_TASK: Failed to cleanup (empty) branch {new_branch_name}: {branch_delete_e}")
-            return {"status": "info", "message": "No changes to commit after processing all files."}
-
-        # Create the new tree using the base_tree_sha. This tells GitHub to
-        # take the base tree and apply our new/updated blobs on top of it.
-        # Files not in tree_elements but present in base_tree_sha will be preserved.
-        base_tree_obj = base_commit.commit.tree
-
-        new_tree = gh_repo.create_git_tree(
-            tree_elements,          # Pass the list of elements directly as the first argument
-            base_tree=base_tree_obj # Pass the SHA string for the base_tree parameter
-        )
+        base_tree_object = gh_repo.get_git_tree(base_tree_sha) # Fetch GitTree object
+        new_tree = gh_repo.create_git_tree(tree_elements, base_tree=base_tree_object)
         print(f"BATCH_PR_TASK: Created new git tree (SHA: {new_tree.sha}) based on tree {base_tree_sha}")
         
         commit_message = f"Docs: Batch documentation update for {len(actual_files_to_commit_content)} file(s) via Helix CME"
-        # The parent of our new commit is the commit the new branch was based on
-        base_sha            = default_branch_obj.commit.sha 
-
-        git_base_commit = gh_repo.get_git_commit(base_sha)
-
-        new_commit = gh_repo.create_git_commit(commit_message, new_tree, [git_base_commit])
+        git_base_commit = gh_repo.get_git_commit(base_commit_sha)
+        # The parent of our new commit is the commit the new branch was based on (base_commit)
+        new_commit = gh_repo.create_git_commit(commit_message, new_tree, [git_base_commit] )
         print(f"BATCH_PR_TASK: Created new commit (SHA: {new_commit.sha})")
+
+        if task_status_obj:
+            task_status_obj.message = f"Commit created. Updating branch..."
+            task_status_obj.progress = 80
+            task_status_obj.save(update_fields=['message', 'progress', 'updated_at'])
         
-        # Update the new branch to point to this new commit
         branch_ref = gh_repo.get_git_ref(f"heads/{new_branch_name}")
         branch_ref.edit(new_commit.sha)
-        print(f"Updated branch {new_branch_name} → {new_commit.sha}")
         print(f"BATCH_PR_TASK: Updated branch {new_branch_name} to point to commit {new_commit.sha}")
 
         pr_title = f"Helix CME: Batch Documentation Update ({len(actual_files_to_commit_content)} files)"
@@ -1042,32 +1132,66 @@ def create_pr_for_multiple_files_task(self, repo_id: int, user_id: int, file_ids
             f"**Files updated in this batch:**\n{pr_body_files_list}"
         )
         
+        if task_status_obj:
+            task_status_obj.message = f"Creating Pull Request..."
+            task_status_obj.progress = 90
+            task_status_obj.save(update_fields=['message', 'progress', 'updated_at'])
+
         pull_request = gh_repo.create_pull(
             title=pr_title, body=pr_body,
             head=new_branch_name, base=default_branch_name
         )
         print(f"BATCH_PR_TASK: Created Pull Request: {pull_request.html_url}")
-        return {"status": "success", "pr_url": pull_request.html_url, "files_updated_count": len(actual_files_to_commit_content)}
+
+        final_message = f"Successfully created Pull Request for {len(actual_files_to_commit_content)} file(s)."
+        task_status_obj.status = AsyncTaskStatus.TaskStatus.SUCCESS
+        task_status_obj.message = final_message
+        task_status_obj.progress = 100
+        task_status_obj.result_data = {
+            "pr_url": pull_request.html_url,
+            "files_updated_count": len(actual_files_to_commit_content),
+            "branch_name": new_branch_name
+        }
+        task_status_obj.save()
+        return task_status_obj.result_data
 
     except GithubException as e:
-        print(f"BATCH_PR_TASK: GitHub API error: {e.status} {e.data}")
-        if 'new_branch_name' in locals() and 'gh_repo' in locals():
+        error_message = f"GitHub API error: {e.status} {e.data.get('message', str(e.data)) if e.data else str(e)}"
+        print(f"BATCH_PR_TASK: {error_message}")
+        if task_status_obj:
+            task_status_obj.status = AsyncTaskStatus.TaskStatus.FAILURE
+            task_status_obj.message = error_message
+            task_status_obj.save()
+        
+        if 'new_branch_name' in locals() and 'gh_repo' in locals(): # Ensure gh_repo is defined
             try:
                 ref = gh_repo.get_git_ref(f"heads/{new_branch_name}")
                 ref.delete()
                 print(f"BATCH_PR_TASK: Cleaned up branch {new_branch_name} due to PR creation error.")
             except Exception as branch_delete_e:
                 print(f"BATCH_PR_TASK: Failed to cleanup branch {new_branch_name}: {branch_delete_e}")
+        
         if e.status == 422 and e.data and "No commits between" in e.data.get("errors", [{}])[0].get("message", ""):
-            return {"status": "error", "message": "No changes to commit, PR not created."} # No retry
+            # This specific error shouldn't cause a task retry if we handle "no changes" correctly earlier
+            return {"status": "error", "message": "No changes to commit, PR not created."} 
         raise self.retry(exc=e, countdown=120) # Retry for other GitHub errors
+
     except Exception as e:
-        print(f"BATCH_PR_TASK: Unexpected error: {e}")
-        if 'new_branch_name' in locals() and 'gh_repo' in locals():
+        error_message = f"Unexpected error in BATCH_PR_TASK: {str(e)}"
+        print(f"BATCH_PR_TASK: {error_message}") # Log the full error
+        import traceback
+        traceback.print_exc() # Print full traceback for unexpected errors
+
+        if task_status_obj:
+            task_status_obj.status = AsyncTaskStatus.TaskStatus.FAILURE
+            task_status_obj.message = error_message
+            task_status_obj.save()
+
+        if 'new_branch_name' in locals() and 'gh_repo' in locals(): # Ensure gh_repo is defined
             try:
                 ref = gh_repo.get_git_ref(f"heads/{new_branch_name}")
                 ref.delete()
                 print(f"BATCH_PR_TASK: Cleaned up branch {new_branch_name} due to unexpected error.")
             except Exception as branch_delete_e:
                 print(f"BATCH_PR_TASK: Failed to cleanup branch {new_branch_name}: {branch_delete_e}")
-        raise # Re-raise for Celery to handle
+        raise # Re-raise for Celery to handle and mark as failed

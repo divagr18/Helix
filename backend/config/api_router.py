@@ -20,7 +20,8 @@ from repositories.views import (
     
     # --- IMPORT THE NEW VIEWS (we will create these next) ---
     BatchGenerateDocsForSelectedFilesView,
-    CreateBatchPRForSelectedFilesView
+    CreateBatchPRForSelectedFilesView,
+    TaskStatusView,ApproveDocstringView
 )
 # The variable name 'urlpatterns' is what Django expects to find.
 urlpatterns = router.urls
@@ -43,4 +44,7 @@ urlpatterns += [
     path('repositories/<int:repo_id>/create-batch-pr-selected/', 
          CreateBatchPRForSelectedFilesView.as_view(), 
          name='create-batch-pr-selected'),
+    path('task-status/<str:task_id>/', TaskStatusView.as_view(), name='task-status'),
+    path('symbols/<int:symbol_id>/approve-docstring/', ApproveDocstringView.as_view(), name='approve-docstring'),
 ]
+

@@ -6,7 +6,7 @@ from rest_framework import generics, permissions
 from .tasks import create_documentation_pr_task,batch_generate_docstrings_task # We will create this task soon
 from django.utils.decorators import method_decorator
 from rest_framework import viewsets
-from .models import CodeFile, CodeSymbol as CodeFunction, Repository, CodeSymbol,CodeDependency
+from .models import CodeFile, CodeSymbol as CodeFunction, Repository, CodeSymbol,CodeDependency,AsyncTaskStatus
 from .serializers import CodeSymbolSerializer, RepositorySerializer,RepositoryDetailSerializer
 from rest_framework.views import APIView
 from django.views.decorators.csrf import csrf_exempt
@@ -23,7 +23,7 @@ from .tasks import batch_generate_docstrings_for_files_task, create_pr_for_multi
 
 from openai import OpenAI as OpenAIClient # Renaming to avoid conflict if you have an 'OpenAI' model
 from pgvector.django import L2Distance # Or CosineDistance, MaxInnerProduct
-from .serializers import CodeSymbolSerializer # We can reuse this for results
+from .serializers import CodeSymbolSerializer,AsyncTaskStatusSerializer # We can reuse this for results
 import os
 REPO_CACHE_BASE_PATH = "/var/repos" # Use the same constant
 OPENAI_CLIENT_INSTANCE = OpenAIClient()
@@ -116,110 +116,207 @@ class FileContentView(APIView):
             # We could trigger a re-index here in a real product.
             return Response({"error": "File not found in cache."}, status=404)
             
-def openai_stream_generator(prompt):
-    client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+def openai_stream_generator(prompt: str, openai_client_instance: OpenAIClient | None):
+    if not openai_client_instance:
+        print("STREAM_GEN: OpenAI client not available in generator.")
+        yield "// Error: OpenAI service not configured for streaming.\n"
+        return
     
-    stream = client.chat.completions.create(
-        model="gpt-4.1-mini",
-        messages=[
-            {"role": "system", "content": "You are an expert Python programmer. Your task is to write a concise, professional, Google-style docstring for the given function. Do not include the function signature itself, only the docstring content inside triple quotes. Start with a one-line summary. Then, describe the arguments, and what the function returns."},
-            {"role": "user", "content": prompt}
-        ],
-        stream=True,
-    )
-    for chunk in stream:
-        content = chunk.choices[0].delta.content
-        if content:
-            yield content
+    # print(f"DEBUG_AI_PROMPT (Contextual Stream - in generator):\n{prompt}\n--------------------") # Moved from view
+
+    try:
+        stream = openai_client_instance.chat.completions.create(
+            model="gpt-4.1-mini", # Or your preferred model
+            messages=[
+                {"role": "system", "content": "You are a helpful AI programming assistant specialized in writing Python docstrings."},
+                {"role": "user", "content": prompt} # The full prompt is now constructed in the view
+            ],
+            stream=True,
+        )
+        for chunk in stream:
+            content = chunk.choices[0].delta.content
+            if content:
+                yield content
+    except Exception as e:
+        error_message = f"// Error during OpenAI stream: {str(e)}\n"
+        print(f"STREAM_GEN: {error_message}")
+        yield error_message
+def get_source_for_symbol_from_view(symbol_obj: CodeSymbol) -> str | None:
+    actual_code_file = None
+    if symbol_obj.code_file:
+        actual_code_file = symbol_obj.code_file
+    elif symbol_obj.code_class and symbol_obj.code_class.code_file:
+        actual_code_file = symbol_obj.code_class.code_file
+    else:
+        print(f"ERROR_HELPER_VIEW: Symbol {symbol_obj.id} ({symbol_obj.name}) has no associated CodeFile.")
+        return None
+
+    if not REPO_CACHE_BASE_PATH:
+        print("ERROR_HELPER_VIEW: REPO_CACHE_BASE_PATH is not defined.")
+        return None
+
+    repo_path_for_file = os.path.join(REPO_CACHE_BASE_PATH, str(actual_code_file.repository.id))
+    full_file_path_for_file = os.path.join(repo_path_for_file, actual_code_file.file_path)
+
+    if os.path.exists(full_file_path_for_file):
+        try:
+            with open(full_file_path_for_file, 'r', encoding='utf-8', errors='ignore') as f:
+                lines = f.readlines()
+            if symbol_obj.start_line > 0 and \
+               symbol_obj.end_line >= symbol_obj.start_line and \
+               symbol_obj.end_line <= len(lines):
+                symbol_code_lines = lines[symbol_obj.start_line - 1 : symbol_obj.end_line]
+                return "".join(symbol_code_lines)
+            else:
+                print(f"WARNING_HELPER_VIEW: Invalid line numbers for {symbol_obj.unique_id or symbol_obj.name}")
+                return f"# Error: Invalid line numbers ({symbol_obj.start_line}-{symbol_obj.end_line})."
+        except Exception as e:
+            print(f"ERROR_HELPER_VIEW: Error reading file for {symbol_obj.unique_id or symbol_obj.name}: {e}")
+            return f"# Error reading file: {e}"
+    else:
+        print(f"WARNING_HELPER_VIEW: File not found in cache for {symbol_obj.unique_id or symbol_obj.name}: {full_file_path_for_file}")
+        return "# Error: Source file not found in cache."
+    return None
 
 @method_decorator(csrf_exempt, name='dispatch')
 class GenerateDocstringView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, *args, **kwargs):
-        function_id = kwargs.get('function_id')
-        print(f"DEBUG: GenerateDocstringView called for function_id: {function_id}, user: {request.user.username}")
+        function_id = kwargs.get('function_id') # Assuming URL uses 'function_id'
+        print(f"VIEW_GEN_DOC: Request for symbol_id={function_id}, user={request.user.username}")
 
-        # Try to get the object without the user filter first, just to see if it exists at all
+        # --- Initialize OpenAI Client ---
+        openai_client = OPENAI_CLIENT_INSTANCE
+        
+        # If client init fails critically, it's better to stop and inform.
+        if not openai_client:
+             # Return a non-streaming error response
+            return Response({"error": "OpenAI service not available or not configured."}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
         try:
+            # Your existing Q filter for ownership check
             q_filter = Q(id=function_id) & (
                 Q(code_file__repository__user=request.user) | 
                 Q(code_class__code_file__repository__user=request.user)
             )
-            code_symbol_obj = CodeSymbol.objects.get(q_filter) # Fetched into code_symbol_obj
-            print(f"DEBUG: Successfully fetched symbol {code_symbol_obj.name} with ownership check.")
+            code_symbol_obj = CodeSymbol.objects.select_related(
+                'code_file__repository', 
+                'code_class__code_file__repository'
+            ).get(q_filter)
+            print(f"VIEW_GEN_DOC: Successfully fetched symbol '{code_symbol_obj.name}' (ID: {code_symbol_obj.id}).")
 
         except CodeSymbol.DoesNotExist:
-            print(f"DEBUG: Symbol with ID {function_id} found, but FAILED ownership check for user {request.user.username}.")
-            return Response({"error": "Function not found or permission denied."}, status=status.HTTP_404_NOT_FOUND)
+            print(f"VIEW_GEN_DOC: Symbol with ID {function_id} not found or permission denied for user {request.user.username}.")
+            return Response({"error": "Symbol not found or permission denied."}, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            print(f"VIEW_GEN_DOC: Error fetching symbol {function_id}: {e}")
+            return Response({"error": "Internal server error fetching symbol."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        # --- CORRECTED VARIABLE USAGE BELOW ---
-        # Determine the correct CodeFile instance
-        if code_symbol_obj.code_file: # It's a top-level function
-            actual_code_file = code_symbol_obj.code_file
-        elif code_symbol_obj.code_class and code_symbol_obj.code_class.code_file: # It's a method
-            actual_code_file = code_symbol_obj.code_class.code_file
-        else:
-            print(f"ERROR: Symbol {code_symbol_obj.id} has no associated CodeFile.")
-            return Response({"error": "Internal server error: Symbol has no CodeFile."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        # --- Fetch symbol's source code ---
+        # (Using the corrected variable name `code_symbol_obj` from your provided code)
+        function_code = get_source_for_symbol_from_view(code_symbol_obj) # Use your helper
+        
+        if not function_code or function_code.startswith("# Error:"):
+            error_msg = function_code or "Could not retrieve source code for the symbol."
+            print(f"VIEW_GEN_DOC: {error_msg} for symbol {code_symbol_obj.name}")
+            # Return non-streaming error
+            return Response({"error": error_msg}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        repo_path = os.path.join(REPO_CACHE_BASE_PATH, str(actual_code_file.repository.id))
-        full_file_path = os.path.join(repo_path, actual_code_file.file_path)
+        # --- NEW: Fetch Callers and Callees for Context ---
+        callers_qs = CodeDependency.objects.filter(callee=code_symbol_obj).select_related('caller')[:3] # Limit for prompt
+        callees_qs = CodeDependency.objects.filter(caller=code_symbol_obj).select_related('callee')[:3] # Limit for prompt
+        
+        callers_names = [dep.caller.name for dep in callers_qs]
+        callees_names = [dep.callee.name for dep in callees_qs]
+        
+        symbol_file_path_for_prompt = "N/A"
+        actual_code_file = code_symbol_obj.code_file or (code_symbol_obj.code_class and code_symbol_obj.code_class.code_file)
+        if actual_code_file:
+            symbol_file_path_for_prompt = actual_code_file.file_path
+        
+        print(f"VIEW_GEN_DOC: Context for '{code_symbol_obj.name}': Callers: {callers_names}, Callees: {callees_names}, File: {symbol_file_path_for_prompt}")
 
-        if os.path.exists(full_file_path):
-            with open(full_file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                lines = f.readlines()
-            # Use code_symbol_obj here
-            function_code = "".join(lines[code_symbol_obj.start_line - 1 : code_symbol_obj.end_line])
-            
-            prompt = f"Generate a docstring for the following Python function:\\n\\n```python\\n{function_code}\\n```"
-                
-            response_stream = openai_stream_generator(prompt)
-            return StreamingHttpResponse(response_stream, content_type='text/plain; charset=utf-8')
-        else:
-            print(f"DEBUG: File content not found at {full_file_path} for symbol {code_symbol_obj.name}")
-            return Response({"error": "File content not found on disk."}, status=status.HTTP_404_NOT_FOUND)
+        # --- Construct the full prompt with context ---
+        context_parts = []
+        if callers_names:
+            context_parts.append(f"it is called by: {', '.join(callers_names)}{'...' if len(callers_names) > 3 else ''}") # Though already sliced
+        if callees_names:
+            context_parts.append(f"it calls: {', '.join(callees_names)}{'...' if len(callees_names) > 3 else ''}")
+        
+        context_str_for_prompt = ""
+        if context_parts:
+            context_str_for_prompt = f"\n\nFor context, this symbol " + " and ".join(context_parts) + "."
+
+        # Your original prompt structure, now with added context
+        prompt = (
+            f"You are an expert Python programmer. Your task is to write a concise, professional, "
+            f"Google-style docstring for the Python symbol named '{code_symbol_obj.name}' located in file '{symbol_file_path_for_prompt}'. "
+            f"Do not include the function/method signature itself, only the docstring content inside triple quotes. "
+            f"Start with a one-line summary. Then, if applicable, describe arguments and what it returns."
+            f"{context_str_for_prompt}\n\n"
+            f"Here is the source code for '{code_symbol_obj.name}':\n"
+            f"```python\n{function_code}\n```\n"
+            f"Generate only the docstring content:"
+        )
+        
+        # --- Stream the Response using the generator ---
+        # Pass the initialized openai_client to the generator
+        response_stream = openai_stream_generator(prompt, openai_client) 
+        return StreamingHttpResponse(response_stream, content_type='text/plain; charset=utf-8')
 class SaveDocstringView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
-    def patch(self, request, *args, **kwargs):
-        symbol_id_from_url = kwargs.get('function_id') # Assuming URL calls it 'function_id'
+    def post(self, request, *args, **kwargs):
+        symbol_id = kwargs.get('function_id') # Assuming URL calls it 'function_id'
                                                   # Consider renaming URL param to 'symbol_id' for clarity
         
-        print(f"DEBUG: SaveDocstringView called for symbol_id: {symbol_id_from_url}, user: {request.user.username}")
+        print(f"DEBUG: SaveDocstringView called for symbol_id: {symbol_id}, user: {request.user.username}")
 
         try:
-            # Robust query to get the symbol and ensure ownership
-            q_filter = Q(id=symbol_id_from_url) & (
+            q_filter = Q(id=symbol_id) & (
                 Q(code_file__repository__user=request.user) | 
                 Q(code_class__code_file__repository__user=request.user)
             )
-            symbol_to_update = CodeSymbol.objects.get(q_filter)
-            print(f"DEBUG: Successfully fetched symbol '{symbol_to_update.name}' for saving.")
-
+            symbol = CodeSymbol.objects.get(q_filter)
         except CodeSymbol.DoesNotExist:
-            print(f"DEBUG: Symbol with ID {symbol_id_from_url} not found or permission denied for user {request.user.username}.")
             return Response({"error": "Symbol not found or permission denied."}, status=status.HTTP_404_NOT_FOUND)
 
-        doc_text = request.data.get('documentation')
-        if doc_text is None: # Check for None explicitly
-            return Response({"error": "Documentation text not provided in request body."}, status=status.HTTP_400_BAD_REQUEST)
+        new_doc_text = request.data.get('documentation_text')
+        if new_doc_text is None:
+            return Response({"error": "'documentation_text' not provided."}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Update the model instance
-        symbol_to_update.documentation = doc_text
-        # To make the status icon green, documentation_hash should match content_hash
-        # This assumes the AI generated docstring is for the current content.
-        symbol_to_update.documentation_hash = symbol_to_update.content_hash 
+        new_doc_text = new_doc_text.strip() # Clean it
+
+        symbol.documentation = new_doc_text
         
-        try:
-            symbol_to_update.save(update_fields=['documentation', 'documentation_hash'])
-            print(f"DEBUG: Successfully saved documentation for symbol ID {symbol_to_update.id}.")
-        except Exception as e:
-            print(f"DEBUG: Error saving symbol ID {symbol_to_update.id} to database: {e}")
-            return Response({"error": "Failed to save documentation to database."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        if new_doc_text and symbol.content_hash: # If there's new doc and symbol has a content hash
+            symbol.documentation_hash = symbol.content_hash # Mark as fresh for current code
+            # If you added documentation_status:
+            # symbol.documentation_status = CodeSymbol.DocStatus.HUMAN_EDITED_PENDING_PR # Or 'APPROVED'
+        elif not new_doc_text: # Doc was cleared
+            symbol.documentation_hash = None
+            # if hasattr(symbol, 'documentation_status'):
+            #     symbol.documentation_status = CodeSymbol.DocStatus.NONE
+        else: # Has new doc text, but no content_hash for the symbol (should be rare)
+            hasher = hashlib.sha256()
+            hasher.update(new_doc_text.encode('utf-8'))
+            symbol.documentation_hash = hasher.hexdigest()
+            # if hasattr(symbol, 'documentation_status'):
+            #     symbol.documentation_status = CodeSymbol.DocStatus.HUMAN_EDITED_PENDING_PR
+            print(f"VIEW_SAVE_DOC: Warning - Symbol {symbol.id} has no content_hash. Hashing doc text itself for documentation_hash.")
+        
+        update_fields_list = ['documentation', 'documentation_hash']
+        if hasattr(symbol, 'documentation_status'):
+            update_fields_list.append('documentation_status')
 
-        serializer = CodeSymbolSerializer(symbol_to_update)
-        return Response(serializer.data, status=status.HTTP_200_OK)
+        try:
+            symbol.save(update_fields=update_fields_list)
+            serializer = CodeSymbolSerializer(symbol) # Make sure you have this serializer
+            return Response(serializer.data, status=status.HTTP_200_OK)
+        except Exception as e:
+            print(f"VIEW_SAVE_DOC: Error saving doc for symbol {symbol.id}: {e}")
+            return Response({"error": "Failed to save documentation."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 class CodeSymbolDetailView(generics.RetrieveAPIView):
     """
     API view to retrieve a single, detailed CodeSymbol, including its call graph.
@@ -604,3 +701,72 @@ class CreateBatchPRForSelectedFilesView(APIView):
         except Exception as e:
             print(f"VIEW_BATCH_PR: Error dispatching Celery task for PR (repo {repo_id}): {e}")
             return Response({"error": "Failed to initiate batch PR creation task."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        
+@method_decorator(csrf_exempt, name='dispatch')
+class TaskStatusView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, task_id, *args, **kwargs):
+        print(f"VIEW_TASK_STATUS: Request for task_id={task_id}, user={request.user.username}")
+        try:
+            # Fetch the task status, ensuring it belongs to the requesting user
+            task_status = AsyncTaskStatus.objects.get(task_id=task_id, user=request.user)
+            serializer = AsyncTaskStatusSerializer(task_status)
+            return Response(serializer.data)
+        except AsyncTaskStatus.DoesNotExist:
+            print(f"VIEW_TASK_STATUS: AsyncTaskStatus with task_id={task_id} not found for user {request.user.username}.")
+            return Response({"error": "Task not found or permission denied."}, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            print(f"VIEW_TASK_STATUS: Error fetching task status for task_id={task_id}: {e}")
+            return Response({"error": "An error occurred while fetching task status."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)   
+        
+
+@method_decorator(csrf_exempt, name='dispatch')
+class ApproveDocstringView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, symbol_id, *args, **kwargs): # Use POST as it modifies data
+        print(f"VIEW_APPROVE_DOC: Request for symbol_id={symbol_id}, user={request.user.username}")
+        try:
+            # Ensure user owns the symbol
+            q_filter = Q(id=symbol_id) & (
+                Q(code_file__repository__user=request.user) | 
+                Q(code_class__code_file__repository__user=request.user)
+            )
+            symbol = CodeSymbol.objects.get(q_filter)
+        except CodeSymbol.DoesNotExist:
+            return Response({"error": "Symbol not found or permission denied."}, status=status.HTTP_404_NOT_FOUND)
+
+        new_doc_text = request.data.get('documentation_text')
+        if new_doc_text is None: # Allow empty string to clear doc, but require the key
+            return Response({"error": "'documentation_text' not provided."}, status=status.HTTP_400_BAD_REQUEST)
+
+        new_doc_text = new_doc_text.strip() # Clean it
+
+        symbol.documentation = new_doc_text
+        
+        # "Blessing" means this documentation is now considered correct for the current code content.
+        # So, documentation_hash should match content_hash.
+        if new_doc_text and symbol.content_hash: # Only if there's content and a hash to match
+            symbol.documentation_hash = symbol.content_hash 
+            symbol.documentation_status = CodeSymbol.DocStatus.HUMAN_EDITED_PENDING_PR # Or a more generic 'APPROVED'
+        elif not new_doc_text: # If doc was cleared
+            symbol.documentation_hash = None
+            symbol.documentation_status = CodeSymbol.DocStatus.NONE
+        else: # Has new doc text, but no content_hash for the symbol (should not happen ideally)
+            # Fallback: hash the new doc text itself if no content_hash to match
+            hasher = hashlib.sha256()
+            hasher.update(new_doc_text.encode('utf-8'))
+            symbol.documentation_hash = hasher.hexdigest()
+            symbol.documentation_status = CodeSymbol.DocStatus.HUMAN_EDITED_PENDING_PR
+            print(f"VIEW_APPROVE_DOC: Warning - Symbol {symbol.id} has no content_hash. Hashing doc text itself.")
+
+
+        try:
+            symbol.save(update_fields=['documentation', 'documentation_hash', 'documentation_status'])
+            serializer = CodeSymbolSerializer(symbol) # Assuming you have this serializer
+            print(f"VIEW_APPROVE_DOC: Approved/updated doc for symbol {symbol.id}")
+            return Response(serializer.data, status=status.HTTP_200_OK)
+        except Exception as e:
+            print(f"VIEW_APPROVE_DOC: Error saving approved doc for symbol {symbol.id}: {e}")
+            return Response({"error": "Failed to save approved documentation."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

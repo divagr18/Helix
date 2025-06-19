@@ -1,8 +1,8 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom'; // Added useNavigate
 import axios from 'axios';
 import { StatusIcon } from '../components/StatusIcon';
-import { FaArrowLeft, FaExternalLinkAlt, FaCodeBranch } from 'react-icons/fa'; // Added icons
+import { FaArrowLeft, FaExternalLinkAlt, FaCodeBranch, FaSave, FaRobot, FaEdit } from 'react-icons/fa'; // Added icons
 import { FaGithub } from 'react-icons/fa'; // For PR button
 import { getCookie } from '../utils';
 import { PrismLight as SyntaxHighlighter } from 'react-syntax-highlighter';
@@ -58,6 +58,7 @@ interface SymbolDetail {
 export function SymbolDetailPage() {
     const { symbolId } = useParams<{ symbolId: string }>();
     const navigate = useNavigate(); // For the back button
+    const [sourceLang, setSourceLang] = useState<string>('plaintext'); // New state for language
 
     const [symbol, setSymbol] = useState<SymbolDetail | null>(null);
     const [loading, setLoading] = useState(true);
@@ -67,6 +68,92 @@ export function SymbolDetailPage() {
     const [mermaidCode, setMermaidCode] = useState<string | null>(null);
     const [diagramLoading, setDiagramLoading] = useState<boolean>(false);
     const [diagramError, setDiagramError] = useState<string | null>(null);
+    const [isEditingDoc, setIsEditingDoc] = useState<boolean>(false);
+    const [editedDoc, setEditedDoc] = useState<string>("");
+
+    // State for AI Doc Generation (if you want to separate its loading/display from existing docs)
+    const [aiGeneratedDoc, setAiGeneratedDoc] = useState<string | null>(null);
+    const [isGeneratingAIDoc, setIsGeneratingAIDoc] = useState<boolean>(false);
+    const handleGenerateAIDoc = async () => {
+        if (!symbol) return;
+        setIsGeneratingAIDoc(true);
+        setAiGeneratedDoc(null); // Clear previous AI doc
+        setIsEditingDoc(false); // Exit editing mode if it was active
+        // Clear editedDoc if you want AI to overwrite any manual edits not yet saved
+        // setEditedDoc(""); 
+
+        try {
+            // Assuming your API endpoint for single symbol doc gen is still /functions/<id>/generate-docstring/
+            // And it streams text/plain
+            const response = await fetch(
+                `http://localhost:8000/api/v1/functions/${symbol.id}/generate-docstring/`,
+                { credentials: 'include' }
+            );
+
+            if (!response.ok) {
+                const errorText = await response.text();
+                throw new Error(errorText || `Failed to generate AI documentation (status: ${response.status})`);
+            }
+            if (!response.body) {
+                throw new Error("Response body is null.");
+            }
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let streamedText = "";
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                streamedText += decoder.decode(value, { stream: true });
+                setAiGeneratedDoc(streamedText); // Update live as it streams
+            }
+            // Optionally, once streaming is done, put it into editing mode
+            setEditedDoc(streamedText.trim()); // Pre-fill editor with AI doc
+            setIsEditingDoc(true); // Enter editing mode
+
+        } catch (error) {
+            console.error("Error generating AI documentation:", error);
+            setAiGeneratedDoc(`// Error generating AI documentation: ${error instanceof Error ? error.message : String(error)}`);
+            // Optionally set editedDoc to this error message too if entering editing mode
+            // setEditedDoc(`// Error generating AI documentation: ${error instanceof Error ? error.message : String(error)}`);
+            // setIsEditingDoc(true);
+        } finally {
+            setIsGeneratingAIDoc(false);
+        }
+    };
+    const handleSaveEditedDoc = () => {
+        if (!symbol) return;
+
+        // Disable button or show loading state here if needed
+        // For simplicity, we'll just make the API call.
+
+        axios.post( // Using POST as per our backend SaveDocstringView
+            `http://localhost:8000/api/v1/functions/${symbol.id}/save-docstring/`, // Ensure this URL is correct
+            { documentation_text: editedDoc }, // Send the edited content
+            {
+                withCredentials: true,
+                headers: { 'X-CSRFToken': getCookie('csrftoken') } // Crucial for POST with SessionAuth
+            }
+        )
+            .then(response => {
+                console.log("Documentation saved successfully:", response.data);
+                // Update the main symbol state with the data returned from the save operation
+                // This ensures documentation_hash and documentation_status are updated in the UI
+                setSymbol(prevSymbol => prevSymbol ? { ...prevSymbol, ...response.data } : null);
+
+                setIsEditingDoc(false);
+                setAiGeneratedDoc(null); // Clear any AI-generated temp doc
+                // editedDoc will be cleared or reset when editing mode is entered next time
+                // Or, you could set setEditedDoc(response.data.documentation) if you want to keep it in sync
+            })
+            .catch(error => {
+                console.error("Error saving documentation:", error);
+                const errorMsg = error.response?.data?.error || error.message || "Failed to save documentation.";
+                alert(`Failed to save documentation: ${errorMsg}`); // Simple alert for now
+                // Potentially set an error state to display in the UI
+            });
+    };
     const getLanguageFromUniqueId = (uniqueId: string | undefined): string => {
         if (!uniqueId) {
             console.log(`detectLanguage: no uniqueId → plaintext`);
@@ -171,7 +258,11 @@ export function SymbolDetailPage() {
             setError(null); // Clear previous errors
             axios.get(`http://localhost:8000/api/v1/symbols/${symbolId}/`, { withCredentials: true })
                 .then(response => {
-                    setSymbol(response.data);
+                    const fetchedSymbol: SymbolDetail = response.data;
+                    setSymbol(fetchedSymbol);
+                    if (fetchedSymbol.unique_id) { // Set language when symbol is fetched
+                        setSourceLang(getLanguageFromUniqueId(fetchedSymbol.unique_id));
+                    }
                     setLoading(false);
                 })
                 .catch(err => {
@@ -261,16 +352,97 @@ export function SymbolDetailPage() {
 
             {/* Documentation Section */}
             <div style={{ marginBottom: '30px' }}>
-                <h2 style={{ color: '#d4d4d4', borderBottom: '1px solid #444', paddingBottom: '10px', marginBottom: '15px' }}>
-                    Description
-                </h2>
-                <div style={{
-                    backgroundColor: '#252526', padding: '20px', borderRadius: '8px',
-                    whiteSpace: 'pre-wrap', lineHeight: '1.6', border: '1px solid #333',
-                    boxShadow: '0 2px 5px rgba(0,0,0,0.2)'
-                }}>
-                    {symbol.documentation || <span style={{ color: '#888' }}>No documentation has been generated for this symbol yet.</span>}
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px', borderBottom: '1px solid #444', paddingBottom: '10px' }}>
+                    <h2 style={{ color: '#d4d4d4', margin: 0 }}>
+                        Description
+                    </h2>
+                    {/* Buttons appear only if not in editing mode */}
+                    {!isEditingDoc && symbol && (
+                        <div style={{ display: 'flex', gap: '10px' }}>
+                            <button
+                                onClick={() => {
+                                    // When clicking "Edit", pre-fill with existing doc or last AI generated one
+                                    setEditedDoc(aiGeneratedDoc !== null ? aiGeneratedDoc : (symbol.documentation || ""));
+                                    setIsEditingDoc(true);
+                                    setAiGeneratedDoc(null); // Clear AI temp doc once editing starts
+                                }}
+                                style={{ /* your button style, e.g., secondary */ padding: '8px 12px', backgroundColor: '#333', border: '1px solid #555' }}
+                                title="Edit current documentation"
+                            >
+                                <FaEdit style={{ marginRight: '5px' }} /> Edit
+                            </button>
+                            <button
+                                onClick={handleGenerateAIDoc}
+                                disabled={isGeneratingAIDoc}
+                                style={{ /* your button style, e.g., primary */ padding: '8px 12px', backgroundColor: '#238636', border: 'none' }}
+                                title="Generate documentation with AI"
+                            >
+                                {isGeneratingAIDoc ? <FaSpinner className="animate-spin" style={{ marginRight: '5px' }} /> : <FaRobot style={{ marginRight: '5px' }} />}
+                                {isGeneratingAIDoc ? 'Generating...' : (symbol.documentation ? 'Regenerate AI Doc' : 'Generate AI Doc')}
+                            </button>
+                        </div>
+                    )}
                 </div>
+
+                {isEditingDoc && symbol ? (
+                    <div>
+                        <textarea
+                            value={editedDoc}
+                            onChange={(e) => setEditedDoc(e.target.value)}
+                            placeholder="Enter documentation here..."
+                            style={{
+                                width: '100%',
+                                minHeight: '200px', // Increased height
+                                backgroundColor: '#010409', // Darker editor background
+                                color: '#c9d1d9',
+                                border: '1px solid #30363d',
+                                borderRadius: '6px',
+                                padding: '15px',
+                                fontFamily: `'Fira Code', 'Source Code Pro', monospace`, // Monospace font
+                                fontSize: '0.9em',
+                                lineHeight: '1.6'
+                            }}
+                        />
+                        <div style={{ marginTop: '15px', display: 'flex', gap: '10px' }}>
+                            <button
+                                onClick={handleSaveEditedDoc}
+                                style={{ /* your primary save button style */ padding: '10px 15px', backgroundColor: '#2ea043', border: 'none' }}
+                            >
+                                <FaSave style={{ marginRight: '5px' }} /> Save Changes
+                            </button>
+                            <button
+                                onClick={() => {
+                                    setIsEditingDoc(false);
+                                    setAiGeneratedDoc(null); // Clear AI temp doc on cancel
+                                    // setEditedDoc(""); // Optionally clear, or let it persist until next edit
+                                }}
+                                style={{ /* your secondary cancel button style */ padding: '10px 15px', backgroundColor: '#586069', border: 'none' }}
+                            >
+                                Cancel
+                            </button>
+                        </div>
+                    </div>
+                ) : (
+                    // Displaying Logic: Show AI generated (if any), else existing, else "no docs"
+                    <div style={{
+                        backgroundColor: '#252526', padding: '20px', borderRadius: '8px',
+                        whiteSpace: 'pre-wrap', lineHeight: '1.6', border: '1px solid #333',
+                        boxShadow: '0 2px 5px rgba(0,0,0,0.2)',
+                        minHeight: '100px' // Ensure some height even if empty
+                    }}>
+                        {isGeneratingAIDoc && !aiGeneratedDoc && <span style={{ color: '#888' }}>AI is generating documentation... <FaSpinner className="animate-spin" /></span>}
+                        {aiGeneratedDoc !== null ? (
+                            // If AI doc is being streamed or just finished, show it
+                            aiGeneratedDoc || <span style={{ color: '#888' }}>AI is generating...</span>
+                        ) : symbol.documentation ? (
+                            symbol.documentation
+                        ) : (
+                            <span style={{ color: '#888' }}>
+                                No documentation available. Click "Generate AI Doc" or "Edit" to add.
+                            </span>
+                        )}
+                    </div>
+                )}
             </div>
             {symbol.documentation && symbol.content_hash === symbol.documentation_hash && (
                 <div style={{ marginTop: '20px' }}>
@@ -306,7 +478,7 @@ export function SymbolDetailPage() {
                         overflow: 'hidden' // For rounded corners on highlighter
                     }}>
                         <SyntaxHighlighter
-                            language={getLanguageFromUniqueId(symbol.unique_id)}
+                            language={sourceLang}
                             style={vscDarkPlus}
                             showLineNumbers
                             wrapLongLines

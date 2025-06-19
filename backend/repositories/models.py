@@ -1,7 +1,9 @@
 from django.db import models
 from django.conf import settings
 from pgvector.django import VectorField # Import VectorField
+from django.contrib.auth import get_user_model
 
+User = get_user_model()
 class Repository(models.Model):
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
     
@@ -64,7 +66,21 @@ class CodeSymbol(models.Model):
     documentation_hash = models.CharField(max_length=64, blank=True, null=True)
     documentation = models.TextField(blank=True, null=True)
     embedding = VectorField(dimensions=1536, blank=True, null=True)
+    class DocStatus(models.TextChoices):
+        NONE = 'NONE', 'No Documentation'
+        PENDING_REVIEW = 'PENDING_REVIEW', 'AI Generated - Pending Review' # From previous plan
+        HUMAN_EDITED_PENDING_PR = 'EDITED_PENDING_PR', 'Human Edited - Ready for PR' # Or 'APPROVED'
+        # APPROVED_IN_PR = 'APPROVED_IN_PR', 'Approved - In PR'
+        # MERGED = 'MERGED', 'Merged in Source' 
+        STALE = 'STALE', 'Stale Documentation' # <<< NEW OR ENSURE IT EXISTS
+        FRESH = 'FRESH', 'Fresh Documentation' # <<< NEW OR ENSURE IT EXISTS (when doc_hash == content_hash)
 
+    documentation_status = models.CharField(
+        max_length=20, 
+        choices=DocStatus.choices, 
+        default=DocStatus.NONE,
+        help_text="The review and approval status of the documentation."
+    )
 
     class Meta:
         db_table = 'code_symbols'
@@ -86,3 +102,39 @@ class CodeDependency(models.Model):
 
     def __str__(self):
         return f"{self.caller.name} -> {self.callee.name}"
+    
+class AsyncTaskStatus(models.Model):
+    class TaskStatus(models.TextChoices):
+        PENDING = 'PENDING', 'Pending'
+        IN_PROGRESS = 'IN_PROGRESS', 'In Progress'
+        SUCCESS = 'SUCCESS', 'Success'
+        FAILURE = 'FAILURE', 'Failure'
+        RETRY = 'RETRY', 'Retry' # If Celery is retrying
+
+    class TaskName(models.TextChoices):
+        # Add names for each of your long-running Celery tasks
+        BATCH_GENERATE_DOCS = 'BATCH_GENERATE_DOCS', 'Batch Generate Docstrings'
+        CREATE_BATCH_PR = 'CREATE_BATCH_PR', 'Create Batch Pull Request'
+        PROCESS_REPOSITORY = 'PROCESS_REPOSITORY', 'Process Repository' # If you want to track initial processing
+        # Add more as needed
+
+    task_id = models.CharField(max_length=255, unique=True, primary_key=True, help_text="Celery task ID")
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="task_statuses", help_text="User who initiated the task")
+    repository = models.ForeignKey(Repository, on_delete=models.CASCADE, related_name="task_statuses", null=True, blank=True, help_text="Associated repository, if applicable")
+    
+    task_name = models.CharField(max_length=50, choices=TaskName.choices, help_text="Identifier for the type of task")
+    status = models.CharField(max_length=20, choices=TaskStatus.choices, default=TaskStatus.PENDING)
+    
+    progress = models.PositiveIntegerField(default=0, help_text="Progress percentage (0-100), if applicable")
+    message = models.TextField(blank=True, null=True, help_text="Status message, error details, or success summary")
+    result_data = models.JSONField(blank=True, null=True, help_text="Structured result data, e.g., PR URL, counts")
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'async_task_statuses'
+        ordering = ['-created_at'] # Show newest tasks first by default
+
+    def __str__(self):
+        return f"Task {self.task_name} ({self.task_id}) for {self.user.username} - {self.status}"

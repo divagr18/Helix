@@ -1,6 +1,6 @@
 # backend/repositories/serializers.py
 from rest_framework import serializers
-from .models import Repository, CodeFile, CodeClass, CodeSymbol, CodeDependency
+from .models import Repository, CodeFile, CodeClass, CodeSymbol, CodeDependency,AsyncTaskStatus
 from rest_framework import generics, permissions
 import os # Ensure os is imported
 REPO_CACHE_BASE_PATH = "/var/repos" # Use the same constant
@@ -139,3 +139,27 @@ class RepositorySerializer(serializers.ModelSerializer):
         model = Repository
         fields = ['id', 'name', 'full_name', 'github_id', 'status', 'updated_at']
         read_only_fields = ['status', 'updated_at']
+
+
+class AsyncTaskStatusSerializer(serializers.ModelSerializer):
+    user = serializers.StringRelatedField() # Shows user.username
+    repository_full_name = serializers.CharField(source='repository.full_name', read_only=True, allow_null=True)
+
+    class Meta:
+        model = AsyncTaskStatus
+        fields = [
+            'task_id', 
+            'user', 
+            'repository', # Will be repository ID
+            'repository_full_name', # Added for convenience
+            'task_name', 
+            'get_task_name_display', # Human-readable choice display
+            'status', 
+            'get_status_display',    # Human-readable choice display
+            'progress', 
+            'message', 
+            'result_data', 
+            'created_at', 
+            'updated_at'
+        ]
+        read_only_fields = fields
