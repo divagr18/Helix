@@ -3,7 +3,7 @@ import os
 import subprocess
 from django.db.models import Q  # <--- ADD THIS IMPORT
 from rest_framework import generics, permissions
-from .tasks import create_documentation_pr_task # We will create this task soon
+from .tasks import create_documentation_pr_task,batch_generate_docstrings_task # We will create this task soon
 from django.utils.decorators import method_decorator
 from rest_framework import viewsets
 from .models import CodeFile, CodeSymbol as CodeFunction, Repository, CodeSymbol,CodeDependency
@@ -18,6 +18,8 @@ from django.http import StreamingHttpResponse # Import Django's native streaming
 from openai import OpenAI
 import tempfile,hashlib
 from rest_framework import status  # if using Django REST Framework
+from .tasks import create_docs_pr_for_file_task
+from .tasks import batch_generate_docstrings_for_files_task, create_pr_for_multiple_files_task # We'll define these tasks next
 
 from openai import OpenAI as OpenAIClient # Renaming to avoid conflict if you have an 'OpenAI' model
 from pgvector.django import L2Distance # Or CosineDistance, MaxInnerProduct
@@ -440,3 +442,165 @@ class GenerateArchitectureDiagramView(APIView):
         mermaid_string = "\n".join(mermaid_lines)
 
         return Response({"mermaid_code": mermaid_string}, status=status.HTTP_200_OK)
+    
+@method_decorator(csrf_exempt, name='dispatch')
+class BatchGenerateDocsForFileView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, *args, **kwargs): # Use POST for actions
+        code_file_id = kwargs.get('code_file_id')
+        user_id = request.user.id # Get user ID from the authenticated request
+
+        print(f"BatchGenerateDocsForFileView: Received request for file_id: {code_file_id} from user_id: {user_id}")
+
+        try:
+            # Verify user has access to this code_file by checking ownership of the repository
+            code_file_exists = CodeFile.objects.filter(id=code_file_id, repository__user=request.user).exists()
+            if not code_file_exists:
+                print(f"Permission denied or file not found for file_id: {code_file_id}, user_id: {user_id}")
+                return Response(
+                    {"error": "File not found or permission denied."},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+        except Exception as e: # Catch any other potential errors during DB query
+            print(f"Error checking CodeFile existence for file_id {code_file_id}: {e}")
+            return Response({"error": "Server error checking file permissions."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        # Trigger the Celery task
+        try:
+            task_result = batch_generate_docstrings_task.delay(code_file_id, user_id)
+            print(f"Dispatched batch_generate_docstrings_task for file_id: {code_file_id}, task_id: {task_result.id}")
+            
+            return Response(
+                {"message": "Batch documentation generation initiated for file.", "task_id": task_result.id},
+                status=status.HTTP_202_ACCEPTED
+            )
+        except Exception as e: # Catch errors during task dispatch
+            print(f"Error dispatching Celery task for file_id {code_file_id}: {e}")
+            return Response({"error": "Failed to initiate batch generation task."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        
+@method_decorator(csrf_exempt, name='dispatch')
+class CreateBatchDocsPRView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, *args, **kwargs):
+        code_file_id = kwargs.get('code_file_id')
+        user_id = request.user.id
+
+        try:
+            code_file = CodeFile.objects.get(id=code_file_id, repository__user=request.user)
+        except CodeFile.DoesNotExist:
+            return Response(
+                {"error": "File not found or permission denied."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        task_result = create_docs_pr_for_file_task.delay(code_file_id, user_id)
+        print(f"Dispatched create_docs_pr_for_file_task for file_id: {code_file_id}, task_id: {task_result.id}")
+        
+        return Response(
+            {"message": "Pull Request creation for file documentation initiated.", "task_id": task_result.id},
+            status=status.HTTP_202_ACCEPTED
+        )
+        
+@method_decorator(csrf_exempt, name='dispatch')
+class BatchGenerateDocsForSelectedFilesView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, *args, **kwargs):
+        repo_id = kwargs.get('repo_id')
+        user_id = request.user.id
+        file_ids_from_request = request.data.get('file_ids')
+
+        print(f"VIEW_BATCH_DOCS: Request for repo_id={repo_id}, user_id={user_id}, file_ids={file_ids_from_request}")
+
+        if not isinstance(file_ids_from_request, list) or not file_ids_from_request:
+            return Response({"error": "A non-empty list of 'file_ids' is required in the request body."}, 
+                            status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            # Ensure all file_ids are integers
+            file_ids = [int(fid) for fid in file_ids_from_request]
+        except ValueError:
+            return Response({"error": "'file_ids' must be a list of integers."}, 
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            # Verify user owns the repository
+            repo = Repository.objects.get(id=repo_id, user_id=user_id)
+            
+            # Verify all file_ids belong to this repository and actually exist
+            # This ensures data integrity before dispatching the task
+            valid_files_query = CodeFile.objects.filter(id__in=file_ids, repository=repo)
+            if valid_files_query.count() != len(set(file_ids)): # Use set to handle potential duplicates in input
+                 # Find which IDs are problematic for a more specific error (optional enhancement)
+                print(f"VIEW_BATCH_DOCS: Validation failed. Expected {len(set(file_ids))} valid files, found {valid_files_query.count()}.")
+                return Response({"error": "One or more file IDs are invalid, do not belong to the specified repository, or were not found."}, 
+                                 status=status.HTTP_400_BAD_REQUEST)
+        except Repository.DoesNotExist:
+            print(f"VIEW_BATCH_DOCS: Repository {repo_id} not found or permission denied for user {user_id}.")
+            return Response({"error": "Repository not found or permission denied."}, 
+                            status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            print(f"VIEW_BATCH_DOCS: Error during pre-task checks for repo {repo_id}: {e}")
+            return Response({"error": "Server error during pre-task validation."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        # Dispatch the Celery task
+        try:
+            # Pass the validated list of unique file IDs
+            task_result = batch_generate_docstrings_for_files_task.delay(repo_id, user_id, list(set(file_ids)))
+            print(f"VIEW_BATCH_DOCS: Dispatched batch_generate_docstrings_for_files_task for repo_id: {repo_id}, file_ids: {list(set(file_ids))}, task_id: {task_result.id}")
+            return Response(
+                {"message": "Batch documentation generation for selected files initiated.", "task_id": task_result.id},
+                status=status.HTTP_202_ACCEPTED
+            )
+        except Exception as e:
+            print(f"VIEW_BATCH_DOCS: Error dispatching Celery task for repo {repo_id}: {e}")
+            return Response({"error": "Failed to initiate batch documentation generation task."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@method_decorator(csrf_exempt, name='dispatch')
+class CreateBatchPRForSelectedFilesView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, *args, **kwargs):
+        repo_id = kwargs.get('repo_id')
+        user_id = request.user.id
+        file_ids_from_request = request.data.get('file_ids')
+
+        print(f"VIEW_BATCH_PR: Request for repo_id={repo_id}, user_id={user_id}, file_ids={file_ids_from_request}")
+
+        if not isinstance(file_ids_from_request, list) or not file_ids_from_request:
+            return Response({"error": "A non-empty list of 'file_ids' is required for PR creation."}, 
+                            status=status.HTTP_400_BAD_REQUEST)
+        try:
+            file_ids = [int(fid) for fid in file_ids_from_request]
+        except ValueError:
+            return Response({"error": "'file_ids' must be a list of integers for PR."}, 
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            repo = Repository.objects.get(id=repo_id, user_id=user_id)
+            valid_files_query = CodeFile.objects.filter(id__in=file_ids, repository=repo)
+            if valid_files_query.count() != len(set(file_ids)):
+                 print(f"VIEW_BATCH_PR: Validation failed for PR. Expected {len(set(file_ids))} valid files, found {valid_files_query.count()}.")
+                 return Response({"error": "One or more file IDs are invalid or do not belong to the specified repository for PR."}, 
+                                 status=status.HTTP_400_BAD_REQUEST)
+        except Repository.DoesNotExist:
+            print(f"VIEW_BATCH_PR: Repository {repo_id} not found or permission denied for user {user_id} for PR.")
+            return Response({"error": "Repository not found or permission denied for PR."}, 
+                            status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            print(f"VIEW_BATCH_PR: Error during pre-task checks for repo {repo_id} for PR: {e}")
+            return Response({"error": "Server error during pre-PR validation."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        try:
+            task_result = create_pr_for_multiple_files_task.delay(repo_id, user_id, list(set(file_ids)))
+            print(f"VIEW_BATCH_PR: Dispatched create_pr_for_multiple_files_task for repo_id: {repo_id}, file_ids: {list(set(file_ids))}, task_id: {task_result.id}")
+            return Response(
+                {"message": "Batch PR creation for selected files initiated.", "task_id": task_result.id},
+                status=status.HTTP_202_ACCEPTED
+            )
+        except Exception as e:
+            print(f"VIEW_BATCH_PR: Error dispatching Celery task for PR (repo {repo_id}): {e}")
+            return Response({"error": "Failed to initiate batch PR creation task."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

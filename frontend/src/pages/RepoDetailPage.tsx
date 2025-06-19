@@ -7,6 +7,8 @@ import { FaFileCode, FaRobot } from 'react-icons/fa';
 import { StatusIcon } from '../components/StatusIcon';
 import { FaSave, FaSpinner } from 'react-icons/fa'; // Added FaSpinner for loading state
 import { getCookie } from '../utils';
+import { FaMagic, FaSync } from 'react-icons/fa'; // FaMagic for generate, FaSync for processing
+import { FaGithub } from 'react-icons/fa'; // For PR button
 
 // --- Type Definitions ---
 interface CodeSymbol {
@@ -54,11 +56,153 @@ export function RepoDetailPage() {
   const [fileContent, setFileContent] = useState<string>('');
   const [contentLoading, setContentLoading] = useState(false);
   const [savingDocId, setSavingDocId] = useState<number | null>(null); // New state for save loading
-
+  const [creatingPRFileId, setCreatingPRFileId] = useState<number | null>(null);
+  const [selectedFilesForBatch, setSelectedFilesForBatch] = useState<Set<number>>(new Set()); 
+  const [selectAllFiles, setSelectAllFiles] = useState<boolean>(false); // Default to all files selected
+  const [batchProcessingRepoId, setBatchProcessingRepoId] = useState<number | null>(null);
+  const [batchRepoMessage, setBatchRepoMessage] = useState<string | null>(null);
+  const [creatingBatchPRRepoId, setCreatingBatchPRRepoId] = useState<number | null>(null);
+  const [batchPRMessage, setBatchPRMessage] = useState<string | null>(null);
   const [generatingDocId, setGeneratingDocId] = useState<number | null>(null);
   const [generatedDocs, setGeneratedDocs] = useState<Record<number, string>>({});
-
+  const [batchProcessingFileId, setBatchProcessingFileId] = useState<number | null>(null);
+  const [batchMessages, setBatchMessages] = useState<Record<number, string>>({}); 
+  const [prMessages, setPrMessages] = useState<Record<number, string>>({});
   // --- YOUR CORRECT API CALL LOGIC ---
+  const handleBatchGenerateDocsForRepo = () => {
+    if (!repo || selectedFilesForBatch.size === 0 || batchProcessingRepoId !== null || creatingBatchPRRepoId !== null) {
+      if (selectedFilesForBatch.size === 0) {
+        setBatchRepoMessage("No files selected for documentation generation.");
+      } else if (batchProcessingRepoId !== null || creatingBatchPRRepoId !== null) {
+        setBatchRepoMessage("Another batch operation is already in progress. Please wait.");
+      }
+      return;
+    }
+
+    setBatchProcessingRepoId(repo.id); // Use repo.id to indicate this repo's batch op
+    setBatchRepoMessage(`Initiating batch doc generation for ${selectedFilesForBatch.size} selected file(s)...`);
+    setBatchPRMessage(null); // Clear any previous PR message
+
+    axios.post(
+      `http://localhost:8000/api/v1/repositories/${repo.id}/batch-generate-docs-selected/`,
+      { file_ids: Array.from(selectedFilesForBatch) }, // Send array of selected file IDs
+      {
+          withCredentials: true,                 // ← send session+csrf cookies
+          headers: {
+            'X-CSRFToken': getCookie('csrftoken') // ← required for PATCH
+          }
+        }
+    )
+    .then(response => {
+      console.log("Batch doc generation for selected files initiated:", response.data);
+      setBatchRepoMessage(`Batch generation for selected files dispatched (Task ID: ${response.data.task_id}). Documents are being updated in the database. You may need to refresh or re-select files to see updates.`);
+      // For now, user needs to manually refresh or re-trigger PR after some time.
+      // Resetting processing ID after a delay for UX, but ideally this uses task status.
+      setTimeout(() => {
+        setBatchProcessingRepoId(null);
+        // Optionally set a message like "Processing might be complete. Refresh to check."
+      }, 30000); // Example: 30-second timeout before button re-enables
+    })
+    .catch(error => {
+      console.error("Error initiating batch doc generation for selected files:", error);
+      const errorMsg = error.response?.data?.error || `Failed to start batch generation for selected files.`;
+      setBatchRepoMessage(errorMsg);
+      setBatchProcessingRepoId(null); // Re-enable button on error
+    });
+  };
+
+  // --- Handler for "Create PR for Selected Files" Button ---
+  const handleCreateBatchPRForRepo = () => {
+    if (!repo || selectedFilesForBatch.size === 0 || creatingBatchPRRepoId !== null || batchProcessingRepoId !== null) {
+      if (selectedFilesForBatch.size === 0) {
+        setBatchPRMessage("No files selected for PR creation. Please select files that have updated documentation.");
+      } else if (batchProcessingRepoId !== null || creatingBatchPRRepoId !== null) {
+         setBatchPRMessage("Another batch operation is already in progress. Please wait.");
+      }
+      return;
+    }
+
+    setCreatingBatchPRRepoId(repo.id); // Use repo.id to indicate this repo's PR op
+    setBatchPRMessage(`Initiating PR creation for ${selectedFilesForBatch.size} selected file(s) with documentation updates...`);
+    setBatchRepoMessage(null); // Clear any previous doc gen message
+
+    axios.post(
+      `http://localhost:8000/api/v1/repositories/${repo.id}/create-batch-pr-selected/`,
+      { file_ids: Array.from(selectedFilesForBatch) }, // Send array of selected file IDs
+      {
+          withCredentials: true,                 // ← send session+csrf cookies
+          headers: {
+            'X-CSRFToken': getCookie('csrftoken') // ← required for PATCH
+          }
+        }
+    )
+    .then(response => {
+      console.log("Batch PR creation for selected files initiated:", response.data);
+      if (response.data.pr_url) {
+        setBatchPRMessage(
+          <> {/* Use React Fragment for link */}
+            Batch PR creation dispatched (Task ID: {response.data.task_id}). 
+            PR URL: <a href={response.data.pr_url} target="_blank" rel="noopener noreferrer" style={{color: '#58a6ff'}}>{response.data.pr_url}</a>
+          </>
+        );
+      } else {
+         setBatchPRMessage(`Batch PR creation dispatched (Task ID: ${response.data.task_id}). ${response.data.message || 'Check GitHub for the PR.'}`);
+      }
+      // Resetting processing ID after a delay for UX
+      setTimeout(() => {
+        setCreatingBatchPRRepoId(null);
+      }, 30000); // Example: 30-second timeout
+    })
+    .catch(error => {
+      console.error("Error initiating batch PR creation for selected files:", error);
+      const errorMsg = error.response?.data?.error || `Failed to start batch PR creation for selected files.`;
+      setBatchPRMessage(errorMsg);
+      setCreatingBatchPRRepoId(null); // Re-enable button on error
+    });
+  };
+  const handleBatchGenerateDocsForFile = (fileId: number, fileName: string) => {
+    if (batchProcessingFileId === fileId) return; // Already processing this file
+
+    setBatchProcessingFileId(fileId);
+    setBatchMessages(prev => ({ ...prev, [fileId]: `Initiating batch doc generation for ${fileName}...` }));
+
+    axios.post( // Use POST as it's an action
+      `http://localhost:8000/api/v1/files/${fileId}/batch-generate-docs/`,
+      {}, 
+      {
+          withCredentials: true,                 // ← send session+csrf cookies
+          headers: {
+            'X-CSRFToken': getCookie('csrftoken') // ← required for PATCH
+          }
+        }
+    )
+    .then(response => {
+      console.log("Batch doc generation initiated:", response.data);
+      setBatchMessages(prev => ({ 
+        ...prev, 
+        [fileId]: `Batch generation started (Task ID: ${response.data.task_id}). Docs will be updated in the database.` 
+      }));
+      // We don't setBatchProcessingFileId(null) here immediately.
+      // The user will need to refresh or we need a status polling mechanism
+      // to know when the backend task is truly complete.
+      // For now, the button will remain "Processing..." until a page refresh or new interaction.
+      // A simple timeout to re-enable the button after a while for UX:
+      setTimeout(() => {
+        setBatchProcessingFileId(null); 
+        // Optionally clear the message or set a "check back later" message
+        // setBatchMessages(prev => ({ ...prev, [fileId]: `Processing for ${fileName} dispatched. Refresh to see updates.` }));
+      }, 10000); // Re-enable button after 10 seconds (adjust as needed)
+
+      // To see immediate changes, we'd ideally refetch repo details after the task is *known* to be complete.
+      // This requires a task status tracking system. For now, user will refresh.
+    })
+    .catch(error => {
+      console.error("Error initiating batch doc generation:", error);
+      const errorMsg = error.response?.data?.error || `Failed to start batch generation for ${fileName}.`;
+      setBatchMessages(prev => ({ ...prev, [fileId]: errorMsg }));
+      setBatchProcessingFileId(null); // Re-enable button on error
+    });
+  };
   const fetchRepoDetails = () => {
     if (repoId) {
       setLoading(true);
@@ -165,7 +309,39 @@ export function RepoDetailPage() {
     }
   };
   // --- END OF YOUR CORRECT API CALL LOGIC ---
+  const handleCreatePRForFile = (fileId: number, fileName: string) => {
+  console.log("DEBUG_FRONTEND: handleCreatePRForFile called for fileId:", fileId, "Current creatingPRFileId:", creatingPRFileId); // Add this
+  
+  if (creatingPRFileId !== null) return;
 
+  // 2️⃣ Mark this file as “in flight.”
+  setCreatingPRFileId(fileId);
+
+  // 3️⃣ Do the POST exactly once.
+  axios.post(
+    `http://localhost:8000/api/v1/files/${fileId}/create-batch-pr/`,
+    {},
+    {
+      withCredentials: true,
+      headers: { 'X-CSRFToken': getCookie('csrftoken') },
+    }
+  )
+  .then(({ data }) => {
+    setPrMessages(prev => ({
+      ...prev,
+      [fileId]: `PR creation started (Task ID: ${data.task_id}). Check GitHub for the PR.`
+    }));
+  })
+  .catch(err => {
+    const errorMsg = err.response?.data?.error
+      || `Failed to start PR creation for ${fileName}.`;
+    setPrMessages(prev => ({ ...prev, [fileId]: errorMsg }));
+  })
+  .finally(() => {
+    // 4️⃣ Always clear the in-flight flag when done
+    setCreatingPRFileId(null);
+  });
+};
   const getLanguage = (filePath: string) => {
     const extension = filePath.split('.').pop() || '';
     if (extension === 'py') return 'python';
@@ -183,29 +359,280 @@ export function RepoDetailPage() {
       {/* ============================================= */}
       {/* File Tree Panel                             */}
       {/* ============================================= */}
-      <div style={{ width: '300px', borderRight: '1px solid #333', padding: '10px', overflowY: 'auto' }}>
-        <h2 style={{ paddingBottom: '10px' }}><Link to="/dashboard" style={{ color: '#d4d4d4', textDecoration: 'none' }}>Dashboard</Link> / {repo.full_name.split('/')[1]}</h2>
-        <hr style={{ borderColor: '#333' }} />
-        <ul style={{ paddingLeft: 0 }}>
-          {repo.files.map(file => (
-            <li
-              key={file.id}
-              onClick={() => handleFileSelect(file)}
+      <div style={{ width: '350px', /* Increased width for buttons */ borderRight: '1px solid #30363d', padding: '10px', overflowY: 'auto', backgroundColor: '#0d1117' }}>
+        <h2 style={{ paddingBottom: '10px', color: '#c9d1d9' }}>
+          <Link to="/dashboard" style={{ color: '#58a6ff', textDecoration: 'none' }}>Dashboard</Link> / {repo.full_name.split('/')[1]}
+        </h2>
+        <hr style={{ borderColor: '#30363d', marginBottom: '10px' }} />
+
+  {/* Select All Checkbox */}
+  {repo && repo.files.length > 0 && (
+    <div style={{ padding: '8px 12px', display: 'flex', alignItems: 'center', borderBottom: '1px solid #30363d', marginBottom: '5px' }}>
+      <input
+        type="checkbox"
+        id="selectAllFilesCheckbox"
+        style={{ marginRight: '10px', cursor: 'pointer' }}
+        checked={selectAllFiles}
+        onChange={(e) => {
+          setSelectAllFiles(e.target.checked);
+          if (e.target.checked) {
+            setSelectedFilesForBatch(new Set(repo.files.map(f => f.id)));
+          } else {
+            setSelectedFilesForBatch(new Set());
+          }
+        }}
+      />
+      <label htmlFor="selectAllFilesCheckbox" style={{cursor: 'pointer', fontWeight: 'bold'}}>
+        {selectAllFiles ? 'Deselect All Files' : 'Select All Files'} ({selectedFilesForBatch.size} / {repo.files.length} selected)
+      </label>
+    </div>
+  )}
+
+  <ul style={{ paddingLeft: 0, listStyle: 'none' }}>
+    {repo.files.map(file => (
+      <li 
+        key={file.id}
               style={{
-                cursor: 'pointer',
-                padding: '8px 12px',
-                backgroundColor: selectedFile?.id === file.id ? '#094771' : 'transparent',
-                listStyle: 'none',
-                display: 'flex',
-                alignItems: 'center',
-                borderRadius: '4px',
-                marginBottom: '4px'
+                marginBottom: '4px',
+                borderRadius: '6px',
+                backgroundColor: selectedFile?.id === file.id ? '#1f6feb' : 'transparent', // Highlight selected file
+                // Transition for hover effects if you add them
               }}
             >
-              <FaFileCode style={{ marginRight: '8px', flexShrink: 0 }} /> {file.file_path}
+              <div style={{ display: 'flex', alignItems: 'center', padding: '8px 12px' }}>
+          {/* Individual File Checkbox */}
+          <input
+            type="checkbox"
+            style={{ marginRight: '10px', cursor: 'pointer', flexShrink: 0 }}
+            checked={selectedFilesForBatch.has(file.id)}
+            onChange={() => {
+              const newSelectedFiles = new Set(selectedFilesForBatch);
+              if (newSelectedFiles.has(file.id)) {
+                newSelectedFiles.delete(file.id);
+              } else {
+                newSelectedFiles.add(file.id);
+              }
+              setSelectedFilesForBatch(newSelectedFiles);
+              // Update selectAllFiles state if needed
+              if (newSelectedFiles.size === repo.files.length) {
+                setSelectAllFiles(true);
+              } else {
+                setSelectAllFiles(false);
+              }
+            }}
+            disabled={batchProcessingRepoId !== null || creatingBatchPRRepoId !== null}
+          />
+          {/* File Icon, Name (clickable for selection) & Action Buttons */}
+          <div
+            onClick={() => handleFileSelect(file)}
+            style={{
+              flexGrow: 1, /* Allow file name to take space */
+              cursor: 'pointer',
+              backgroundColor: selectedFile?.id === file.id ? '#1f6feb' : 'transparent',
+              color: selectedFile?.id === file.id ? 'white' : '#c9d1d9',
+              borderRadius: '6px', // Apply to this inner div if needed
+              padding: '4px 8px', // Padding for the clickable file name area
+              display: 'flex',
+              alignItems: 'center',
+              overflow: 'hidden', 
+              textOverflow: 'ellipsis', 
+              whiteSpace: 'nowrap'
+            }}
+          >
+            <FaFileCode style={{ marginRight: '8px', flexShrink: 0, color: selectedFile?.id === file.id ? 'white' : '#8b949e' }} />
+            <span title={file.file_path}>{file.file_path}</span>
+          </div>
+
+                {/* Action Buttons Group */}
+                <div style={{ display: 'flex', alignItems: 'center', marginLeft: '10px' /* Spacing from file name */ }}>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation(); // Prevent file selection when clicking this button
+                      handleBatchGenerateDocsForFile(file.id, file.file_path);
+                    }}
+                    disabled={batchProcessingFileId !== null} // Disable if ANY batch job is running
+                    title={batchProcessingFileId === file.id ? "Processing Docs..." : (batchProcessingFileId !== null ? "Another batch job is running" : `Generate all missing/stale docs for ${file.file_path}`)}
+                    style={{
+                      padding: '4px 8px',
+                      fontSize: '0.8em',
+                      backgroundColor: batchProcessingFileId === file.id ? '#484f58' : '#2ea043',
+                      color: 'white',
+                      border: '1px solid rgba(240, 246, 252, 0.1)',
+                      borderRadius: '6px',
+                      cursor: batchProcessingFileId !== null ? 'not-allowed' : 'pointer',
+                      opacity: batchProcessingFileId !== null && batchProcessingFileId !== file.id ? 0.5 : 1,
+                      display: 'flex',
+                      alignItems: 'center',
+                      marginRight: '5px', // Space between buttons
+                    }}
+                  >
+                    {batchProcessingFileId === file.id ? 
+                      <FaSync className="animate-spin" style={{marginRight: '4px'}} /> : 
+                      <FaMagic style={{marginRight: '4px'}} />
+                    }
+                    {batchProcessingFileId === file.id ? "Processing..." : "Docs"}
+                  </button>
+
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation(); // Prevent file selection
+                      handleCreatePRForFile(file.id, file.file_path);
+                    }}
+                    disabled={creatingPRFileId !== null || batchProcessingFileId !== null} // Disable if any PR is being created OR if docs are being generated
+                    title={
+                        creatingPRFileId === file.id ? "Creating PR..." : 
+                        (creatingPRFileId !== null ? "Another PR creation is in progress" : 
+                        (batchProcessingFileId !== null ? "Wait for doc generation to finish" :
+                        `Create PR for ${file.file_path} doc updates`))
+                    }
+                    style={{
+                      padding: '4px 8px',
+                      fontSize: '0.8em',
+                      backgroundColor: creatingPRFileId === file.id ? '#484f58' : '#586069', // GitHub secondary button color
+                      color: 'white',
+                      border: '1px solid rgba(240, 246, 252, 0.1)',
+                      borderRadius: '6px',
+                      cursor: (creatingPRFileId !== null || batchProcessingFileId !== null) ? 'not-allowed' : 'pointer',
+                      opacity: (creatingPRFileId !== null && creatingPRFileId !== file.id) || (batchProcessingFileId !== null) ? 0.5 : 1,
+                      display: 'flex',
+                      alignItems: 'center',
+                    }}
+                  >
+                    {creatingPRFileId === file.id ? 
+                      <FaSync className="animate-spin" style={{marginRight: '4px'}} /> : 
+                      <FaGithub style={{marginRight: '4px'}} />
+                    }
+                    {creatingPRFileId === file.id ? "Creating..." : "PR"}
+                  </button>
+                </div>
+              </div>
+              
+              {/* Display batch/PR message for this file */}
+              {(batchMessages[file.id] || prMessages[file.id]) && ( // Check both
+              <div style={{
+                fontSize: '0.8em', 
+                padding: '4px 12px 8px 12px', 
+                // Check both for error styling
+                color: (batchMessages[file.id]?.toLowerCase().includes('error') || batchMessages[file.id]?.toLowerCase().includes('failed') || 
+                        prMessages[file.id]?.toLowerCase().includes('error') || prMessages[file.id]?.toLowerCase().includes('failed')) 
+                       ? '#f85149' : '#8b949e',
+                borderTop: '1px dashed #30363d',
+                marginTop: '4px'
+              }}>
+                  {batchMessages[file.id] || (prMessages && prMessages[file.id])}
+                </div>
+              )}
             </li>
           ))}
         </ul>
+      {repo && repo.files.length > 0 && (
+          <div 
+            style={{ 
+              padding: '15px 12px', // Consistent padding with file items
+              borderTop: '1px solid #30363d', 
+              marginTop: '10px', // Space above this section
+              backgroundColor: '#0d1117' // Match panel background
+            }}
+          >
+            <h3 style={{
+              marginTop: 0, 
+              marginBottom: '12px', 
+              color: '#c9d1d9', 
+              fontSize: '1.1em' 
+            }}>
+              Batch Actions for Selected Files ({selectedFilesForBatch.size})
+            </h3>
+            <div style={{display: 'flex', flexDirection: 'column', gap: '10px'}}> {/* Column layout for buttons */}
+              <button
+                onClick={handleBatchGenerateDocsForRepo} // Assumes this handler is defined
+                disabled={batchProcessingRepoId !== null || creatingBatchPRRepoId !== null || selectedFilesForBatch.size === 0}
+                title={
+                  selectedFilesForBatch.size === 0 ? "Select at least one file" :
+                  batchProcessingRepoId !== null ? "Batch documentation generation in progress..." :
+                  creatingBatchPRRepoId !== null ? "PR creation in progress, please wait..." :
+                  "Generate missing/stale docstrings for all selected files"
+                }
+                style={{ 
+                  backgroundColor: '#2ea043', // Green for generate
+                  color: 'white', 
+                  border: '1px solid rgba(240, 246, 252, 0.1)', 
+                  padding: '10px 15px', 
+                  borderRadius: '6px', 
+                  cursor: (batchProcessingRepoId !== null || creatingBatchPRRepoId !== null || selectedFilesForBatch.size === 0) ? 'not-allowed' : 'pointer',
+                  opacity: (batchProcessingRepoId !== null || creatingBatchPRRepoId !== null || selectedFilesForBatch.size === 0) ? 0.6 : 1,
+                  display: 'flex', 
+                  alignItems: 'center', 
+                  justifyContent: 'center',
+                  width: '100%' // Make buttons full width of their container
+                }}
+              >
+                {batchProcessingRepoId === repo.id ? // Check if this repo's batch op is running
+                  <FaSync className="animate-spin" style={{marginRight: '8px'}} /> : 
+                  <FaMagic style={{marginRight: '8px'}} />
+                }
+                {batchProcessingRepoId === repo.id ? 'Generating Docs...' : 'Generate Docs for Selected'}
+              </button>
+
+              <button
+                onClick={handleCreateBatchPRForRepo} // Assumes this handler is defined
+                disabled={creatingBatchPRRepoId !== null || batchProcessingRepoId !== null || selectedFilesForBatch.size === 0}
+                title={
+                  selectedFilesForBatch.size === 0 ? "Select files with updated docs first" :
+                  creatingBatchPRRepoId !== null ? "Batch PR creation in progress..." :
+                  batchProcessingRepoId !== null ? "Wait for documentation generation to complete" :
+                  "Create a single Pull Request for all selected files with new/updated documentation"
+                }
+                style={{ 
+                  backgroundColor: '#586069', // GitHub secondary button color
+                  color: 'white', 
+                  border: '1px solid rgba(240, 246, 252, 0.1)', 
+                  padding: '10px 15px', 
+                  borderRadius: '6px', 
+                  cursor: (creatingBatchPRRepoId !== null || batchProcessingRepoId !== null || selectedFilesForBatch.size === 0) ? 'not-allowed' : 'pointer',
+                  opacity: (creatingBatchPRRepoId !== null || batchProcessingRepoId !== null || selectedFilesForBatch.size === 0) ? 0.6 : 1,
+                  display: 'flex', 
+                  alignItems: 'center', 
+                  justifyContent: 'center',
+                  width: '100%'
+                }}
+              >
+                {creatingBatchPRRepoId === repo.id ? // Check if this repo's PR op is running
+                  <FaSync className="animate-spin" style={{marginRight: '8px'}} /> : 
+                  <FaGithub style={{marginRight: '8px'}} />
+                }
+                {creatingBatchPRRepoId === repo.id ? 'Creating PR...' : 'Create PR for Selected'}
+              </button>
+            </div>
+
+            {/* Display global batch messages */}
+            {batchRepoMessage && (
+              <p style={{ 
+                fontSize: '0.9em', 
+                color: batchRepoMessage.toLowerCase().includes('error') || batchRepoMessage.toLowerCase().includes('failed') ? '#f85149' : '#8b949e', 
+                marginTop: '12px',
+                padding: '8px',
+                backgroundColor: '#161b22', // Slightly darker for message box
+                borderRadius: '4px',
+                border: `1px solid ${batchRepoMessage.toLowerCase().includes('error') || batchRepoMessage.toLowerCase().includes('failed') ? '#f85149' : '#30363d'}`
+              }}>
+                {batchRepoMessage}
+              </p>
+            )}
+            {batchPRMessage && (
+              <p style={{ 
+                fontSize: '0.9em', 
+                color: batchPRMessage.toLowerCase().includes('error') || batchPRMessage.toLowerCase().includes('failed') ? '#f85149' : '#8b949e', 
+                marginTop: '10px', // Less margin if both messages show
+                padding: '8px',
+                backgroundColor: '#161b22',
+                borderRadius: '4px',
+                border: `1px solid ${batchPRMessage.toLowerCase().includes('error') || batchPRMessage.toLowerCase().includes('failed') ? '#f85149' : '#30363d'}`
+               }}>
+                {batchPRMessage}
+              </p>
+            )}
+          </div>
+        )}
       </div>
 
       {/* ============================================= */}

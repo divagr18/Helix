@@ -6,8 +6,22 @@ router = DefaultRouter()
 from django.urls import path # Make sure path is imported
 from users.views import AuthCheckView
 router.register(r'repositories', RepositoryViewSet, basename='repository')
-from repositories.views import SaveDocstringView,SemanticSearchView,CreateDocPRView,GenerateArchitectureDiagramView # Import the new view
-
+from repositories.views import (
+    RepositoryViewSet, 
+    GithubReposView, 
+    FileContentView, 
+    GenerateDocstringView, 
+    SaveDocstringView,
+    CodeSymbolDetailView,
+    GenerateArchitectureDiagramView,
+    SemanticSearchView,
+    CreateDocPRView,BatchGenerateDocsForFileView,
+    CreateBatchDocsPRView,
+    
+    # --- IMPORT THE NEW VIEWS (we will create these next) ---
+    BatchGenerateDocsForSelectedFilesView,
+    CreateBatchPRForSelectedFilesView
+)
 # The variable name 'urlpatterns' is what Django expects to find.
 urlpatterns = router.urls
 urlpatterns += [
@@ -20,8 +34,13 @@ urlpatterns += [
     path('auth/check/', AuthCheckView.as_view(), name='auth-check'),
     path('symbols/<int:symbol_id>/create-pr/', CreateDocPRView.as_view(), name='symbol-create-pr'),
     path('symbols/<int:symbol_id>/generate-diagram/', GenerateArchitectureDiagramView.as_view(), name='generate-architecture-diagram'),
-
-
-
-
+    path('files/<int:code_file_id>/batch-generate-docs/', BatchGenerateDocsForFileView.as_view(), name='batch-generate-docs-file'),
+    path('files/<int:code_file_id>/create-batch-pr/', CreateBatchDocsPRView.as_view(), name='create-batch-pr-file'),     
+    path('repositories/<int:repo_id>/batch-generate-docs-selected/', 
+         BatchGenerateDocsForSelectedFilesView.as_view(), 
+         name='batch-generate-docs-selected'),
+    
+    path('repositories/<int:repo_id>/create-batch-pr-selected/', 
+         CreateBatchPRForSelectedFilesView.as_view(), 
+         name='create-batch-pr-selected'),
 ]
