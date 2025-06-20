@@ -5,6 +5,7 @@ from repositories.views import RepositoryViewSet,GithubReposView,FileContentView
 router = DefaultRouter()
 from django.urls import path # Make sure path is imported
 from users.views import AuthCheckView
+from repositories.views import UserNotificationsView, MarkNotificationReadView
 router.register(r'repositories', RepositoryViewSet, basename='repository')
 from repositories.views import (
     RepositoryViewSet, 
@@ -46,5 +47,7 @@ urlpatterns += [
          name='create-batch-pr-selected'),
     path('task-status/<str:task_id>/', TaskStatusView.as_view(), name='task-status'),
     path('symbols/<int:symbol_id>/approve-docstring/', ApproveDocstringView.as_view(), name='approve-docstring'),
+    path('notifications/', UserNotificationsView.as_view(), name='user-notifications'),
+    path('notifications/<int:notification_id>/mark-read/', MarkNotificationReadView.as_view(), name='notification-mark-read'),
 ]
 

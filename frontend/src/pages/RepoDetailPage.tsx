@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import axios from 'axios';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
@@ -19,6 +19,7 @@ interface CodeSymbol {
   documentation: string | null;
   content_hash: string | null;
   documentation_hash: string | null;
+  documentation_status: string | null;
 }
 
 interface CodeClass {
@@ -171,46 +172,7 @@ export function RepoDetailPage() {
   };
 
   // --- useEffect for Polling Batch Doc Generation Task ---
-  useEffect(() => {
-    let intervalId: NodeJS.Timeout | undefined;
-    if (activeDocGenTaskId) {
-      setDocGenTaskProgress(0); // Reset progress for new task
-      setPrURL(null); // Clear any old PR URL
-
-      const poll = async () => {
-        const finished = await pollTaskStatus(
-          activeDocGenTaskId,
-          setDocGenTaskMessage,
-          setDocGenTaskProgress,
-          setActiveDocGenTaskId, // This will set it to null on completion/failure
-          (resultData) => { // onSuccess
-            console.log("Batch Doc Gen Success Result:", resultData);
-            // Potentially update UI further based on resultData
-            // e.g., "Successfully documented X symbols in Y files."
-            if (resultData && resultData.message) {
-              setDocGenTaskMessage(resultData.message);
-            } else {
-              setDocGenTaskMessage("Batch documentation generation completed successfully.");
-            }
-          },
-          (resultData) => { // onFailure
-            console.log("Batch Doc Gen Failure Result:", resultData);
-            if (resultData && resultData.message) {
-              setDocGenTaskMessage(`Failed: ${resultData.message}`);
-            } else {
-              setDocGenTaskMessage("Batch documentation generation failed.");
-            }
-          }
-        );
-        if (finished) {
-          clearInterval(intervalId);
-        }
-      };
-      poll(); // Initial immediate poll
-      intervalId = setInterval(poll, 5000); // Poll every 5 seconds
-    }
-    return () => clearInterval(intervalId); // Cleanup on unmount or if taskId changes
-  }, [activeDocGenTaskId]); // Re-run if activeDocGenTaskId changes
+   // Re-run if activeDocGenTaskId changes
 
   // --- useEffect for Polling Batch PR Creation Task ---
   useEffect(() => {
@@ -343,30 +305,74 @@ export function RepoDetailPage() {
         setBatchProcessingFileId(null); // Re-enable button on error
       });
   };
-  const fetchRepoDetails = () => {
-    if (repoId) {
-      setLoading(true);
-      axios.get(`http://localhost:8000/api/v1/repositories/${repoId}/`, { withCredentials: true })
-        .then(response => {
-          const repoData = response.data;
-          setRepo(repoData);
-          if (selectedFile) {
-            const updatedSelectedFile = repoData.files.find(
-              (file: CodeFile) => file.id === selectedFile.id
-            );
-            if (updatedSelectedFile) {
-              setSelectedFile(updatedSelectedFile);
+  const fetchRepoDetails = useCallback(() => {
+  if (repoId) {
+    setLoading(true); // Consider if you want a full page loading spinner here or something more subtle
+    axios.get(`http://localhost:8000/api/v1/repositories/${repoId}/`, { withCredentials: true })
+      .then(response => {
+        const repoData = response.data;
+        console.log("REPO_DETAIL_PAGE: Fetched repoData:", JSON.parse(JSON.stringify(repoData)));
+        setRepo(repoData);
+        // If a file was selected, try to update its reference to the new data
+        if (selectedFile) {
+          const updatedSelectedFile = repoData.files.find(
+            (file: CodeFile) => file.id === selectedFile.id
+          );
+          setSelectedFile(updatedSelectedFile || null); // Update or clear if not found
+          // If selectedFile is updated, you might also want to re-fetch its content
+          // if its structure_hash changed, but that's a further optimization.
+        }
+        setLoading(false);
+      })
+      .catch(err => {
+        console.error("Error fetching repository details:", err);
+        setError('Failed to load repository details.');
+        setLoading(false);
+      });
+  }
+}, [repoId, selectedFile]);
+  useEffect(() => {
+    let intervalId: NodeJS.Timeout | undefined;
+    if (activeDocGenTaskId) {
+      setDocGenTaskProgress(0); // Reset progress for new task
+      setPrURL(null); // Clear any old PR URL
+
+      const poll = async () => {
+        const finished = await pollTaskStatus(
+          activeDocGenTaskId,
+          setDocGenTaskMessage,
+          setDocGenTaskProgress,
+          setActiveDocGenTaskId, // This will set it to null on completion/failure
+          (resultData) => { // onSuccess
+            console.log("Batch Doc Gen Success Result:", resultData);
+            // Potentially update UI further based on resultData
+            // e.g., "Successfully documented X symbols in Y files."
+            if (resultData && resultData.message) {
+              setDocGenTaskMessage(resultData.message);
+            } else {
+              setDocGenTaskMessage("Batch documentation generation completed successfully.");
+            }
+            console.log("Batch Doc Gen Succeeded. Re-fetching repository details...");
+            fetchRepoDetails();
+          },
+          (resultData) => { // onFailure
+            console.log("Batch Doc Gen Failure Result:", resultData);
+            if (resultData && resultData.message) {
+              setDocGenTaskMessage(`Failed: ${resultData.message}`);
+            } else {
+              setDocGenTaskMessage("Batch documentation generation failed.");
             }
           }
-          setLoading(false);
-        })
-        .catch(err => {
-          console.error("Error fetching repository details:", err);
-          setError('Failed to load repository details.');
-          setLoading(false);
-        });
+        );
+        if (finished) {
+          clearInterval(intervalId);
+        }
+      };
+      poll(); // Initial immediate poll
+      intervalId = setInterval(poll, 5000); // Poll every 5 seconds
     }
-  };
+    return () => clearInterval(intervalId); // Cleanup on unmount or if taskId changes
+  }, [activeDocGenTaskId, fetchRepoDetails]);
   const handleSaveDoc = async (funcId: number) => { // Made async for await
     const docText = generatedDocs[funcId];
     if (!docText) return;
@@ -374,9 +380,9 @@ export function RepoDetailPage() {
     setSavingDocId(funcId); // Set saving state
 
     try {
-      await axios.patch( // Added await
+      await axios.post( // Added await
         `http://localhost:8000/api/v1/functions/${funcId}/save-docstring/`,
-        { documentation: docText },
+        { documentation_text: docText },
         {
           withCredentials: true,                 // ← send session+csrf cookies
           headers: {
@@ -785,12 +791,14 @@ export function RepoDetailPage() {
             <div style={{ paddingLeft: 0 }}>
               {/* --- Render Top-Level Functions (Symbols) --- */}
               {selectedFile.symbols.map(func => (
+                
                 <div key={`func-${func.id}`} style={{ marginBottom: '20px', border: '1px solid #444', padding: '15px', borderRadius: '8px', backgroundColor: '#252526' }}>
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
                     <strong style={{ wordBreak: 'break-all', color: '#d4d4d4', fontSize: '1.1em' }}>
                       <Link to={`/symbol/${func.id}`} style={{ color: '#9cdcfe', textDecoration: 'none' }}>{func.name}</Link>
                     </strong>
                     <StatusIcon
+                      documentationStatus={func.documentation_status}
                       hasDoc={!!func.documentation}
                       contentHash={func.content_hash}
                       docHash={func.documentation_hash}

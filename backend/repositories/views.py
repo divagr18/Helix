@@ -6,12 +6,13 @@ from rest_framework import generics, permissions
 from .tasks import create_documentation_pr_task,batch_generate_docstrings_task # We will create this task soon
 from django.utils.decorators import method_decorator
 from rest_framework import viewsets
-from .models import CodeFile, CodeSymbol as CodeFunction, Repository, CodeSymbol,CodeDependency,AsyncTaskStatus
-from .serializers import CodeSymbolSerializer, RepositorySerializer,RepositoryDetailSerializer
+from .models import CodeFile, CodeSymbol as CodeFunction, Repository, CodeSymbol,CodeDependency,AsyncTaskStatus, Notification
+from .serializers import CodeSymbolSerializer, RepositorySerializer,RepositoryDetailSerializer,NotificationSerializer
 from rest_framework.views import APIView
 from django.views.decorators.csrf import csrf_exempt
 from rest_framework.response import Response
 from allauth.socialaccount.models import SocialToken
+from .diagram_utils import generate_mermaid_for_symbol_dependencies
 import requests,re
 from django.http import HttpResponse
 from django.http import StreamingHttpResponse # Import Django's native streaming class
@@ -20,7 +21,7 @@ import tempfile,hashlib
 from rest_framework import status  # if using Django REST Framework
 from .tasks import create_docs_pr_for_file_task
 from .tasks import batch_generate_docstrings_for_files_task, create_pr_for_multiple_files_task # We'll define these tasks next
-
+from .diagram_utils import generate_react_flow_data
 from openai import OpenAI as OpenAIClient # Renaming to avoid conflict if you have an 'OpenAI' model
 from pgvector.django import L2Distance # Or CosineDistance, MaxInnerProduct
 from .serializers import CodeSymbolSerializer,AsyncTaskStatusSerializer # We can reuse this for results
@@ -268,54 +269,63 @@ class SaveDocstringView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, *args, **kwargs):
-        symbol_id = kwargs.get('function_id') # Assuming URL calls it 'function_id'
-                                                  # Consider renaming URL param to 'symbol_id' for clarity
+        symbol_id = kwargs.get('function_id') # Or 'symbol_id' if your URL uses that
         
-        print(f"DEBUG: SaveDocstringView called for symbol_id: {symbol_id}, user: {request.user.username}")
+        print(f"VIEW_SAVE_DOC: SaveDocstringView called for symbol_id: {symbol_id}, user: {request.user.username}")
 
         try:
             q_filter = Q(id=symbol_id) & (
                 Q(code_file__repository__user=request.user) | 
                 Q(code_class__code_file__repository__user=request.user)
             )
-            symbol = CodeSymbol.objects.get(q_filter)
+            symbol = CodeSymbol.objects.select_related( # Select related for serializer efficiency
+                'code_file__repository', 
+                'code_class__code_file__repository'
+            ).get(q_filter)
         except CodeSymbol.DoesNotExist:
             return Response({"error": "Symbol not found or permission denied."}, status=status.HTTP_404_NOT_FOUND)
 
-        new_doc_text = request.data.get('documentation_text')
-        if new_doc_text is None:
-            return Response({"error": "'documentation_text' not provided."}, status=status.HTTP_400_BAD_REQUEST)
+        new_doc_text_from_request = request.data.get('documentation_text')
+        if new_doc_text_from_request is None: # Check for key presence
+            return Response({"error": "'documentation_text' field not provided in request body."}, status=status.HTTP_400_BAD_REQUEST)
 
-        new_doc_text = new_doc_text.strip() # Clean it
+        new_doc_text = new_doc_text_from_request.strip() # Clean it
 
         symbol.documentation = new_doc_text
         
-        if new_doc_text and symbol.content_hash: # If there's new doc and symbol has a content hash
-            symbol.documentation_hash = symbol.content_hash # Mark as fresh for current code
-            # If you added documentation_status:
-            # symbol.documentation_status = CodeSymbol.DocStatus.HUMAN_EDITED_PENDING_PR # Or 'APPROVED'
-        elif not new_doc_text: # Doc was cleared
+        # Determine documentation_hash and documentation_status
+        if new_doc_text: # If there is some documentation text
+            if symbol.content_hash:
+                # This is the ideal case: documentation exists and code content exists
+                symbol.documentation_hash = symbol.content_hash 
+                symbol.documentation_status = CodeSymbol.DocStatus.FRESH
+                print(f"VIEW_SAVE_DOC: Symbol {symbol.id} marked as FRESH. DocHash matches ContentHash.")
+            else:
+                # Documentation exists, but the symbol's code content_hash is missing.
+                # This is unusual after `process_repository` but handle defensively.
+                # We can't mark it FRESH, so hash the doc itself and mark for review.
+                hasher = hashlib.sha256()
+                hasher.update(new_doc_text.encode('utf-8'))
+                symbol.documentation_hash = hasher.hexdigest()
+                symbol.documentation_status = CodeSymbol.DocStatus.PENDING_REVIEW # Or a custom status
+                print(f"VIEW_SAVE_DOC: Warning - Symbol {symbol.id} has no content_hash. Hashing doc text itself. Status: PENDING_REVIEW.")
+        else: # Documentation text is empty (user cleared it)
             symbol.documentation_hash = None
-            # if hasattr(symbol, 'documentation_status'):
-            #     symbol.documentation_status = CodeSymbol.DocStatus.NONE
-        else: # Has new doc text, but no content_hash for the symbol (should be rare)
-            hasher = hashlib.sha256()
-            hasher.update(new_doc_text.encode('utf-8'))
-            symbol.documentation_hash = hasher.hexdigest()
-            # if hasattr(symbol, 'documentation_status'):
-            #     symbol.documentation_status = CodeSymbol.DocStatus.HUMAN_EDITED_PENDING_PR
-            print(f"VIEW_SAVE_DOC: Warning - Symbol {symbol.id} has no content_hash. Hashing doc text itself for documentation_hash.")
+            symbol.documentation_status = CodeSymbol.DocStatus.NONE
+            print(f"VIEW_SAVE_DOC: Symbol {symbol.id} documentation cleared. Status: NONE.")
         
-        update_fields_list = ['documentation', 'documentation_hash']
-        if hasattr(symbol, 'documentation_status'):
-            update_fields_list.append('documentation_status')
+        update_fields_list = ['documentation', 'documentation_hash', 'documentation_status']
+        # No need for hasattr check if documentation_status is now a permanent field on CodeSymbol
 
         try:
             symbol.save(update_fields=update_fields_list)
-            serializer = CodeSymbolSerializer(symbol) # Make sure you have this serializer
+            # Serialize the updated symbol to send back to the frontend
+            # This ensures the frontend gets the latest hashes and status
+            serializer = CodeSymbolSerializer(symbol) 
+            print(f"VIEW_SAVE_DOC: Successfully saved documentation and status for symbol {symbol.id}")
             return Response(serializer.data, status=status.HTTP_200_OK)
         except Exception as e:
-            print(f"VIEW_SAVE_DOC: Error saving doc for symbol {symbol.id}: {e}")
+            print(f"VIEW_SAVE_DOC: Error saving documentation for symbol {symbol.id}: {e}")
             return Response({"error": "Failed to save documentation."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 class CodeSymbolDetailView(generics.RetrieveAPIView):
     """
@@ -411,135 +421,39 @@ class CreateDocPRView(APIView):
         
         return Response({"message": "Pull Request creation initiated.", "task_id": task.id}, status=status.HTTP_202_ACCEPTED)
     
-
-def sanitize_for_mermaid_id(text: str, prefix: str = "node_") -> str:
-    """
-    Sanitizes a string to be a valid Mermaid node ID.
-    Mermaid IDs should be alphanumeric and can contain underscores.
-    They cannot typically start with a number if unquoted, so we add a prefix.
-    """
-    # Replace common problematic characters (like '::', '/', '.') with underscores
-    sanitized = re.sub(r'[^a-zA-Z0-9_]', '_', text)
-    # Ensure it doesn't start with a number by adding a prefix
-    if not sanitized: # Handle empty string case
-        return f"{prefix}empty"
-    return f"{prefix}{sanitized}"
-
-
 @method_decorator(csrf_exempt, name='dispatch')
 class GenerateArchitectureDiagramView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, *args, **kwargs):
         symbol_id = kwargs.get('symbol_id')
-        print(f"DEBUG: GenerateArchitectureDiagramView called for symbol_id: {symbol_id}")
+        print(f"VIEW_GEN_DIAGRAM: Request for symbol_id: {symbol_id}, user: {request.user.username}")
 
         try:
-            # Fetch the central symbol and ensure user ownership
-            q_filter = Q(id=symbol_id) & (
-                Q(code_file__repository__user=request.user) | 
-                Q(code_class__code_file__repository__user=request.user)
-            )
-            central_symbol = CodeSymbol.objects.select_related(
-                'code_file__repository', 
-                'code_class__code_file__repository' # Ensure related fields are fetched
-            ).get(q_filter)
-            print(f"DEBUG: Fetched central symbol: {central_symbol.name} (ID: {central_symbol.id})")
-
+            q_filter = Q(id=symbol_id) & (Q(code_file__repository__user=request.user) | Q(code_class__code_file__repository__user=request.user))
+            central_symbol = CodeSymbol.objects.select_related('code_file__repository', 'code_class__code_file__repository').get(q_filter)
         except CodeSymbol.DoesNotExist:
-            print(f"DEBUG: Symbol with ID {symbol_id} not found or permission denied for user {request.user.username}.")
-            return Response(
-                {"error": "Symbol not found or permission denied."}, 
-                status=status.HTTP_404_NOT_FOUND
-            )
+            return Response({"error": "Symbol not found or permission denied."}, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            print(f"VIEW_GEN_DIAGRAM: Error fetching symbol {symbol_id}: {e}")
+            return Response({"error": "Server error fetching symbol."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
 
         # Fetch direct incoming calls (callers)
+        # Ensure we select related 'caller' to get the full CodeSymbol object for the caller
         incoming_deps = CodeDependency.objects.filter(callee=central_symbol).select_related('caller')
         callers = [dep.caller for dep in incoming_deps]
-        print(f"DEBUG: Found {len(callers)} callers for {central_symbol.name}")
-
-        # Fetch direct outgoing calls (callees)
         outgoing_deps = CodeDependency.objects.filter(caller=central_symbol).select_related('callee')
         callees = [dep.callee for dep in outgoing_deps]
-        print(f"DEBUG: Found {len(callees)} callees for {central_symbol.name}")
 
-        # --- Construct Mermaid.js Syntax ---
-        mermaid_lines = ["graph TD;"] # Or LR
-        mermaid_lines.append("    %% Default link style for brighter lines")
-        mermaid_lines.append("    linkStyle default stroke:#cccccc,stroke-width:2px;")
-
-        central_node_mermaid_id = sanitize_for_mermaid_id(central_symbol.unique_id or f"symbol_{central_symbol.id}")
-        central_node_label = central_symbol.name.replace('"',"'")
-
-        # --- Node Definitions ---
-        mermaid_lines.append("    %% Node Definitions")
-        # Define central node first
-        mermaid_lines.append(f'    {central_node_mermaid_id}["{central_node_label}"];')
-        
-        # Define caller nodes (if not the central node itself, though unlikely in this simple graph)
-        for caller in callers:
-            caller_mermaid_id = sanitize_for_mermaid_id(caller.unique_id or f"symbol_{caller.id}")
-            if caller_mermaid_id != central_node_mermaid_id: # Avoid re-defining if a symbol calls itself (edge case)
-                caller_label = caller.name.replace('"',"'")
-                mermaid_lines.append(f'    {caller_mermaid_id}["{caller_label}"];')
-
-        # Define callee nodes
-        for callee in callees:
-            callee_mermaid_id = sanitize_for_mermaid_id(callee.unique_id or f"symbol_{callee.id}")
-            if callee_mermaid_id != central_node_mermaid_id:
-                callee_label = callee.name.replace('"',"'")
-                mermaid_lines.append(f'    {callee_mermaid_id}["{callee_label}"];')
-        mermaid_lines.append("")
-
-
-        # --- Style Definitions ---
-        mermaid_lines.append("    %% Style Definitions")
-        # Style central node
-        mermaid_lines.append(f'    style {central_node_mermaid_id} fill:#87CEEB,stroke:#00008B,stroke-width:2px,color:#000000;')
-        
-        # Style caller nodes
-        for caller in callers:
-            caller_mermaid_id = sanitize_for_mermaid_id(caller.unique_id or f"symbol_{caller.id}")
-            # Only apply style if it's not the central node being styled as a caller
-            if caller_mermaid_id != central_node_mermaid_id:
-                 mermaid_lines.append(f'    style {caller_mermaid_id} fill:#90EE90,stroke:#006400,stroke-width:1px,color:#000000;')
-
-        # Style callee nodes
-        for callee in callees:
-            callee_mermaid_id = sanitize_for_mermaid_id(callee.unique_id or f"symbol_{callee.id}")
-            if callee_mermaid_id != central_node_mermaid_id:
-                mermaid_lines.append(f'    style {callee_mermaid_id} fill:#FFB6C1,stroke:#8B0000,stroke-width:1px,color:#000000;')
-        mermaid_lines.append("")
-
-
-        # --- Edge Definitions ---
-        mermaid_lines.append("    %% Edge Definitions")
-        for caller in callers:
-            caller_mermaid_id = sanitize_for_mermaid_id(caller.unique_id or f"symbol_{caller.id}")
-            mermaid_lines.append(f'    {caller_mermaid_id} --> {central_node_mermaid_id};')
-        
-        for callee in callees:
-            callee_mermaid_id = sanitize_for_mermaid_id(callee.unique_id or f"symbol_{callee.id}")
-            mermaid_lines.append(f'    {central_node_mermaid_id} --> {callee_mermaid_id};')
-        mermaid_lines.append("")
-
-
-        # --- Legend ---
-        mermaid_lines.append("    %% Legend")
-        mermaid_lines.append("    subgraph Legend")
-        mermaid_lines.append('        direction LR')
-        mermaid_lines.append('        caller_legend["Caller"];') # Define node
-        mermaid_lines.append('        style caller_legend fill:#90EE90,stroke:#006400,color:#000000;') # Style node
-        mermaid_lines.append('        central_legend["Central Symbol"];')
-        mermaid_lines.append('        style central_legend fill:#87CEEB,stroke:#00008B,color:#000000;')
-        mermaid_lines.append('        callee_legend["Callee"];')
-        mermaid_lines.append('        style callee_legend fill:#FFB6C1,stroke:#8B0000,color:#000000;')
-        mermaid_lines.append("    end")
-
-        mermaid_string = "\n".join(mermaid_lines)
-
-        return Response({"mermaid_code": mermaid_string}, status=status.HTTP_200_OK)
-    
+        try:
+            react_flow_data = generate_react_flow_data(central_symbol, callers, callees)
+            return Response(react_flow_data, status=status.HTTP_200_OK)
+        except Exception as e:
+            print(f"VIEW_GEN_DIAGRAM_REACTFLOW: Error generating React Flow data: {e}")
+            import traceback
+            traceback.print_exc()
+            return Response({"error": "Failed to generate diagram data for React Flow."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)  
 @method_decorator(csrf_exempt, name='dispatch')
 class BatchGenerateDocsForFileView(APIView):
     permission_classes = [permissions.IsAuthenticated]
@@ -770,3 +684,27 @@ class ApproveDocstringView(APIView):
         except Exception as e:
             print(f"VIEW_APPROVE_DOC: Error saving approved doc for symbol {symbol.id}: {e}")
             return Response({"error": "Failed to save approved documentation."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        
+@method_decorator(csrf_exempt, name='dispatch')
+class UserNotificationsView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        # Get unread notifications, newest first, limit to e.g., 20
+        notifications = Notification.objects.filter(user=request.user, is_read=False).order_by('-created_at')[:20]
+        serializer = NotificationSerializer(notifications, many=True)
+        unread_count = Notification.objects.filter(user=request.user, is_read=False).count()
+        return Response({"notifications": serializer.data, "unread_count": unread_count})
+
+@method_decorator(csrf_exempt, name='dispatch')
+class MarkNotificationReadView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, notification_id, *args, **kwargs): # POST to change state
+        try:
+            notification = Notification.objects.get(id=notification_id, user=request.user)
+            notification.is_read = True
+            notification.save(update_fields=['is_read'])
+            return Response({"message": "Notification marked as read."}, status=status.HTTP_200_OK)
+        except Notification.DoesNotExist:
+            return Response({"error": "Notification not found or permission denied."}, status=status.HTTP_404_NOT_FOUND)

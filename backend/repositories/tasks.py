@@ -8,7 +8,7 @@ from allauth.socialaccount.models import SocialToken # Import SocialToken
 import json
 from django.db.models import Q ,F,Count # <--- ADD THIS IMPORT
 import ast # Python's Abstract Syntax Tree module
-import astor
+import astor,hashlib
 import subprocess # To call ruff CLI
 import time
 from github import Github, GithubException, UnknownObjectException
@@ -959,9 +959,21 @@ def batch_generate_docstrings_for_files_task(self, repo_id: int, user_id: int, f
 
             if docstring_content:
                 symbol.documentation = docstring_content
-                symbol.documentation_hash = symbol.content_hash
+                if symbol.content_hash: # Ensure content_hash exists
+                    symbol.documentation_hash = symbol.content_hash 
+                    symbol.documentation_status = CodeSymbol.DocStatus.FRESH
+                    print(f"BATCH_DOC_GEN_TASK: Marking symbol {symbol.id} as FRESH. DocHash: {symbol.documentation_hash}, ContentHash: {symbol.content_hash}")
+                else:
+                    # Fallback if content_hash is missing (should be rare after process_repo)
+                    hasher = hashlib.sha256()
+                    hasher.update(docstring_content.encode('utf-8'))
+                    symbol.documentation_hash = hasher.hexdigest()
+                    symbol.documentation_status = CodeSymbol.DocStatus.PENDING_REVIEW # Or some other status
+                    print(f"BATCH_DOC_GEN_TASK: Symbol {symbol.id} missing content_hash. Hashing doc itself. Status: {symbol.documentation_status}")
+                
+                update_fields_to_save = ['documentation', 'documentation_hash', 'documentation_status']
                 try:
-                    symbol.save(update_fields=['documentation', 'documentation_hash'])
+                    symbol.save(update_fields=update_fields_to_save)
                     print(f"BATCH_DOC_GEN_TASK: Generated and saved doc for: {symbol.unique_id or symbol.name}")
                     overall_successful_symbol_generations += 1
                     file_had_successful_generation_this_run = True

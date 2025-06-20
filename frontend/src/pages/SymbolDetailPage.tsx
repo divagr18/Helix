@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom'; // Added useNavigate
 import axios from 'axios';
 import { StatusIcon } from '../components/StatusIcon';
@@ -9,9 +9,24 @@ import { PrismLight as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import jsx from 'react-syntax-highlighter/dist/esm/languages/prism/jsx';
 import tsx from 'react-syntax-highlighter/dist/esm/languages/prism/tsx';
+import CustomSymbolNode from '../components/CustomSymbolNode'; // Adjust path
+
 import python from 'react-syntax-highlighter/dist/esm/languages/prism/python';
-import { FaProjectDiagram, FaSpinner, FaExclamationTriangle } from 'react-icons/fa'; // For button and loading/error states
-import Mermaid from 'react-mermaid2'; // The Mermaid component
+import { FaProjectDiagram, FaSpinner, FaExclamationTriangle } from 'react-icons/fa';
+import ReactFlow, {
+  Controls,
+  Background,
+  MiniMap,
+  useNodesState,
+  useEdgesState,
+  addEdge,
+  type Node, // Type for nodes
+  type Edge, // Type for edges
+  type OnConnect, // Type for onConnect callback
+  type XYPosition, // Type for position
+  type NodeTypes, // For custom nodes
+} from 'reactflow';
+import 'reactflow/dist/style.css'; // For button and loading/error states
 SyntaxHighlighter.registerLanguage('jsx', jsx);
 SyntaxHighlighter.registerLanguage('tsx', tsx);
 SyntaxHighlighter.registerLanguage('python', python);
@@ -21,6 +36,17 @@ interface LinkedSymbol {
     name: string;
     unique_id: string; // Ensure this matches your LinkedSymbolSerializer
 }
+interface SymbolNodeData {
+    label: string;
+    type: 'central' | 'caller' | 'callee'; // To style them differently
+    db_id: number; // Database ID for navigation
+}
+// React Flow Node type using our custom data
+type AppNode = Node<SymbolNodeData>;
+const nodeTypesConfig: NodeTypes = { // Use a different variable name to avoid conflict if needed
+  customSymbolNode: CustomSymbolNode,
+  // Add other custom node types here if you have them
+};
 const customStyle = {
     ...vscDarkPlus,
     'code[class*="language-"]': {
@@ -48,6 +74,7 @@ interface SymbolDetail {
     documentation_hash: string | null;
     incoming_calls: LinkedSymbol[];
     outgoing_calls: LinkedSymbol[];
+    documentation_status: string | null;
     source_code: string | null; // Add this
 
     // We'll add file_path and repo_id if we want to link back or show code
@@ -65,26 +92,28 @@ export function SymbolDetailPage() {
     const [error, setError] = useState<string | null>(null);
     const [prStatus, setPrStatus] = useState<{ message: string, pr_url?: string, task_id?: string, error?: string } | null>(null);
     const [isCreatingPR, setIsCreatingPR] = useState(false);
-    const [mermaidCode, setMermaidCode] = useState<string | null>(null);
-    const [diagramLoading, setDiagramLoading] = useState<boolean>(false);
-    const [diagramError, setDiagramError] = useState<string | null>(null);
+    // const [mermaidCode, setMermaidCode] = useState<string | null>(null); // Removed as per comment
+    // const [diagramLoading, setDiagramLoading] = useState<boolean>(false); // Removed as per comment, replaced by flowLoading
+    // const [diagramError, setDiagramError] = useState<string | null>(null); // Removed as per comment, replaced by flowError
     const [isEditingDoc, setIsEditingDoc] = useState<boolean>(false);
     const [editedDoc, setEditedDoc] = useState<string>("");
+    const [nodes, setNodes, onNodesChange] = useNodesState<AppNode[]>([]); // Use AppNode type
+    const [edges, setEdges, onEdgesChange] = useEdgesState<Edge[]>([]);
+    const [flowLoading, setFlowLoading] = useState<boolean>(false);
+    const [flowError, setFlowError] = useState<string | null>(null);
 
-    // State for AI Doc Generation (if you want to separate its loading/display from existing docs)
+    // State for AI Doc Generation
     const [aiGeneratedDoc, setAiGeneratedDoc] = useState<string | null>(null);
     const [isGeneratingAIDoc, setIsGeneratingAIDoc] = useState<boolean>(false);
+    const [initialLoadAttempted, setInitialLoadAttempted] = useState<boolean>(false);
+
     const handleGenerateAIDoc = async () => {
         if (!symbol) return;
         setIsGeneratingAIDoc(true);
-        setAiGeneratedDoc(null); // Clear previous AI doc
-        setIsEditingDoc(false); // Exit editing mode if it was active
-        // Clear editedDoc if you want AI to overwrite any manual edits not yet saved
-        // setEditedDoc(""); 
+        setAiGeneratedDoc(null);
+        setIsEditingDoc(false);
 
         try {
-            // Assuming your API endpoint for single symbol doc gen is still /functions/<id>/generate-docstring/
-            // And it streams text/plain
             const response = await fetch(
                 `http://localhost:8000/api/v1/functions/${symbol.id}/generate-docstring/`,
                 { credentials: 'include' }
@@ -106,18 +135,14 @@ export function SymbolDetailPage() {
                 const { done, value } = await reader.read();
                 if (done) break;
                 streamedText += decoder.decode(value, { stream: true });
-                setAiGeneratedDoc(streamedText); // Update live as it streams
+                setAiGeneratedDoc(streamedText);
             }
-            // Optionally, once streaming is done, put it into editing mode
-            setEditedDoc(streamedText.trim()); // Pre-fill editor with AI doc
-            setIsEditingDoc(true); // Enter editing mode
+            setEditedDoc(streamedText.trim());
+            setIsEditingDoc(true);
 
         } catch (error) {
             console.error("Error generating AI documentation:", error);
             setAiGeneratedDoc(`// Error generating AI documentation: ${error instanceof Error ? error.message : String(error)}`);
-            // Optionally set editedDoc to this error message too if entering editing mode
-            // setEditedDoc(`// Error generating AI documentation: ${error instanceof Error ? error.message : String(error)}`);
-            // setIsEditingDoc(true);
         } finally {
             setIsGeneratingAIDoc(false);
         }
@@ -125,114 +150,112 @@ export function SymbolDetailPage() {
     const handleSaveEditedDoc = () => {
         if (!symbol) return;
 
-        // Disable button or show loading state here if needed
-        // For simplicity, we'll just make the API call.
-
-        axios.post( // Using POST as per our backend SaveDocstringView
-            `http://localhost:8000/api/v1/functions/${symbol.id}/save-docstring/`, // Ensure this URL is correct
-            { documentation_text: editedDoc }, // Send the edited content
+        axios.post(
+            `http://localhost:8000/api/v1/functions/${symbol.id}/save-docstring/`,
+            { documentation_text: editedDoc },
             {
                 withCredentials: true,
-                headers: { 'X-CSRFToken': getCookie('csrftoken') } // Crucial for POST with SessionAuth
+                headers: { 'X-CSRFToken': getCookie('csrftoken') }
             }
         )
             .then(response => {
                 console.log("Documentation saved successfully:", response.data);
-                // Update the main symbol state with the data returned from the save operation
-                // This ensures documentation_hash and documentation_status are updated in the UI
                 setSymbol(prevSymbol => prevSymbol ? { ...prevSymbol, ...response.data } : null);
-
                 setIsEditingDoc(false);
-                setAiGeneratedDoc(null); // Clear any AI-generated temp doc
-                // editedDoc will be cleared or reset when editing mode is entered next time
-                // Or, you could set setEditedDoc(response.data.documentation) if you want to keep it in sync
+                setAiGeneratedDoc(null);
             })
             .catch(error => {
                 console.error("Error saving documentation:", error);
                 const errorMsg = error.response?.data?.error || error.message || "Failed to save documentation.";
-                alert(`Failed to save documentation: ${errorMsg}`); // Simple alert for now
-                // Potentially set an error state to display in the UI
+                alert(`Failed to save documentation: ${errorMsg}`);
             });
     };
+    // nodeTypesConfig is defined above, using it directly as nodeTypes
+    // const nodeTypes: NodeTypes = {
+    // customSymbolNode: CustomSymbolNode,
+    // };
+
     const getLanguageFromUniqueId = (uniqueId: string | undefined): string => {
         if (!uniqueId) {
             console.log(`detectLanguage: no uniqueId → plaintext`);
             return 'plaintext';
         }
-
         const filePathPart = uniqueId.split('::')[0];
         const extension = filePathPart.split('.').pop()?.toLowerCase() || '';
-
         let lang: string;
         switch (extension) {
             case 'py': lang = 'python'; break;
             case 'js': lang = 'javascript'; break;
             case 'ts': lang = 'typescript'; break;
             case 'jsx': lang = 'jsx'; break;
-            case 'tsx': lang = 'typescript'; break;
-            case 'java': lang = 'clike'; break;
-            case 'c': lang = 'clike'; break;
-            case 'cpp': lang = 'clike'; break;
-            case 'cs': lang = 'clike'; break;
+            case 'tsx': lang = 'typescript'; break; // tsx can be highlighted as typescript
+            case 'java': lang = 'clike'; break; // Assuming clike for java
+            case 'c': lang = 'clike'; break; // Assuming clike for c
+            case 'cpp': lang = 'clike'; break; // Assuming clike for cpp
+            case 'cs': lang = 'clike'; break; // Assuming clike for cs
             case 'json': lang = 'json'; break;
             case 'html': lang = 'markup'; break;
             case 'xml': lang = 'markup'; break;
             default: lang = 'plaintext'; break;
         }
-
         console.log(`detectLanguage: ext="${extension}" → lang="${lang}"`);
         return lang;
     };
-    const handleGenerateDiagram = () => {
-        if (!symbol) return; // symbol should be your state variable holding the current symbol's details
-        setDiagramLoading(true);
-        setMermaidCode(null);
-        setDiagramError(null);
-        const cacheBuster = `_cb=${new Date().getTime()}`;
-        const apiUrl = `http://localhost:8000/api/v1/symbols/${symbol.id}/generate-diagram/?${cacheBuster}`;
-        axios.get(apiUrl, { withCredentials: true }) // Use the new apiUrl
+
+    const handleLoadFlowData = useCallback(() => {
+        if (!symbol) {
+            console.warn("handleLoadFlowData called before symbol data is loaded.");
+            setFlowError("Symbol details not yet loaded. Please wait and try again.");
+            return;
+        }
+        setFlowLoading(true);
+        setInitialLoadAttempted(true);
+        setNodes([]);
+        setEdges([]);
+        setFlowError(null);
+
+        axios.get(`http://localhost:8000/api/v1/symbols/${symbol.id}/generate-diagram/`, { withCredentials: true })
             .then(response => {
-                console.log("Diagram API Response Status:", response.status);
-                console.log("Diagram API Response Data (raw):", response.data);
-                console.log("Type of response.data:", typeof response.data);
-
-                if (response.data && typeof response.data === 'object') {
-                    console.log("Keys in response.data:", Object.keys(response.data));
-                    console.log("Value of response.data.mermaid_code:", response.data.mermaid_code);
-                    console.log("Type of response.data.mermaid_code:", typeof response.data.mermaid_code);
+                if (response.data && response.data.nodes && response.data.edges) {
+                    const formattedNodes = response.data.nodes.map((node: any) => ({
+                        ...node,
+                        position: {
+                            x: Number(node.position.x),
+                            y: Number(node.position.y)
+                        },
+                    }));
+                    setNodes(formattedNodes as AppNode[]);
+                    setEdges(response.data.edges as Edge[]);
+                } else {
+                    setFlowError("Received invalid data structure for diagram.");
                 }
-
-                if (response.status === 200 && response.data && response.data.mermaid_code) {
-                    setMermaidCode(response.data.mermaid_code);
-                } else if (response.status === 304) {
-
-                    console.warn("Received 304 Not Modified for diagram, but expected new data. This might indicate server-side caching still active despite cache buster.");
-                    // Fallback to error or try to use a previously stored mermaidCode if that's desired.
-                    setDiagramError("Diagram data was not refreshed by the server.");
-                }
-                else {
-                    setDiagramError("Received empty or invalid diagram data from server.");
-                }
-                setDiagramLoading(false);
+                setFlowLoading(false);
             })
             .catch(error => {
-                console.error("Error generating diagram:", error);
-                const errorMsg = error.response?.data?.error || "Failed to generate diagram.";
-                // Optionally set mermaidCode to an error diagram string for visual feedback
-                setMermaidCode(`graph TD;\n    error_node["${errorMsg.replace(/"/g, "'")}"];\n style error_node fill:#ffcccc,stroke:#cc0000,color:#330000`);
-                setDiagramError(errorMsg);
-                setDiagramLoading(false);
+                console.error("Error fetching React Flow data:", error);
+                setFlowError(error.response?.data?.error || "Failed to load diagram data.");
+                setFlowLoading(false);
             });
-    };
+    }, [symbol, setNodes, setEdges, setFlowLoading, setFlowError, setInitialLoadAttempted]); // symbol is a necessary dependency here
+
+    const onNodeClick = useCallback((event: React.MouseEvent, node: AppNode) => {
+        console.log('React Flow Node clicked:', node);
+        if (node.data && node.data.db_id) {
+            navigate(`/symbol/${node.data.db_id}`);
+        } else {
+            console.warn("Clicked node does not have db_id in its data:", node.data);
+        }
+    }, [navigate]);
+
     const handleCreatePR = () => {
         if (!symbol) return;
         setIsCreatingPR(true);
         setPrStatus({ message: "Initiating PR creation..." });
 
         axios.post(`http://localhost:8000/api/v1/symbols/${symbol.id}/create-pr/`, {}, {
-            withCredentials: true,                 // ← send session+csrf cookies
+            withCredentials: true,
             headers: {
-                'X-CSRFToken': getCookie('csrftoken') // ← required for PATCH
+                'X-CSRFToken': getCookie('csrftoken')
             }
         })
             .then(response => {
@@ -240,27 +263,31 @@ export function SymbolDetailPage() {
                     message: "PR creation in progress. Check back shortly or monitor task status.",
                     task_id: response.data.task_id
                 });
-                // You might want to implement polling for task status here or use WebSockets
-                // For now, we just inform the user.
             })
             .catch(err => {
                 console.error("Error initiating PR creation:", err);
                 setPrStatus({ message: "Failed to initiate PR creation.", error: err.response?.data?.error || "Unknown error" });
             })
             .finally(() => {
-                setIsCreatingPR(false); // Re-enable button if needed, or manage state better
+                setIsCreatingPR(false);
             });
     };
 
     useEffect(() => {
         if (symbolId) {
             setLoading(true);
-            setError(null); // Clear previous errors
+            setError(null);
+            setSymbol(null); // Clear previous symbol data
+            setNodes([]); // Clear diagram data when symbol changes
+            setEdges([]);
+            setFlowError(null);
+            setInitialLoadAttempted(false); // Reset diagram load attempt
+
             axios.get(`http://localhost:8000/api/v1/symbols/${symbolId}/`, { withCredentials: true })
                 .then(response => {
                     const fetchedSymbol: SymbolDetail = response.data;
                     setSymbol(fetchedSymbol);
-                    if (fetchedSymbol.unique_id) { // Set language when symbol is fetched
+                    if (fetchedSymbol.unique_id) {
                         setSourceLang(getLanguageFromUniqueId(fetchedSymbol.unique_id));
                     }
                     setLoading(false);
@@ -275,13 +302,12 @@ export function SymbolDetailPage() {
                     setLoading(false);
                 });
         }
-    }, [symbolId]); // Re-fetch if symbolId changes (user navigates from one symbol to another)
+    }, [symbolId, setNodes, setEdges]); // Added setNodes and setEdges to dependency array for clarity, though not strictly necessary if handled by clearing states
 
     if (loading) return <p style={{ padding: '20px', color: '#d4d4d4', textAlign: 'center' }}>Loading Symbol Details...</p>;
     if (error) return <p style={{ padding: '20px', color: 'red', textAlign: 'center' }}>{error}</p>;
     if (!symbol) return <p style={{ padding: '20px', color: '#d4d4d4', textAlign: 'center' }}>Symbol data is not available.</p>;
 
-    // Helper to display a list of linked symbols
     const renderDependencyList = (dependencies: LinkedSymbol[], title: string) => (
         <div style={{ backgroundColor: '#252526', padding: '15px', borderRadius: '8px', border: '1px solid #333' }}>
             <h3 style={{ marginTop: 0, marginBottom: '10px', color: '#ccc', borderBottom: '1px solid #444', paddingBottom: '8px' }}>
@@ -321,9 +347,8 @@ export function SymbolDetailPage() {
     return (
         <div style={{ padding: '20px 40px', fontFamily: 'sans-serif', backgroundColor: '#1e1e1e', color: '#d4d4d4', minHeight: '100vh' }}>
 
-            {/* Back Button */}
             <button
-                onClick={() => navigate(-1)} // Go back to the previous page
+                onClick={() => navigate(-1)}
                 style={{
                     display: 'inline-flex', alignItems: 'center',
                     marginBottom: '20px', padding: '8px 15px',
@@ -334,13 +359,13 @@ export function SymbolDetailPage() {
                 <FaArrowLeft style={{ marginRight: '8px' }} /> Back
             </button>
 
-            {/* Header Section */}
             <div style={{
                 display: 'flex', alignItems: 'center', gap: '15px',
                 borderBottom: '1px solid #444', paddingBottom: '15px', marginBottom: '15px'
             }}>
                 <h1 style={{ margin: 0, color: '#569cd6', wordBreak: 'break-all' }}>{symbol.name}</h1>
                 <StatusIcon
+                    documentationStatus={symbol.documentation_status}
                     hasDoc={!!symbol.documentation}
                     contentHash={symbol.content_hash}
                     docHash={symbol.documentation_hash}
@@ -350,23 +375,20 @@ export function SymbolDetailPage() {
                 {symbol.unique_id} (Lines: {symbol.start_line} - {symbol.end_line})
             </p>
 
-            {/* Documentation Section */}
             <div style={{ marginBottom: '30px' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px', borderBottom: '1px solid #444', paddingBottom: '10px' }}>
                     <h2 style={{ color: '#d4d4d4', margin: 0 }}>
                         Description
                     </h2>
-                    {/* Buttons appear only if not in editing mode */}
-                    {!isEditingDoc && symbol && (
+                    {!isEditingDoc && ( // Removed symbol check as it's guaranteed by this point
                         <div style={{ display: 'flex', gap: '10px' }}>
                             <button
                                 onClick={() => {
-                                    // When clicking "Edit", pre-fill with existing doc or last AI generated one
                                     setEditedDoc(aiGeneratedDoc !== null ? aiGeneratedDoc : (symbol.documentation || ""));
                                     setIsEditingDoc(true);
-                                    setAiGeneratedDoc(null); // Clear AI temp doc once editing starts
+                                    setAiGeneratedDoc(null);
                                 }}
-                                style={{ /* your button style, e.g., secondary */ padding: '8px 12px', backgroundColor: '#333', border: '1px solid #555' }}
+                                style={{ padding: '8px 12px', backgroundColor: '#333', border: '1px solid #555', color: '#d4d4d4', cursor: 'pointer', borderRadius: '4px' }}
                                 title="Edit current documentation"
                             >
                                 <FaEdit style={{ marginRight: '5px' }} /> Edit
@@ -374,7 +396,7 @@ export function SymbolDetailPage() {
                             <button
                                 onClick={handleGenerateAIDoc}
                                 disabled={isGeneratingAIDoc}
-                                style={{ /* your button style, e.g., primary */ padding: '8px 12px', backgroundColor: '#238636', border: 'none' }}
+                                style={{ padding: '8px 12px', backgroundColor: '#238636', border: 'none', color: 'white', cursor: 'pointer', borderRadius: '4px' }}
                                 title="Generate documentation with AI"
                             >
                                 {isGeneratingAIDoc ? <FaSpinner className="animate-spin" style={{ marginRight: '5px' }} /> : <FaRobot style={{ marginRight: '5px' }} />}
@@ -384,7 +406,7 @@ export function SymbolDetailPage() {
                     )}
                 </div>
 
-                {isEditingDoc && symbol ? (
+                {isEditingDoc ? ( // Removed symbol check as it's guaranteed
                     <div>
                         <textarea
                             value={editedDoc}
@@ -392,13 +414,13 @@ export function SymbolDetailPage() {
                             placeholder="Enter documentation here..."
                             style={{
                                 width: '100%',
-                                minHeight: '200px', // Increased height
-                                backgroundColor: '#010409', // Darker editor background
+                                minHeight: '200px',
+                                backgroundColor: '#010409',
                                 color: '#c9d1d9',
                                 border: '1px solid #30363d',
                                 borderRadius: '6px',
                                 padding: '15px',
-                                fontFamily: `'Fira Code', 'Source Code Pro', monospace`, // Monospace font
+                                fontFamily: `'Fira Code', 'Source Code Pro', monospace`,
                                 fontSize: '0.9em',
                                 lineHeight: '1.6'
                             }}
@@ -406,33 +428,30 @@ export function SymbolDetailPage() {
                         <div style={{ marginTop: '15px', display: 'flex', gap: '10px' }}>
                             <button
                                 onClick={handleSaveEditedDoc}
-                                style={{ /* your primary save button style */ padding: '10px 15px', backgroundColor: '#2ea043', border: 'none' }}
+                                style={{ padding: '10px 15px', backgroundColor: '#2ea043', border: 'none', color: 'white', cursor: 'pointer', borderRadius: '4px' }}
                             >
                                 <FaSave style={{ marginRight: '5px' }} /> Save Changes
                             </button>
                             <button
                                 onClick={() => {
                                     setIsEditingDoc(false);
-                                    setAiGeneratedDoc(null); // Clear AI temp doc on cancel
-                                    // setEditedDoc(""); // Optionally clear, or let it persist until next edit
+                                    setAiGeneratedDoc(null);
                                 }}
-                                style={{ /* your secondary cancel button style */ padding: '10px 15px', backgroundColor: '#586069', border: 'none' }}
+                                style={{ padding: '10px 15px', backgroundColor: '#586069', border: 'none', color: 'white', cursor: 'pointer', borderRadius: '4px' }}
                             >
                                 Cancel
                             </button>
                         </div>
                     </div>
                 ) : (
-                    // Displaying Logic: Show AI generated (if any), else existing, else "no docs"
                     <div style={{
                         backgroundColor: '#252526', padding: '20px', borderRadius: '8px',
                         whiteSpace: 'pre-wrap', lineHeight: '1.6', border: '1px solid #333',
                         boxShadow: '0 2px 5px rgba(0,0,0,0.2)',
-                        minHeight: '100px' // Ensure some height even if empty
+                        minHeight: '100px'
                     }}>
                         {isGeneratingAIDoc && !aiGeneratedDoc && <span style={{ color: '#888' }}>AI is generating documentation... <FaSpinner className="animate-spin" /></span>}
                         {aiGeneratedDoc !== null ? (
-                            // If AI doc is being streamed or just finished, show it
                             aiGeneratedDoc || <span style={{ color: '#888' }}>AI is generating...</span>
                         ) : symbol.documentation ? (
                             symbol.documentation
@@ -449,7 +468,7 @@ export function SymbolDetailPage() {
                     <button
                         onClick={handleCreatePR}
                         disabled={isCreatingPR || (prStatus && !prStatus.error && !prStatus.pr_url)}
-                        style={{ /* ... your button styles ... */ display: 'flex', alignItems: 'center', padding: '10px 15px', backgroundColor: '#2c2c2c', border: '1px solid #555' }}
+                        style={{ display: 'flex', alignItems: 'center', padding: '10px 15px', backgroundColor: '#2c2c2c', border: '1px solid #555', color: '#d4d4d4', cursor: 'pointer', borderRadius: '4px' }}
                     >
                         <FaGithub style={{ marginRight: '8px' }} />
                         {isCreatingPR ? 'Processing...' : (prStatus && prStatus.task_id && !prStatus.pr_url ? 'PR In Progress...' : 'Create GitHub PR with this Docstring')}
@@ -472,26 +491,27 @@ export function SymbolDetailPage() {
                         Source Code
                     </h2>
                     <div style={{
-                        backgroundColor: '#1e1e1e', // Match editor background
+                        backgroundColor: '#1e1e1e',
                         borderRadius: '8px',
                         border: '1px solid #333',
-                        overflow: 'hidden' // For rounded corners on highlighter
+                        overflow: 'hidden'
                     }}>
                         <SyntaxHighlighter
                             language={sourceLang}
-                            style={vscDarkPlus}
+                            style={vscDarkPlus} // Using the imported vscDarkPlus directly
                             showLineNumbers
                             wrapLongLines
                             lineNumberStyle={{
-                                color: '#6a9955',
-                                backgroundColor: '#2d2d2d',
+                                color: '#6a9955', // Example color, adjust as needed
+                                backgroundColor: '#2d2d2d', // Example background, adjust
                                 paddingRight: '10px',
+                                userSelect: 'none' // Prevent selection of line numbers
                             }}
-                            customStyle={{
+                            customStyle={{ // customStyle on SyntaxHighlighter itself
                                 margin: 0,
-                                padding: '1rem',
+                                padding: '1rem', // Ensure padding is applied
                                 lineHeight: 1.5,
-                                background: 'transparent'
+                                background: 'transparent' // Make it transparent if parent has bg
                             }}
                             codeTagProps={{
                                 style: {
@@ -502,12 +522,11 @@ export function SymbolDetailPage() {
                                 }
                             }}
                         >
-                            {symbol.source_code.trimEnd()} {/* Trim trailing newlines for cleaner display */}
+                            {symbol.source_code.trimEnd()}
                         </SyntaxHighlighter>
                     </div>
                 </div>
             )}
-            {/* Dependencies Section - Grid Layout */}
             <div style={{ marginBottom: '30px' }}>
                 <h2 style={{ color: '#d4d4d4', borderBottom: '1px solid #444', paddingBottom: '10px', marginBottom: '20px' }}>
                     Call Graph
@@ -517,51 +536,51 @@ export function SymbolDetailPage() {
                     {renderDependencyList(symbol.incoming_calls, "Called By (Dependents)")}
                 </div>
             </div>
-            {/* Architecture Diagram Section */}
             <div style={{ marginTop: '30px', marginBottom: '30px' }}>
                 <h2 style={{ color: '#c9d1d9', borderBottom: '1px solid #30363d', paddingBottom: '10px', marginBottom: '15px' }}>
                     Local Architecture
                 </h2>
                 <button
-                    onClick={handleGenerateDiagram}
-                    disabled={diagramLoading || !symbol} // Disable if no symbol or already loading
+                    onClick={handleLoadFlowData}
+                    disabled={flowLoading || !symbol} 
                     style={{
                         backgroundColor: '#238636', color: 'white', border: 'none', padding: '10px 15px',
                         borderRadius: '6px', cursor: 'pointer', marginBottom: '15px', display: 'flex', alignItems: 'center',
-                        opacity: (diagramLoading || !symbol) ? 0.7 : 1
+                        opacity: (flowLoading || !symbol) ? 0.7 : 1 
                     }}
                 >
-                    {diagramLoading ?
-                        <FaSpinner className="animate-spin" style={{ marginRight: '8px' }} /> :
-                        <FaProjectDiagram style={{ marginRight: '8px' }} />
-                    }
-                    {diagramLoading ? 'Generating...' : (mermaidCode ? 'Regenerate Diagram' : 'Generate Diagram')}
+                    {flowLoading ? <FaSpinner className="animate-spin" style={{marginRight: '5px'}}/> : <FaProjectDiagram style={{marginRight: '5px'}}/>}
+                    {flowLoading ? 'Loading Diagram...' : (nodes.length > 0 ? 'Reload Diagram' : 'Load Diagram')}
                 </button>
 
-                {diagramLoading && !mermaidCode && <p style={{ color: '#8b949e' }}>Loading diagram...</p>}
+                {flowError && <p style={{color: 'red'}}><FaExclamationTriangle style={{marginRight: '5px'}}/> {flowError}</p>}
 
-                {mermaidCode && (
-                    <div style={{
-                        marginTop: '15px', border: '1px solid #30363d', padding: '20px',
-                        backgroundColor: '#0d1117', borderRadius: '6px', // Dark background for the diagram container
-                        boxShadow: '0 4px 12px rgba(0,0,0,0.3)'
-                    }}>
-                        <Mermaid chart={mermaidCode} />
+                {nodes.length > 0 && !flowLoading && (
+                    <div style={{ height: '500px', border: '1px solid #30363d', borderRadius: '8px', marginTop: '15px', backgroundColor: '#0d1117' }}>
+                    <ReactFlow
+                        nodes={nodes}
+                        onlyRenderVisibleElements={true}
+                        edges={edges}
+                        onNodesChange={onNodesChange}
+                        onEdgesChange={onEdgesChange}
+                        onNodeClick={onNodeClick}
+                        fitView
+                        nodeTypes={nodeTypesConfig}
+                        defaultEdgeOptions={{ animated: false, style: { stroke: '#777' } }}
+                    >
+                        <Controls />
+                        <MiniMap nodeStrokeWidth={3} zoomable pannable />
+                        <Background variant="dots" gap={12} size={1} color="#2a2a2a" />
+                    </ReactFlow>
                     </div>
                 )}
-                {diagramError && !diagramLoading && (
-                    <p style={{ color: 'red', marginTop: '10px' }}><FaExclamationTriangle style={{ marginRight: '5px' }} /> {diagramError}</p>
+                {!initialLoadAttempted && nodes.length === 0 && !flowLoading && !flowError && (
+                    <p style={{color: '#888'}}>Click "Load Diagram" to visualize the local architecture.</p>
                 )}
-            </div>
-            {/* Placeholder for future "View Source" or "Related Files" */}
-            {/* 
-      <div style={{ marginTop: '30px' }}>
-        <h2 style={{ color: '#d4d4d4', borderBottom: '1px solid #444', paddingBottom: '10px', marginBottom: '15px' }}>
-          Source Code
-        </h2>
-        <p style={{color: '#888'}}>Source code display will be implemented here.</p>
-      </div> 
-      */}
+                {initialLoadAttempted && nodes.length === 0 && !flowLoading && !flowError && (
+                     <p style={{color: '#888'}}>No diagram data found or diagram is empty.</p>
+                )}
+                </div>
         </div>
     );
 }

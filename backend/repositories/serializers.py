@@ -5,7 +5,7 @@ from rest_framework import generics, permissions
 import os # Ensure os is imported
 REPO_CACHE_BASE_PATH = "/var/repos" # Use the same constant
 # A serializer for our most granular item: a function or method.
-
+from .models import Notification
 
 class DependencyLinkSerializer(serializers.ModelSerializer):
     # We'll represent the other end of the link by its unique_id and name
@@ -35,7 +35,7 @@ class CodeSymbolSerializer(serializers.ModelSerializer):
         model = CodeSymbol
         fields = [
             'id', 'unique_id', 'name', 'start_line', 'end_line',
-            'documentation', 'content_hash', 'documentation_hash',
+            'documentation', 'content_hash', 'documentation_hash', 'documentation_status', 
             'incoming_calls', 'outgoing_calls','source_code' # Add to fields list
         ]
 
@@ -99,7 +99,7 @@ class ClassSerializer(serializers.ModelSerializer):
         model = CodeClass
         fields = [
             'id', 'name', 'start_line', 'end_line',
-            'structure_hash', 'methods'
+            'structure_hash', 'methods',
         ]
 
 # A serializer for a file, which nests its top-level functions AND its classes.
@@ -128,8 +128,8 @@ class RepositoryDetailSerializer(serializers.ModelSerializer):
         model = Repository
         fields = [
             'id', 'name', 'full_name', 'github_id',
-            'status', 'root_merkle_hash', 'files'
-        ]
+            'status', 'root_merkle_hash', 'files',
+        'last_processed']
         read_only_fields = ['status', 'files', 'root_merkle_hash']
 
 
@@ -163,3 +163,15 @@ class AsyncTaskStatusSerializer(serializers.ModelSerializer):
             'updated_at'
         ]
         read_only_fields = fields
+        
+class NotificationSerializer(serializers.ModelSerializer):
+    repository_full_name = serializers.CharField(source='repository.full_name', read_only=True, allow_null=True)
+    
+    class Meta:
+        model = Notification
+        fields = [
+            'id', 'user', 'repository', 'repository_full_name', 
+            'notification_type', 'get_notification_type_display', 
+            'message', 'is_read', 'created_at', 'link_url'
+        ]
+        read_only_fields = ('user', 'created_at')
