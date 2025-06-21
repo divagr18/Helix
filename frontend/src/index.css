@@ -80,6 +80,7 @@ html {
     --popover: oklch(1 0 0);
     /* White */
     --popover-foreground: oklch(0.129 0.042 264.695);
+    --scrollbar-thumb-bg: rgba(255, 255, 255, 0);
     /* Dark text */
 
     --primary: oklch(0.208 0.042 265.755);
@@ -144,6 +145,12 @@ html {
     --sidebar-accent-foreground: oklch(0.208 0.042 265.755);
     --sidebar-border: oklch(0.929 0.013 255.508);
     --sidebar-ring: oklch(0.704 0.04 256.788);
+    --scrollbar-thumb-bg: hsl(var(--primary)); /* Use primary accent for the thumb */
+    --scrollbar-thumb-hover-bg: hsl(var(--primary) / 0.8); /* Slightly transparent primary on hover */
+    --scrollbar-track-bg: transparent; /* Fully transparent track */
+    /* For Firefox specifically */
+    --scrollbar-firefox-thumb: hsl(var(--primary));
+    --scrollbar-firefox-track: hsl(var(--muted) / 0.1);
   }
 
   /* Dark Theme Variables */
@@ -291,4 +298,44 @@ html {
 /* Assuming it's custom or you want to ensure it's defined: */
 .animate-spin {
   animation: spin 1s linear infinite;
+}
+::-webkit-scrollbar {
+  width: 4px;  /* Width of the vertical scrollbar */
+  height: 8px; /* Height of the horizontal scrollbar */
+}
+
+::-webkit-scrollbar-track {
+  background: var(--scrollbar-track-bg);
+  border-radius: 4px; /* Optional: if you want rounded tracks */
+}
+
+::-webkit-scrollbar-thumb {
+  background-color: #FFFFFF;
+  border-radius: 2px;
+  /* Optional: add a subtle border to the thumb if needed for contrast */
+  /* border: 1px solid hsl(var(--border) / 0.5); */
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--scrollbar-thumb-hover-bg);
+}
+
+::-webkit-scrollbar-corner {
+  /* Style for the corner where vertical and horizontal scrollbars meet */
+  background: transparent;
+}
+
+.ScrollAreaScrollbar {
+  background: #FFFFFF !important; /* transparent */
+}
+
+/* 2) Thumb (the draggable handle) */
+.ScrollAreaThumb {
+  background-color: #FFFFFF !important; /* semi-opaque white */
+  border-radius: 42x;  /* or your --radius-sm */
+}
+
+/* 3) Optional hover effect */
+.ScrollAreaThumb:hover {
+  background-color: rgba(255,255,255,0.8) !important;
 }
