@@ -9,6 +9,11 @@ export interface AppNotification {
   notification_type?: string; // e.g., 'STALENESS_ALERT'
   get_notification_type_display?: string; // Human-readable type
 }
+export interface LinkedSymbol {
+  id: number;
+  name: string;
+  unique_id: string; // Ensure this matches your LinkedSymbolSerializer
+}
 export interface CodeSymbol {
   id: number;
   name: string;
@@ -16,6 +21,8 @@ export interface CodeSymbol {
   end_line: number;
   documentation: string | null;
   content_hash: string | null;
+  incoming_calls: LinkedSymbol[];
+  outgoing_calls: LinkedSymbol[];
   documentation_hash: string | null;
   documentation_status: string | null;
   is_orphan?: boolean; // <<<< ADD THIS (optional if not always present)
@@ -24,6 +31,13 @@ export interface CodeSymbol {
   className?: string;
   loc?: number | null;
   cyclomatic_complexity?: number | null;
+}
+export interface SymbolDetail extends CodeSymbol { // Extends the base
+  source_code: string | null;       // Specific to detail view
+  incoming_calls: LinkedSymbol[]; // Specific to detail view
+  outgoing_calls: LinkedSymbol[]; // Specific to detail view
+  unique_id: string;              // Guaranteed to be present and non-optional
+  // Potentially other detailed fields
 }
 
 export interface CodeClass {

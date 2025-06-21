@@ -1,5 +1,6 @@
 /* Import Google Fonts */
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,100..700;1,100..700&family=Libre+Caslon+Text:ital,wght@0,400;0,700;1,400&display=swap');
 
 /* Tailwind CSS Directives */
 @import "tailwindcss";
@@ -48,11 +49,29 @@
 
   /* any other theme values you need (fonts, keyframes, etc.) */
 }
+
 html {
-  font-size: 14px; /* Try 14px or 15px as a base */
+  font-size: 14px;
+  /* Try 14px or 15px as a base */
   /* This will make 1rem = 14px or 15px */
 }
+
 @layer base {
+  .card {
+    /* 
+      This sets the default border to a darker, more subtle version.
+      You can adjust the opacity (e.g., / 0.1) or use a different
+      color variable like --muted-foreground if you prefer.
+    */
+    border-color: hsl(var(--primary) / 0.15);
+    /* Default: 15% opaque primary color */
+  }
+
+  /* Define the hover state for all cards */
+  .card:hover {
+    /* On hover, the border becomes the fully opaque primary color */
+    border-color: hsl(var(--primary));
+  }
 
   /* Light Theme Variables (prioritizing oklch values) */
   :root {
@@ -145,9 +164,12 @@ html {
     --sidebar-accent-foreground: oklch(0.208 0.042 265.755);
     --sidebar-border: oklch(0.929 0.013 255.508);
     --sidebar-ring: oklch(0.704 0.04 256.788);
-    --scrollbar-thumb-bg: hsl(var(--primary)); /* Use primary accent for the thumb */
-    --scrollbar-thumb-hover-bg: hsl(var(--primary) / 0.8); /* Slightly transparent primary on hover */
-    --scrollbar-track-bg: transparent; /* Fully transparent track */
+    --scrollbar-thumb-bg: hsl(var(--primary));
+    /* Use primary accent for the thumb */
+    --scrollbar-thumb-hover-bg: hsl(var(--primary) / 0.8);
+    /* Slightly transparent primary on hover */
+    --scrollbar-track-bg: transparent;
+    /* Fully transparent track */
     /* For Firefox specifically */
     --scrollbar-firefox-thumb: hsl(var(--primary));
     --scrollbar-firefox-track: hsl(var(--muted) / 0.1);
@@ -177,7 +199,7 @@ html {
     /* For example, a dark theme primary might be: oklch(0.7 0.15 265) (a noticeable blue) */
     --primary: oklch(0.929 0.013 255.508);
     /* Current: Very Light Blue/Off-white */
-    --primary-foreground: oklch(95.501% 0.02128 268.454);
+    --primary-foreground: #272727;
     /* Dark text for on-primary */
 
     --secondary: oklch(0.279 0.041 260.031);
@@ -299,14 +321,18 @@ html {
 .animate-spin {
   animation: spin 1s linear infinite;
 }
+
 ::-webkit-scrollbar {
-  width: 4px;  /* Width of the vertical scrollbar */
-  height: 8px; /* Height of the horizontal scrollbar */
+  width: 4px;
+  /* Width of the vertical scrollbar */
+  height: 8px;
+  /* Height of the horizontal scrollbar */
 }
 
 ::-webkit-scrollbar-track {
   background: var(--scrollbar-track-bg);
-  border-radius: 4px; /* Optional: if you want rounded tracks */
+  border-radius: 4px;
+  /* Optional: if you want rounded tracks */
 }
 
 ::-webkit-scrollbar-thumb {
@@ -326,16 +352,19 @@ html {
 }
 
 .ScrollAreaScrollbar {
-  background: #FFFFFF !important; /* transparent */
+  background: #FFFFFF !important;
+  /* transparent */
 }
 
 /* 2) Thumb (the draggable handle) */
 .ScrollAreaThumb {
-  background-color: #FFFFFF !important; /* semi-opaque white */
-  border-radius: 42x;  /* or your --radius-sm */
+  background-color: #FFFFFF !important;
+  /* semi-opaque white */
+  border-radius: 42x;
+  /* or your --radius-sm */
 }
 
 /* 3) Optional hover effect */
 .ScrollAreaThumb:hover {
-  background-color: rgba(255,255,255,0.8) !important;
+  background-color: rgba(255, 255, 255, 0.8) !important;
 }

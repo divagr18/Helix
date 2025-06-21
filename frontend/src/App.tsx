@@ -11,6 +11,7 @@ import { RepoDetailPage } from './pages/RepoDetailPage';
 import { SymbolDetailPage } from './pages/SymbolDetailPage';
 import { SearchResultsPage } from './pages/SearchResultsPage'; // Import
 import { ThemeProvider } from "@/components/theme-provider"
+import { Toaster } from 'sonner'; // <-- 1. Import the Toaster
 
 // Import the new page
 
@@ -75,9 +76,9 @@ function App() {
     <ThemeProvider defaultTheme="dark" storageKey="vite-ui-theme">
 
       <BrowserRouter>
-
+        <Toaster richColors closeButton position="top-right" />
         <div className="flex flex-col h-screen bg-background text-foreground" style={{ height: `calc(100vh - ${rootVerticalPadding})` }} // Adjust height
-      >
+        >
           <AppContent />
         </div>
       </BrowserRouter>

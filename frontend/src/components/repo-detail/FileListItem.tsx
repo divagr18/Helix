@@ -14,16 +14,16 @@ interface FileListItemProps {
   onBatchSelectionChange: (fileId: number, isSelected: boolean) => void;
   isSelectedFile: boolean; // Is this the currently viewed file in the center panel?
   onFileSelect: (file: CodeFile) => void; // To select the file for viewing
-  
+
   onGenerateDocsForFile: (fileId: number, fileName: string) => void;
   isProcessingDocsThisFile: boolean; // True if "Docs" button for THIS file is active
-  
+
   onCreatePRForFile: (fileId: number, fileName: string) => void;
   isCreatingPRThisFile: boolean; // True if "PR" button for THIS file is active
-  
+
   isAnyGlobalBatchProcessing: boolean; // True if any global batch (doc gen or PR) is running
-                                      // OR if any other file's individual action is running.
-  
+  // OR if any other file's individual action is running.
+
   batchMessageForThisFile: string | null;
   prMessageForThisFile: string | null;
 }
@@ -50,28 +50,38 @@ export const FileListItem: React.FC<FileListItemProps> = ({
 
   return (
     <li
-      className={`mb-1 rounded-md transition-colors group ${
-        isSelectedFile ? 'bg-primary/10 text-primary-foreground' : 'hover:bg-accent hover:text-accent-foreground'
-      }`}
+      className={`mb-1 rounded-md transition-none group ${isSelectedFile
+        ? 'bg-white text-neutral-600 shadow-sm border border-border'
+        : 'hover:bg-accent hover:text-accent-foreground'
+        }`}
     >
       <div className="flex items-center p-2 md:p-2.5"> {/* Slightly less padding for list items */}
         <Checkbox
           id={`file-checkbox-${file.id}`}
           checked={isSelectedForBatch}
           onCheckedChange={handleCheckboxChange}
-          className="mr-2 md:mr-3 flex-shrink-0 data-[state=checked]:bg-primary data-[state=checked]:text-primary-foreground"
-          disabled={isAnyGlobalBatchProcessing && !fileSpecificOperationInProgress} // Disable if a global batch is running unless it's this file
+          className={`mr-2 md:mr-3 flex-shrink-0
+    ${isSelectedFile
+              ? 'bg-neutral-300 border-neutral-400 text-neutral-700'
+              : 'data-[state=checked]:bg-primary data-[state=checked]:text-primary-foreground'
+            }
+  `}
+          disabled={isAnyGlobalBatchProcessing && !fileSpecificOperationInProgress}
           aria-label={`Select file ${file.file_path} for batch processing`}
         />
-        
+
         <div
           onClick={() => onFileSelect(file)}
           className={`flex-grow flex items-center gap-2 min-w-0 p-1 rounded-sm cursor-pointer 
                       ${isSelectedFile ? 'font-semibold' : ''}`}
           title={file.file_path}
         >
-          <FileCode className={`h-4 w-4 flex-shrink-0 ${isSelectedFile ? 'text-primary' : 'text-muted-foreground group-hover:text-accent-foreground'}`} />
-          <span className="truncate text-sm">
+          <FileCode
+            className={`h-4 w-4 flex-shrink-0 ${isSelectedFile
+              ? 'text-neutral-600'
+              : 'text-muted-foreground group-hover:text-accent-foreground'
+              }`}
+          />          <span className="truncate text-sm">
             {file.file_path}
           </span>
         </div>
@@ -122,9 +132,9 @@ export const FileListItem: React.FC<FileListItemProps> = ({
       {(batchMessageForThisFile || prMessageForThisFile) && (
         <div className={`px-2.5 pb-2 pt-1 text-xs border-t border-dashed 
                         ${(batchMessageForThisFile?.toLowerCase().includes('error') || batchMessageForThisFile?.toLowerCase().includes('failed') ||
-                          prMessageForThisFile?.toLowerCase().includes('error') || prMessageForThisFile?.toLowerCase().includes('failed'))
-                          ? 'text-destructive border-destructive/30' 
-                          : 'text-muted-foreground border-border/50'}`}
+            prMessageForThisFile?.toLowerCase().includes('error') || prMessageForThisFile?.toLowerCase().includes('failed'))
+            ? 'text-destructive border-destructive/30'
+            : 'text-muted-foreground border-border/50'}`}
         >
           {batchMessageForThisFile || prMessageForThisFile}
         </div>

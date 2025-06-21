@@ -9,11 +9,11 @@ import { ScrollArea } from '@/components/ui/scroll-area'; // For the list if it'
 import { Badge } from '@/components/ui/badge'; // Optional: for the count
 
 // Assuming CodeSymbol type is in src/types.ts and includes filePath & className for orphans
-import { type CodeSymbol } from '@/types'; 
+import { type CodeSymbol } from '@/types';
 
 export interface OrphanSymbolDisplayItem extends CodeSymbol {
   // These fields are added by the parent when preparing the list
-  filePath: string; 
+  filePath: string;
   className?: string;
 }
 
