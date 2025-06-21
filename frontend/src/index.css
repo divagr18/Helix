@@ -2,11 +2,13 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
 
 /* Tailwind CSS Directives */
-@import "tailwindcss";         /* or @tailwind base/components/utilities */
+@import "tailwindcss";
+/* or @tailwind base/components/utilities */
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
 @theme {
   /* colors */
   --color-background: var(--background);
@@ -37,7 +39,8 @@
   --color-input: var(--input);
 
   /* border radii */
-  --radius: var(--radius);        /* base radius */
+  --radius: var(--radius);
+  /* base radius */
   --radius-sm: var(--radius-sm);
   --radius-md: var(--radius-md);
   --radius-lg: var(--radius-lg);
@@ -45,47 +48,82 @@
 
   /* any other theme values you need (fonts, keyframes, etc.) */
 }
+
 @layer base {
+
   /* Light Theme Variables (prioritizing oklch values) */
   :root {
+    height: 100%;
+    margin: 0 !important;
+    /* Force margin to 0 */
+    padding: 0 !important;
+    /* Force padding to 0 */
+    width: 100% !important;
+    /* Force width to 100% */
+    max-width: none !important;
+    /* Force no max-width constraint */
+    text-align: left !important;
     /* Base Colors (Light Mode) */
-    --background: oklch(1 0 0);                     /* White */
-    --foreground: oklch(0.129 0.042 264.695);       /* Dark text */
+    --background: oklch(1 0 0);
+    /* White */
+    --foreground: oklch(0.129 0.042 264.695);
+    /* Dark text */
 
-    --card: oklch(1 0 0);                           /* White */
-    --card-foreground: oklch(0.129 0.042 264.695);  /* Dark text */
+    --card: oklch(1 0 0);
+    /* White */
+    --card-foreground: oklch(0.129 0.042 264.695);
+    /* Dark text */
 
-    --popover: oklch(1 0 0);                        /* White */
-    --popover-foreground: oklch(0.129 0.042 264.695); /* Dark text */
+    --popover: oklch(1 0 0);
+    /* White */
+    --popover-foreground: oklch(0.129 0.042 264.695);
+    /* Dark text */
 
-    --primary: oklch(0.208 0.042 265.755);          /* Current: Dark Blue/Purple */
-    --primary-foreground: oklch(0.984 0.003 247.858); /* Light text for on-primary */
+    --primary: oklch(0.208 0.042 265.755);
+    /* Current: Dark Blue/Purple */
+    --primary-foreground: oklch(0.984 0.003 247.858);
+    /* Light text for on-primary */
 
-    --secondary: oklch(0.968 0.007 247.896);        /* Very light gray/off-white */
-    --secondary-foreground: oklch(0.208 0.042 265.755); /* Dark text for on-secondary */
+    --secondary: oklch(0.968 0.007 247.896);
+    /* Very light gray/off-white */
+    --secondary-foreground: oklch(0.208 0.042 265.755);
+    /* Dark text for on-secondary */
 
-    --muted: oklch(0.968 0.007 247.896);             /* Very light gray/off-white */
-    --muted-foreground: oklch(0.554 0.046 257.417);  /* Medium-dark gray text */
+    --muted: oklch(0.968 0.007 247.896);
+    /* Very light gray/off-white */
+    --muted-foreground: oklch(0.554 0.046 257.417);
+    /* Medium-dark gray text */
 
-    --accent: oklch(0.968 0.007 247.896);            /* Very light gray/off-white */
-    --accent-foreground: oklch(0.208 0.042 265.755); /* Dark text for on-accent */
+    --accent: oklch(0.968 0.007 247.896);
+    /* Very light gray/off-white */
+    --accent-foreground: oklch(0.208 0.042 265.755);
+    /* Dark text for on-accent */
 
     /* Functional Colors (Light Mode) */
-    --destructive: oklch(0.577 0.245 27.325);       /* Reddish */
-    --destructive-foreground: oklch(0.984 0.003 247.858); /* Light text for on-destructive */
+    --destructive: oklch(0.577 0.245 27.325);
+    /* Reddish */
+    --destructive-foreground: oklch(0.984 0.003 247.858);
+    /* Light text for on-destructive */
 
-    --border: oklch(0.929 0.013 255.508);            /* Light gray */
-    --input: oklch(0.929 0.013 255.508);             /* Light gray */
-    --ring: oklch(0.704 0.04 256.788);               /* A distinct blue/purple for focus rings */
+    --border: oklch(0.929 0.013 255.508);
+    /* Light gray */
+    --input: oklch(0.929 0.013 255.508);
+    /* Light gray */
+    --ring: oklch(0.704 0.04 256.788);
+    /* A distinct blue/purple for focus rings */
     /* Consider aligning with primary: var(--primary) */
 
     /* Radius */
-    --radius: 0.625rem; /* 10px if 1rem = 16px */
+    --radius: 0.625rem;
+    /* 10px if 1rem = 16px */
     /* Derived Radii (from your @theme inline) */
-    --radius-sm: calc(var(--radius) - 0.25rem);  /* e.g., 0.375rem or 6px */
-    --radius-md: calc(var(--radius) - 0.125rem); /* e.g., 0.5rem or 8px */
+    --radius-sm: calc(var(--radius) - 0.25rem);
+    /* e.g., 0.375rem or 6px */
+    --radius-md: calc(var(--radius) - 0.125rem);
+    /* e.g., 0.5rem or 8px */
     --radius-lg: var(--radius);
-    --radius-xl: calc(var(--radius) + 0.25rem);  /* e.g., 0.875rem or 14px */
+    --radius-xl: calc(var(--radius) + 0.25rem);
+    /* e.g., 0.875rem or 14px */
 
     /* Chart Colors (Light Mode) */
     --chart-1: oklch(0.646 0.222 41.116);
@@ -108,38 +146,57 @@
   /* Dark Theme Variables */
   .dark {
     /* Base Colors (Dark Mode) */
-    --background: oklch(0.1344 0 0);       /* Dark Blue/Gray */
-    --foreground: oklch(0.984 0.003 247.858);       /* Light text (off-white) */
+    --background: oklch(0.1344 0 0);
+    /* Dark Blue/Gray */
+    --foreground: oklch(0.984 0.003 247.858);
+    /* Light text (off-white) */
 
-    --card: oklch(0.1467 0 6.35);             /* Slightly lighter dark blue/gray */
-    --card-foreground: oklch(0.984 0.003 247.858);  /* Light text */
+    --card: oklch(0.1467 0 6.35);
+    /* Slightly lighter dark blue/gray */
+    --card-foreground: oklch(0.984 0.003 247.858);
+    /* Light text */
 
-    --popover: oklch(0.208 0.042 265.755);          /* Slightly lighter dark blue/gray */
-    --popover-foreground: oklch(0.984 0.003 247.858); /* Light text */
+    --popover: oklch(0.208 0.042 265.755);
+    /* Slightly lighter dark blue/gray */
+    --popover-foreground: oklch(0.984 0.003 247.858);
+    /* Light text */
 
     /* Accent Colors (Dark Mode) - REVIEW THESE CAREFULLY */
     /* The oklch primary `oklch(0.929 0.013 255.508)` is very light for a dark theme primary. */
     /* Consider your HSL blue: `217 91% 60%` or a dark theme appropriate oklch value. */
     /* For example, a dark theme primary might be: oklch(0.7 0.15 265) (a noticeable blue) */
-    --primary: oklch(0.929 0.013 255.508);          /* Current: Very Light Blue/Off-white */
-    --primary-foreground: oklch(0.208 0.042 265.755); /* Dark text for on-primary */
+    --primary: oklch(0.929 0.013 255.508);
+    /* Current: Very Light Blue/Off-white */
+    --primary-foreground: oklch(0.208 0.042 265.755);
+    /* Dark text for on-primary */
 
-    --secondary: oklch(0.279 0.041 260.031);        /* Darker gray */
-    --secondary-foreground: oklch(0.984 0.003 247.858); /* Light text */
+    --secondary: oklch(0.279 0.041 260.031);
+    /* Darker gray */
+    --secondary-foreground: oklch(0.984 0.003 247.858);
+    /* Light text */
 
-    --muted: oklch(0.279 0.041 260.031);             /* Darker gray */
-    --muted-foreground: oklch(0.704 0.04 256.788);   /* Medium-light gray text */
+    --muted: oklch(0.279 0.041 260.031);
+    /* Darker gray */
+    --muted-foreground: oklch(0.704 0.04 256.788);
+    /* Medium-light gray text */
 
-    --accent: oklch(0.279 0.041 260.031);            /* Darker gray */
-    --accent-foreground: oklch(0.984 0.003 247.858); /* Light text */
+    --accent: oklch(0.279 0.041 260.031);
+    /* Darker gray */
+    --accent-foreground: oklch(0.984 0.003 247.858);
+    /* Light text */
 
     /* Functional Colors (Dark Mode) */
-    --destructive: oklch(0.704 0.191 22.216);       /* Brighter Red */
-    --destructive-foreground: oklch(0.984 0.003 247.858); /* Light text */
+    --destructive: oklch(0.704 0.191 22.216);
+    /* Brighter Red */
+    --destructive-foreground: oklch(0.984 0.003 247.858);
+    /* Light text */
 
-    --border: oklch(1 0 0 / 10%);                   /* White with 10% alpha for subtle border */
-    --input: oklch(1 0 0 / 15%);                    /* White with 15% alpha for input background */
-    --ring: oklch(0.551 0.027 264.364);             /* A distinct blue/purple for focus rings */
+    --border: oklch(1 0 0 / 10%);
+    /* White with 10% alpha for subtle border */
+    --input: oklch(1 0 0 / 15%);
+    /* White with 15% alpha for input background */
+    --ring: oklch(0.551 0.027 264.364);
+    /* A distinct blue/purple for focus rings */
     /* Consider aligning with primary: var(--primary) */
 
     /* Chart Colors (Dark Mode) */
@@ -161,22 +218,28 @@
   }
 
   body {
-    background-color: var(--background); /* USE VARIABLE DIRECTLY */
+    background-color: var(--background);
+    /* USE VARIABLE DIRECTLY */
     color: var(--foreground);
     font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
     line-height: 1.5;
     font-weight: 400;
-    color-scheme: light dark; /* Helps browser UI adapt (scrollbars, etc.) */
+    color-scheme: light dark;
+    /* Helps browser UI adapt (scrollbars, etc.) */
     font-synthesis: none;
     text-rendering: optimizeLegibility;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
-    font-feature-settings: "rlig" 1, "calt" 1; /* Recommended by shadcn/ui */
+    font-feature-settings: "rlig" 1, "calt" 1;
+    /* Recommended by shadcn/ui */
 
     /* Body layout - if for global centering, keep. Otherwise, scope to app container. */
-    margin: 0; /* Tailwind's preflight handles this, but explicit is fine. */
-    /* display: flex; */ /* These are very specific layout styles for body. */
-    /* place-items: center; */ /* Usually, you'd apply these to a root div in your App component. */
+    margin: 0;
+    /* Tailwind's preflight handles this, but explicit is fine. */
+    /* display: flex; */
+    /* These are very specific layout styles for body. */
+    /* place-items: center; */
+    /* Usually, you'd apply these to a root div in your App component. */
     min-width: 320px;
     min-height: 100vh;
   }
@@ -184,24 +247,27 @@
   /* Base Element Styling */
   a {
     font-weight: 500;
-    color: var(--primary); /* Use themed primary color for links */
+    color: var(--primary);
+    /* Use themed primary color for links */
     text-decoration: inherit;
     transition: color 0.2s ease-in-out;
   }
+
   a:hover {
     /* Define a hover state for primary or use a dedicated link-hover variable */
     /* Example: Slightly change opacity or use a pre-defined hover color */
-    opacity: 0.8; /* Adjust as needed, or use a specific --primary-hover variable */
+    opacity: 0.8;
+    /* Adjust as needed, or use a specific --primary-hover variable */
   }
 
   h1 {
-    font-size: 3.2em; /* Consider using Tailwind's responsive text utilities if appropriate */
+    font-size: 3.2em;
+    /* Consider using Tailwind's responsive text utilities if appropriate */
     line-height: 1.1;
   }
 
   /* Generic button styles: These might be overridden by component library buttons. */
   /* If these are for truly unstyled <button> elements, they are okay. */
-
 
 }
 
@@ -210,10 +276,12 @@
   from {
     transform: rotate(0deg);
   }
+
   to {
     transform: rotate(360deg);
   }
 }
+
 /* .animate-spin is a utility, so it could also go into @layer utilities */
 /* However, Tailwind already provides an `animate-spin` utility. */
 /* If this is custom, keep it. If it's meant to be Tailwind's, you can remove it. */

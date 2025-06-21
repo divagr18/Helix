@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route, useLocation } from 'react-router-dom';
 import { LoginPage } from './pages/LoginPage';
 import { DashboardPage } from './pages/DashboardPage';
 import './App.css';
+import './index.css';
 import axios from 'axios'; // Import axios here
 import { Header } from './components/Header'; // Import the Header
 import { useEffect, useState } from 'react';
@@ -71,13 +72,15 @@ function App() {
   }
 
   return (
-      <ThemeProvider defaultTheme="dark" storageKey="vite-ui-theme">
+    <ThemeProvider defaultTheme="dark" storageKey="vite-ui-theme">
 
       <BrowserRouter>
 
-      <AppContent />
-    </BrowserRouter>
-      </ThemeProvider>
+        <div className="flex flex-col h-screen bg-background text-foreground">
+          <AppContent />
+        </div>
+      </BrowserRouter>
+    </ThemeProvider>
 
   );
 }

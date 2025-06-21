@@ -12,6 +12,7 @@ import { FaGithub } from 'react-icons/fa'; // For PR button
 import { OrphanIndicator } from '../components/OrphanIndicator'; // <<<< IMPORT
 import { FaAngleDown, FaAngleRight } from 'react-icons/fa';
 import { CodeViewerPanel } from '../components/repo-detail/CodeViewerPanel';
+import { AnalysisPanel } from '../components/repo-detail/AnalysisPanel';
 // --- Type Definitions ---
 interface CodeSymbol {
   id: number;
@@ -558,7 +559,16 @@ export function RepoDetailPage() {
       {/* ============================================= */}
       {/* File Tree Panel                             */}
       {/* ============================================= */}
-      <div style={{ width: '350px', /* Increased width for buttons */ borderRight: '1px solid #30363d', padding: '10px', overflowY: 'auto', backgroundColor: '#0d1117' }}>
+      <div style={{
+        width: '300px', // Or your desired width, e.g., '25vw', '280px'
+        flexShrink: 0,  // Prevent this panel from shrinking
+        borderRight: '1px solid #30363d',
+        padding: '10px',
+        overflowY: 'auto',
+        backgroundColor: '#0d1117',
+        display: 'flex', // Add this
+        flexDirection: 'column' // Add this to manage its children vertically
+      }}>
         <h2 style={{ paddingBottom: '10px', color: '#c9d1d9' }}>
           <Link to="/dashboard" style={{ color: '#58a6ff', textDecoration: 'none' }}>Dashboard</Link> / {repo.full_name.split('/')[1]}
         </h2>
@@ -872,170 +882,16 @@ export function RepoDetailPage() {
       {/* ============================================= */}
       {/* Analysis Panel                              */}
       {/* ============================================= */}
-      <div style={{ width: '350px', borderLeft: '1px solid #333', padding: '10px', overflowY: 'auto' /* Ensure this panel is scrollable if content overflows */ }}>
-        <h3>Analysis for {selectedFile ? selectedFile.file_path : '...'}</h3>
-        <hr style={{ borderColor: '#333' }} />
-        {selectedFile ? (
-          (selectedFile.symbols.length > 0 || selectedFile.classes.length > 0) ? (
-            <div style={{ paddingLeft: 0 }}>
-              {/* --- Render Top-Level Functions (Symbols) --- */}
-              {selectedFile.symbols.map(func => (
-
-                <div key={`func-${func.id}`} style={{ marginBottom: '20px', border: '1px solid #444', padding: '15px', borderRadius: '8px', backgroundColor: '#252526' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
-                    <strong style={{ wordBreak: 'break-all', color: '#d4d4d4', fontSize: '1.1em' }}>
-                      <Link to={`/symbol/${func.id}`} style={{ color: '#9cdcfe', textDecoration: 'none' }}>{func.name}</Link>
-                    </strong>
-                    <StatusIcon
-                      documentationStatus={func.documentation_status}
-                      hasDoc={!!func.documentation}
-                      contentHash={func.content_hash}
-                      docHash={func.documentation_hash}
-                    />
-                    <div key={`func-${func.id}`} style={{ /* ... existing styles ... */ }}>
-                      {/* ... existing display: name, link, StatusIcon, OrphanIndicator ... */}
-                      <div style={{ fontSize: '0.8em', color: '#8b949e', marginTop: '4px', display: 'flex', gap: '10px' }}>
-                        {typeof func.loc === 'number' && (
-                          <span title={`LOC: ${func.loc}`}><FaRulerCombined style={{ marginRight: '3px' }} />{func.loc}</span>
-                        )}
-                        {typeof func.cyclomatic_complexity === 'number' && (
-                          <span title={`CC: ${func.cyclomatic_complexity}`}><FaBrain style={{ marginRight: '3px' }} />{func.cyclomatic_complexity}</span>
-                        )}
-                      </div>
-                      {/* ... existing buttons for generate doc, save, etc. ... */}
-                    </div>
-                  </div>
-                  <small style={{ color: '#888' }}>Lines: {func.start_line} - {func.end_line}</small>
-
-                  {/* Display existing documentation from DB if not currently generating for this func */}
-                  {func.documentation && !generatedDocs[func.id] && (
-                    <div style={{
-                      marginTop: '12px', whiteSpace: 'pre-wrap',
-                      backgroundColor: '#1e1e1e', padding: '10px',
-                      borderRadius: '4px', borderLeft: '3px solid #555',
-                      fontFamily: 'monospace', fontSize: '0.9em', color: '#ccc',
-                      maxHeight: '150px', overflowY: 'auto' // Scrollable if long
-                    }}>
-                      {func.documentation}
-                    </div>
-                  )}
-
-                  <button
-                    onClick={() => handleGenerateDoc(func.id)}
-                    disabled={generatingDocId != null || savingDocId != null} // Disable if any AI op is in progress
-                    style={{
-                      display: 'flex', alignItems: 'center', marginTop: '12px',
-                      cursor: 'pointer', width: '100%', justifyContent: 'center',
-                      padding: '8px', border: '1px solid #555',
-                      backgroundColor: generatingDocId === func.id ? '#094771' : '#333', // Highlight if generating for this
-                      color: '#d4d4d4', borderRadius: '4px',
-                      opacity: (generatingDocId != null || savingDocId != null) && generatingDocId !== func.id ? 0.5 : 1, // Dim if other op
-                    }}
-                  >
-                    <FaRobot style={{ marginRight: '8px' }} />
-                    {generatingDocId === func.id ? 'Generating...' : (func.documentation ? 'Regenerate' : 'Generate Docstring')}
-                  </button>
-
-                  {/* --- ENHANCED DISPLAY FOR GENERATED DOCSTRING --- */}
-                  {generatedDocs[func.id] && (
-                    <div style={{
-                      marginTop: '12px',
-                      backgroundColor: '#1e1e1e', // Darker background for contrast
-                      padding: '15px',
-                      borderRadius: '4px',
-                      border: '1px solid #094771', // Accent border
-                      fontFamily: 'Menlo, Monaco, "Courier New", monospace',
-                      fontSize: '0.9em',
-                      color: '#d4d4d4',
-                      lineHeight: '1.6',
-                    }}>
-                      <h4 style={{ marginTop: 0, marginBottom: '10px', color: '#569cd6', borderBottom: '1px dashed #444', paddingBottom: '8px' }}>
-                        Generated Docstring:
-                      </h4>
-                      <div style={{ whiteSpace: 'pre-wrap', maxHeight: '200px', overflowY: 'auto' }}>
-                        {/* Simple attempt to format common docstring parts */}
-                        {generatedDocs[func.id].split('\\n').map((line, index, arr) => {
-                          const trimmedLine = line.trim();
-                          if (trimmedLine.startsWith('Args:') || trimmedLine.startsWith('Returns:') || trimmedLine.startsWith('Raises:')) {
-                            return <strong key={index} style={{ display: 'block', marginTop: '8px', color: '#4ec9b0' }}>{line}</strong>;
-                          }
-                          if (trimmedLine.startsWith('- ') || trimmedLine.match(/^\s*\w+\s*\(.+\):/)) { // Parameter lines
-                            return <div key={index} style={{ marginLeft: '15px', color: '#c586c0' }}>{line}</div>;
-                          }
-                          // First line (summary) could be bold or slightly larger
-                          if (index === 0 && !arr[index + 1]?.trim().startsWith('Args:')) { // Check if it's a single line summary
-                            return <p key={index} style={{ margin: '0 0 10px 0', fontWeight: 'bold' }}>{line}</p>;
-                          }
-                          return <span key={index}>{line}{index < arr.length - 1 && <br />}</span>;
-                        })}
-                      </div>
-                      <button
-                        onClick={() => handleSaveDoc(func.id)}
-                        disabled={savingDocId != null}
-                        style={{
-                          display: 'flex', alignItems: 'center', marginTop: '15px',
-                          cursor: 'pointer', border: '1px solid #3c7a3c',
-                          backgroundColor: savingDocId === func.id ? '#2a522a' : '#3c7a3c', // Greenish
-                          color: '#fff', borderRadius: '4px', padding: '8px 12px',
-                          opacity: savingDocId != null && savingDocId !== func.id ? 0.5 : 1,
-                        }}
-                      >
-                        {savingDocId === func.id ? (
-                          <FaSpinner className="animate-spin" style={{ marginRight: '8px' }} />
-                        ) : (
-                          <FaSave style={{ marginRight: '8px' }} />
-                        )}
-                        {savingDocId === func.id ? 'Saving...' : 'Save Suggestion'}
-                      </button>
-                    </div>
-                  )}
-                </div>
-              ))}
-
-              {/* --- Render Classes and Their Methods --- */}
-              {selectedFile.classes.map(cls => (
-                <div key={`class-${cls.id}`} style={{ marginBottom: '15px', border: '1px solid #555', padding: '10px', borderRadius: '5px', backgroundColor: 'rgba(255,255,255,0.05)' }}>
-                  <strong style={{ fontSize: '1.1em' }}>Class: {cls.name}</strong>
-                  <div style={{ paddingLeft: '15px', marginTop: '10px', borderLeft: '2px solid #444' }}>
-                    {cls.methods.map(method => (
-                      <div key={`method-${method.id}`} style={{ marginBottom: '15px' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '5px' }}>
-                          <strong style={{ wordBreak: 'break-all' }}>
-                            <Link to={`/symbol/${method.id}`} style={{ color: '#d4d4d4' }}>{method.name}</Link>
-                          </strong>
-                          <StatusIcon hasDoc={!!method.documentation} contentHash={method.content_hash} docHash={method.documentation_hash} documentationStatus={method.documentation_status} />
-                        </div>
-                        <small>Lines: {method.start_line} - {method.end_line}</small>
-                        {method.documentation && !generatedDocs[method.id] && (
-                          <div style={{ marginTop: '10px', whiteSpace: 'pre-wrap', backgroundColor: '#2a2a2a', padding: '8px', borderRadius: '3px', borderLeft: '3px solid #555', fontFamily: 'monospace', fontSize: '0.9em' }}>
-                            {method.documentation}
-                          </div>
-                        )}
-                        <button onClick={() => handleGenerateDoc(method.id)} disabled={generatingDocId !== null} style={{ display: 'flex', alignItems: 'center', marginTop: '10px', cursor: 'pointer', width: '100%', justifyContent: 'center', padding: '8px', border: '1px solid #555', backgroundColor: '#333', color: '#d4d4d4', borderRadius: '4px' }}>
-                          <FaRobot style={{ marginRight: '5px' }} />
-                          {generatingDocId === method.id ? 'Generating...' : (method.documentation ? 'Regenerate' : 'Generate Docstring')}
-                        </button>
-                        {generatedDocs[method.id] && (
-                          <div style={{ marginTop: '10px', whiteSpace: 'pre-wrap', backgroundColor: '#2a2a2a', padding: '8px', borderRadius: '3px', borderLeft: '3px solid #094771', fontFamily: 'monospace', fontSize: '0.9em' }}>
-                            {generatedDocs[method.id]}
-                            <button onClick={() => handleSaveDoc(method.id)} style={{ display: 'flex', alignItems: 'center', marginTop: '10px', cursor: 'pointer', border: '1px solid #555', backgroundColor: '#094771', color: '#fff', borderRadius: '4px', padding: '5px 10px' }}>
-                              <FaSave style={{ marginRight: '5px' }} /> Save
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <p>No functions or classes found in this file.</p>
-          )
-        ) : (
-          <p>Select a file to see analysis.</p>
-        )}
-      </div>
+      <aside className="w-[350px] md:w-[400px] flex-shrink-0 border-l border-border flex flex-col bg-card"> {/* Use bg-card to match left panel */}
+        <AnalysisPanel
+          selectedFile={selectedFile}
+          generatedDocs={generatedDocs}
+          onGenerateDoc={handleGenerateDoc}
+          generatingDocId={generatingDocId}
+          onSaveDoc={handleSaveDoc}
+          savingDocId={savingDocId}
+        />
+      </aside>
     </div>
   );
 }
