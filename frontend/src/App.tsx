@@ -9,6 +9,8 @@ import { useEffect, useState } from 'react';
 import { RepoDetailPage } from './pages/RepoDetailPage';
 import { SymbolDetailPage } from './pages/SymbolDetailPage';
 import { SearchResultsPage } from './pages/SearchResultsPage'; // Import
+import { ThemeProvider } from "@/components/theme-provider"
+
 // Import the new page
 
 axios.defaults.xsrfCookieName = 'csrftoken';
@@ -69,9 +71,14 @@ function App() {
   }
 
   return (
-    <BrowserRouter>
+      <ThemeProvider defaultTheme="dark" storageKey="vite-ui-theme">
+
+      <BrowserRouter>
+
       <AppContent />
     </BrowserRouter>
+      </ThemeProvider>
+
   );
 }
 

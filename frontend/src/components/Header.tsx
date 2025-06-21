@@ -1,125 +1,83 @@
-import React, { useState } from 'react'; // Added React for FormEvent type if not already there
+// src/components/Header.tsx
+import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import axios from 'axios'; // For logout
-import { FaSearch, FaCode, FaSignOutAlt } from 'react-icons/fa'; // Added FaSignOutAlt
-import { NotificationsBell } from './NotificationBell'; // Import the bell
+import axios from 'axios';
+// Import Lucide icons
+import { Code2, Search, LogOut } from 'lucide-react'; // Replaced FaCode, FaSearch, FaSignOutAlt
+import { NotificationsBell } from './NotificationBell'; // Assuming this is already styled or will be separately
+
+// Import shadcn/ui components (adjust path if your alias is different)
+import { Input } from '@/components/ui/input';
+import { Button } from '@/components/ui/button';
 
 export function Header() {
     const [searchTerm, setSearchTerm] = useState('');
     const navigate = useNavigate();
 
-    const handleSearchSubmit = (e: React.FormEvent<HTMLFormElement>) => { // Added type for e
+    const handleSearchSubmit = (e: React.FormEvent<HTMLFormElement>) => {
         e.preventDefault();
         if (searchTerm.trim()) {
             navigate(`/search?q=${encodeURIComponent(searchTerm.trim())}`);
-            // Optionally clear search term after submission
-            // setSearchTerm(''); 
+            // setSearchTerm(''); // Optional: clear search term
         }
     };
 
     const handleLogout = async () => {
         try {
-            // Assuming your logout endpoint is /api/v1/auth/logout/ and uses POST
-            await axios.post('http://localhost:8000/api/v1/auth/logout/', {}, { 
-                withCredentials: true 
-                // No CSRF token needed for logout if it's a simple session invalidation
-                // but if your backend requires it for POST, you'd add it:
-                // headers: { 'X-CSRFToken': getCookie('csrftoken') } 
+            await axios.post('http://localhost:8000/api/v1/auth/logout/', {}, {
+                withCredentials: true
             });
-            // Force a full page reload to clear all state and redirect to login via App.tsx logic
-            window.location.href = '/'; 
+            window.location.href = '/';
         } catch (error) {
             console.error("Logout failed:", error);
-            // You might want to show an error message to the user
             alert("Logout failed. Please try again.");
         }
     };
 
     return (
-        <header style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            padding: '10px 40px',
-            backgroundColor: '#252526',
-            borderBottom: '1px solid #333',
-            color: '#d4d4d4',
-            position: 'sticky',
-            top: 0,
-            zIndex: 1000,
-            height: '65px', // Slightly increased height for better vertical alignment
-        }}>
+        <header className="sticky top-0 z-50 flex h-[60px] items-center justify-between border-b border-border bg-card px-6 md:px-8">
             {/* Logo/Title Section */}
-            <Link to="/dashboard" style={{ 
-                textDecoration: 'none', 
-                color: '#d4d4d4', 
-                display: 'flex', 
-                alignItems: 'center' 
-            }}>
-                <FaCode size="1.8em" style={{ marginRight: '10px', color: '#569cd6' }} /> {/* Adjusted size */}
-                <h2 style={{ margin: 0, fontSize: '1.4em', fontWeight: 600 }}>Helix CME</h2> {/* Adjusted size */}
+            <Link to="/dashboard" className="flex items-center text-foreground no-underline">
+                <Code2 className="mr-2 h-7 w-7 text-primary" strokeWidth={2.5} /> {/* Lucide icon */}
+                <h2 className="text-xl font-semibold tracking-tight">Helix CME</h2>
             </Link>
 
-            {/* Search Bar Section - Centered (if space allows) */}
-            <div style={{ flexGrow: 1, display: 'flex', justifyContent: 'center', padding: '0 20px' }}>
-                <form onSubmit={handleSearchSubmit} style={{ display: 'flex', alignItems: 'center', maxWidth: '500px', width: '100%' }}>
-                    <input
+            {/* Search Bar Section - Centered */}
+            <div className="flex-grow flex justify-center px-4"> {/* Added px-4 for spacing */}
+                <form onSubmit={handleSearchSubmit} className="flex items-center w-full max-w-lg"> {/* max-w-lg for medium size */}
+                    <Input // shadcn/ui Input
                         type="search"
                         value={searchTerm}
                         onChange={(e) => setSearchTerm(e.target.value)}
                         placeholder="Semantic code search..."
-                        style={{
-                            padding: '9px 12px', // Adjusted padding
-                            fontSize: '0.9em',
-                            borderRadius: '6px 0 0 6px', // Slightly more rounded
-                            border: '1px solid #444', // Darker border
-                            borderRight: 'none',
-                            backgroundColor: '#1e1e1e',
-                            color: '#c9d1d9', // Lighter text for input
-                            flexGrow: 1, // Allow input to grow
-                        }}
+                        className="h-9 rounded-r-none border-r-0 focus-visible:ring-offset-0 focus-visible:ring-0" // Custom styling for joining with button
+                        // focus-visible:ring-offset-0 and focus-visible:ring-0 to remove default focus ring if button has one
                     />
-                    <button
+                    <Button // shadcn/ui Button
                         type="submit"
-                        title="Search"
-                        style={{
-                            padding: '9px 15px', // Adjusted padding
-                            cursor: 'pointer',
-                            backgroundColor: '#569cd6',
-                            color: '#fff',
-                            border: '1px solid #569cd6',
-                            borderRadius: '0 6px 6px 0',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            fontSize: '0.9em',
-                        }}
+                        variant="default" // Will use your --primary color
+                        size="icon" // Makes it square for an icon
+                        className="h-9 w-9 rounded-l-none" // Remove left rounding to join with input
+                        aria-label="Search"
                     >
-                        <FaSearch size="1.1em" /> {/* Slightly larger icon */}
-                    </button>
+                        <Search className="h-4 w-4" /> {/* Lucide icon */}
+                    </Button>
                 </form>
             </div>
 
             {/* User Actions Section (Notifications & Logout) */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: '20px' }}>
-                <NotificationsBell /> {/* <<< ADDED NOTIFICATIONS BELL */}
-                
-                <button
+            <div className="flex items-center gap-3 md:gap-4"> {/* Adjusted gap */}
+                <NotificationsBell />
+
+                <Button
                     onClick={handleLogout}
-                    title="Logout"
-                    style={{
-                        background: 'none',
-                        border: 'none',
-                        color: '#c9d1d9', // Match other icon colors
-                        cursor: 'pointer',
-                        fontSize: '1.5em', // Match bell icon size
-                        padding: '0', // Remove padding if just icon
-                        display: 'flex',
-                        alignItems: 'center'
-                    }}
+                    variant="ghost" // For a subtle icon button
+                    size="icon"
+                    aria-label="Logout"
+                    className="text-muted-foreground hover:text-foreground" // Subtle color, brightens on hover
                 >
-                    <FaSignOutAlt />
-                </button>
+                    <LogOut className="h-5 w-5" /> {/* Lucide icon */}
+                </Button>
             </div>
         </header>
     );

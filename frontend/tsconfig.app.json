@@ -8,6 +8,11 @@
       "DOM",
       "DOM.Iterable"
     ],
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./src/*"] // If tsconfig.app.json is in the root, and src is ./src
+      // If tsconfig.app.json is in ./src, then "@/*": ["./*"]
+    },
     "module": "ESNext",
     "skipLibCheck": true,
     "types": [

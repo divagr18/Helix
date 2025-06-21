@@ -11,6 +11,7 @@ import { FaMagic, FaSync } from 'react-icons/fa'; // FaMagic for generate, FaSyn
 import { FaGithub } from 'react-icons/fa'; // For PR button
 import { OrphanIndicator } from '../components/OrphanIndicator'; // <<<< IMPORT
 import { FaAngleDown, FaAngleRight } from 'react-icons/fa';
+import { CodeViewerPanel } from '../components/repo-detail/CodeViewerPanel';
 // --- Type Definitions ---
 interface CodeSymbol {
   id: number;
@@ -38,7 +39,7 @@ interface CodeClass {
   methods: CodeSymbol[];
 }
 
-interface CodeFile {
+export interface CodeFile {
   id: number;
   file_path: string;
   structure_hash: string | null;
@@ -859,19 +860,14 @@ export function RepoDetailPage() {
       {/* ============================================= */}
       {/* Code View Panel                             */}
       {/* ============================================= */}
-      <div style={{ flex: 1, overflowY: 'auto' }}>
-        {contentLoading ? (
-          <p style={{ padding: '20px' }}>Loading file...</p>
-        ) : selectedFile ? (
-          <SyntaxHighlighter language={getLanguage(selectedFile.file_path)} style={vscDarkPlus} showLineNumbers customStyle={{ height: '100%', margin: 0 }}>
-            {fileContent}
-          </SyntaxHighlighter>
-        ) : (
-          <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%' }}>
-            <p>Select a file to view its contents.</p>
-          </div>
-        )}
-      </div>
+      <main className="flex-grow overflow-y-auto bg-background"> {/* Use bg-background for the main content area behind panels */}
+        <CodeViewerPanel
+          selectedFile={selectedFile}
+          fileContent={fileContent}
+          isLoading={contentLoading}
+          language={selectedFile ? getLanguage(selectedFile.file_path) : 'plaintext'}
+        />
+      </main>
 
       {/* ============================================= */}
       {/* Analysis Panel                              */}
