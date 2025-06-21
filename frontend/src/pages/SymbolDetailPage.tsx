@@ -10,23 +10,28 @@ import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import jsx from 'react-syntax-highlighter/dist/esm/languages/prism/jsx';
 import tsx from 'react-syntax-highlighter/dist/esm/languages/prism/tsx';
 import CustomSymbolNode from '../components/CustomSymbolNode'; // Adjust path
-
+import './SymbolDetailPage.css';
 import python from 'react-syntax-highlighter/dist/esm/languages/prism/python';
+import { FaRulerCombined, FaBrain } from 'react-icons/fa'; // Icons for LOC and Complexity
+
 import { FaProjectDiagram, FaSpinner, FaExclamationTriangle } from 'react-icons/fa';
 import ReactFlow, {
-  Controls,
-  Background,
-  MiniMap,
-  useNodesState,
-  useEdgesState,
-  addEdge,
-  type Node, // Type for nodes
-  type Edge, // Type for edges
-  type OnConnect, // Type for onConnect callback
-  type XYPosition, // Type for position
-  type NodeTypes, // For custom nodes
+    Controls,
+    Background,
+    MiniMap,
+    useNodesState,
+    useEdgesState,
+    addEdge,
+    type Node, // Type for nodes
+    type Edge, // Type for edges
+    type OnConnect, // Type for onConnect callback
+    type XYPosition, // Type for position
+    type NodeTypes, // For custom nodes
 } from 'reactflow';
-import 'reactflow/dist/style.css'; // For button and loading/error states
+import 'reactflow/dist/style.css';
+import { OrphanIndicator } from '../components/OrphanIndicator'; // <<<< IMPORT
+
+// For button and loading/error states
 SyntaxHighlighter.registerLanguage('jsx', jsx);
 SyntaxHighlighter.registerLanguage('tsx', tsx);
 SyntaxHighlighter.registerLanguage('python', python);
@@ -38,14 +43,16 @@ interface LinkedSymbol {
 }
 interface SymbolNodeData {
     label: string;
-    type: 'central' | 'caller' | 'callee'; // To style them differently
-    db_id: number; // Database ID for navigation
+    type: 'central' | 'caller' | 'callee'; // For overall styling based on role in this diagram
+    db_id: number;                         // Database ID for navigation
+    symbol_kind: 'function' | 'method';    // New: To show if it's a function or method
+    doc_status: string | null;             // New: To show documentation status icon
 }
 // React Flow Node type using our custom data
 type AppNode = Node<SymbolNodeData>;
 const nodeTypesConfig: NodeTypes = { // Use a different variable name to avoid conflict if needed
-  customSymbolNode: CustomSymbolNode,
-  // Add other custom node types here if you have them
+    customSymbolNode: CustomSymbolNode,
+    // Add other custom node types here if you have them
 };
 const customStyle = {
     ...vscDarkPlus,
@@ -63,6 +70,10 @@ const customStyle = {
         borderRadius: '4px',
     },
 };
+export enum MarkerType {
+    Arrow = 'arrow',
+    ArrowClosed = 'arrowclosed',
+}
 interface SymbolDetail {
     id: number;
     unique_id: string;
@@ -75,8 +86,10 @@ interface SymbolDetail {
     incoming_calls: LinkedSymbol[];
     outgoing_calls: LinkedSymbol[];
     documentation_status: string | null;
-    source_code: string | null; // Add this
-
+    source_code: string | null;
+    is_orphan?: boolean; // Add this
+    loc?: number | null;
+    cyclomatic_complexity?: number | null;
     // We'll add file_path and repo_id if we want to link back or show code
     // For now, let's assume the API provides them or we derive them.
     // For simplicity, we'll omit direct code viewing on this page for this step.
@@ -370,6 +383,29 @@ export function SymbolDetailPage() {
                     contentHash={symbol.content_hash}
                     docHash={symbol.documentation_hash}
                 />
+                <OrphanIndicator isOrphan={symbol.is_orphan} />
+            </div>
+            <div style={{
+                fontSize: '0.9em', color: '#8b949e', marginTop: 0,
+                marginBottom: '25px', fontStyle: 'italic',
+                display: 'flex', flexWrap: 'wrap', gap: '15px' // For layout
+            }}>
+                <span>{symbol.unique_id}</span>
+                <span>(Lines: {symbol.start_line} - {symbol.end_line})</span>
+                {/* Display LOC if available */}
+                {typeof symbol.loc === 'number' && (
+                    <span title="Lines of Code (non-empty, non-comment)">
+                        <FaRulerCombined style={{ marginRight: '5px', verticalAlign: 'middle' }} />
+                        LOC: {symbol.loc}
+                    </span>
+                )}
+                {/* Display Cyclomatic Complexity if available */}
+                {typeof symbol.cyclomatic_complexity === 'number' && (
+                    <span title="Cyclomatic Complexity">
+                        <FaBrain style={{ marginRight: '5px', verticalAlign: 'middle' }} />
+                        CC: {symbol.cyclomatic_complexity}
+                    </span>
+                )}
             </div>
             <p style={{ fontSize: '0.9em', color: '#888', marginTop: 0, marginBottom: '25px', fontStyle: 'italic' }}>
                 {symbol.unique_id} (Lines: {symbol.start_line} - {symbol.end_line})
@@ -542,45 +578,75 @@ export function SymbolDetailPage() {
                 </h2>
                 <button
                     onClick={handleLoadFlowData}
-                    disabled={flowLoading || !symbol} 
+                    disabled={flowLoading || !symbol}
                     style={{
                         backgroundColor: '#238636', color: 'white', border: 'none', padding: '10px 15px',
                         borderRadius: '6px', cursor: 'pointer', marginBottom: '15px', display: 'flex', alignItems: 'center',
-                        opacity: (flowLoading || !symbol) ? 0.7 : 1 
+                        opacity: (flowLoading || !symbol) ? 0.7 : 1
                     }}
                 >
-                    {flowLoading ? <FaSpinner className="animate-spin" style={{marginRight: '5px'}}/> : <FaProjectDiagram style={{marginRight: '5px'}}/>}
+                    {flowLoading ? <FaSpinner className="animate-spin" style={{ marginRight: '5px' }} /> : <FaProjectDiagram style={{ marginRight: '5px' }} />}
                     {flowLoading ? 'Loading Diagram...' : (nodes.length > 0 ? 'Reload Diagram' : 'Load Diagram')}
                 </button>
 
-                {flowError && <p style={{color: 'red'}}><FaExclamationTriangle style={{marginRight: '5px'}}/> {flowError}</p>}
+                {flowError && <p style={{ color: 'red' }}><FaExclamationTriangle style={{ marginRight: '5px' }} /> {flowError}</p>}
 
                 {nodes.length > 0 && !flowLoading && (
                     <div style={{ height: '500px', border: '1px solid #30363d', borderRadius: '8px', marginTop: '15px', backgroundColor: '#0d1117' }}>
-                    <ReactFlow
-                        nodes={nodes}
-                        onlyRenderVisibleElements={true}
-                        edges={edges}
-                        onNodesChange={onNodesChange}
-                        onEdgesChange={onEdgesChange}
-                        onNodeClick={onNodeClick}
-                        fitView
-                        nodeTypes={nodeTypesConfig}
-                        defaultEdgeOptions={{ animated: false, style: { stroke: '#777' } }}
-                    >
-                        <Controls />
-                        <MiniMap nodeStrokeWidth={3} zoomable pannable />
-                        <Background variant="dots" gap={12} size={1} color="#2a2a2a" />
-                    </ReactFlow>
+                        <ReactFlow
+                            nodes={nodes}
+                            onlyRenderVisibleElements={true}
+                            edges={edges}
+                            onNodesChange={onNodesChange}
+                            onEdgesChange={onEdgesChange}
+                            onNodeClick={onNodeClick}
+                            fitView
+                            fitViewOptions={{ padding: 0.2, duration: 800 }}
+                            nodeTypes={nodeTypesConfig}
+                            defaultEdgeOptions={{
+                                type: 'smoothstep', // Bezier ('default'), 'smoothstep', 'step', or 'straight'
+                                animated: true,    // Makes edges "flow"
+                                style: {
+                                    stroke: '#6a737d', // A medium gray, good for dark themes
+                                    strokeWidth: 1.5,
+                                },
+                                markerEnd: { // Example: Add arrowheads
+                                    type: MarkerType.ArrowClosed,
+                                    width: 20,
+                                    height: 20,
+                                    color: '#6a737d',
+                                },
+                            }}
+                            connectionLineStyle={{ stroke: '#6a737d', strokeWidth: 1.5 }} // Style of line while dragging new edge
+                            // --- END EDGE CUSTOMIZATION ---
+
+                            proOptions={{ hideAttribution: true }}
+                        >
+                            <Controls />
+                            <MiniMap
+                                nodeColor={(node: AppNode) => { // Ensure AppNode type here
+                                    // Match colors with CustomSymbolNode for consistency in minimap
+                                    if (node.data.type === 'central') return '#1f6feb';
+                                    if (node.data.type === 'caller') return '#238636';
+                                    if (node.data.type === 'callee') return '#8B1A1A';
+                                    return '#555';
+                                }}
+                                nodeStrokeWidth={3}
+                                pannable
+                                zoomable
+                                style={{ backgroundColor: '#0d1117', border: '3px solid #30363d' }}
+                            />
+                            <Background variant="dots" gap={16} size={0.6} color="#2d333b" />
+                        </ReactFlow>
                     </div>
                 )}
                 {!initialLoadAttempted && nodes.length === 0 && !flowLoading && !flowError && (
-                    <p style={{color: '#888'}}>Click "Load Diagram" to visualize the local architecture.</p>
+                    <p style={{ color: '#888' }}>Click "Load Diagram" to visualize the local architecture.</p>
                 )}
                 {initialLoadAttempted && nodes.length === 0 && !flowLoading && !flowError && (
-                     <p style={{color: '#888'}}>No diagram data found or diagram is empty.</p>
+                    <p style={{ color: '#888' }}>No diagram data found or diagram is empty.</p>
                 )}
-                </div>
+            </div>
         </div>
     );
 }

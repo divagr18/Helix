@@ -86,6 +86,17 @@ class CodeSymbol(models.Model):
         default=DocStatus.NONE,
         help_text="The review and approval status of the documentation."
     )
+    is_orphan = models.BooleanField(
+        default=False, 
+        db_index=True, # Index for faster querying of orphans
+        help_text="True if this symbol is not called by any other symbol in the repository."
+    )
+    loc = models.PositiveIntegerField(
+        null=True, blank=True, help_text="Lines of Code (non-empty, non-comment lines within the symbol body)"
+    )
+    cyclomatic_complexity = models.PositiveIntegerField(
+        null=True, blank=True, help_text="Calculated cyclomatic complexity of the symbol"
+    )
 
     class Meta:
         db_table = 'code_symbols'
@@ -175,3 +186,82 @@ class Notification(models.Model):
 
     def __str__(self):
         return f"Notification for {self.user.username} ({self.get_notification_type_display()}): {self.message[:50]}..."
+    
+class EmbeddingBatchJob(models.Model):
+    # Link to the repository this batch job is for
+    repository = models.ForeignKey(
+        'Repository', # Use string reference if Repository is defined later in file or in another app's models.py
+        on_delete=models.CASCADE, 
+        null=True, # Can be null if somehow a batch job isn't tied to a specific repo (less likely for us)
+        blank=True,
+        related_name="embedding_batch_jobs"
+    )
+    # OpenAI specific IDs
+    batch_id = models.CharField(
+        max_length=100, 
+        unique=True,  # OpenAI batch IDs are unique
+        db_index=True, # Good for querying by batch_id
+        help_text="OpenAI Batch API Job ID"
+    )
+    input_file_id = models.CharField(
+        max_length=100, 
+        help_text="OpenAI File ID for the input batch .jsonl file"
+    )
+    output_file_id = models.CharField(
+        max_length=100, 
+        null=True, 
+        blank=True,
+        help_text="OpenAI File ID for the output results .jsonl file"
+    )
+    error_file_id = models.CharField(
+        max_length=100, 
+        null=True, 
+        blank=True,
+        help_text="OpenAI File ID for the error details .jsonl file"
+    )
+    
+    class JobStatus(models.TextChoices):
+        # Custom status before OpenAI Batch API is involved
+        PENDING_SUBMISSION = 'pending_submission', 'Pending Submission to OpenAI' 
+        # OpenAI Batch API Statuses (mirroring theirs)
+        VALIDATING = 'validating', 'Validating'
+        FAILED_VALIDATION = 'failed_validation', 'Failed Validation' # If input file fails validation
+        IN_PROGRESS = 'in_progress', 'In Progress'
+        FINALIZING = 'finalizing', 'Finalizing'
+        COMPLETED = 'completed', 'Completed by OpenAI'
+        FAILED = 'failed', 'Failed by OpenAI'
+        EXPIRED = 'expired', 'Expired by OpenAI'
+        CANCELLING = 'cancelling', 'Cancelling'
+        CANCELLED = 'cancelled', 'Cancelled'
+        RESULTS_PROCESSING = 'results_processing', 'Processing Results'
+        RESULTS_PROCESSED = 'results_processed', 'Results Processed in DB'
+        RESULTS_FAILED_TO_PROCESS = 'results_failed_to_process', 'Failed to Process Results'
+
+
+    status = models.CharField(
+        max_length=30, 
+        choices=JobStatus.choices, 
+        default=JobStatus.PENDING_SUBMISSION,
+        db_index=True
+    )
+    
+    # Timestamps
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True) # Tracks last status update or poll
+    submitted_to_openai_at = models.DateTimeField(null=True, blank=True)
+    openai_completed_at = models.DateTimeField(null=True, blank=True) # When OpenAI marks it complete
+    results_processed_at = models.DateTimeField(null=True, blank=True) # When we finish DB updates
+
+    # Metadata from OpenAI or our own
+    openai_metadata = models.JSONField(null=True, blank=True, help_text="Metadata from OpenAI Batch object")
+    custom_metadata = models.JSONField(null=True, blank=True, help_text="Custom metadata for this job")
+    error_details = models.TextField(null=True, blank=True, help_text="Details of any processing errors")
+
+    def __str__(self):
+        return f"Embedding Batch {self.batch_id or 'N/A'} for Repo {self.repository_id or 'N/A'} - Status: {self.get_status_display()}"
+
+    class Meta:
+        db_table = 'embedding_batch_jobs'
+        ordering = ['-created_at']
+        verbose_name = "Embedding Batch Job"
+        verbose_name_plural = "Embedding Batch Jobs"

@@ -1,0 +1,11 @@
+.custom-minimap {
+    background-color: #0d1117 !important;
+}
+
+.custom-minimap svg {
+    background-color: #0d1117 !important;
+}
+
+.react-flow__minimap-mask {
+    fill: #0d1117 !important;
+}

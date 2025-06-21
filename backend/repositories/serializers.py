@@ -36,7 +36,8 @@ class CodeSymbolSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'unique_id', 'name', 'start_line', 'end_line',
             'documentation', 'content_hash', 'documentation_hash', 'documentation_status', 
-            'incoming_calls', 'outgoing_calls','source_code' # Add to fields list
+            'incoming_calls', 'outgoing_calls','source_code','is_orphan','get_documentation_status_display','loc',
+            'cyclomatic_complexity', # Add to fields list
         ]
 
     def get_incoming_calls(self, obj):

@@ -26,59 +26,89 @@ def generate_react_flow_data(
     callees: list[CodeSymbol]
 ) -> dict:
     """
-    Generates node and edge data suitable for React Flow.
+    Generates node and edge data suitable for React Flow, including symbol kind and doc status.
     """
     nodes = []
     edges = []
 
-    # Node IDs will be their database IDs (as strings)
-    central_node_id = str(central_symbol.id)
+    central_node_id_str = str(central_symbol.id)
 
-    # Simple programmatic layout:
-    node_x_spacing = 250
-    node_y_spacing = 120
-    center_x, center_y = 250, 150 # Initial position for central node
+    # Layout parameters (can be adjusted)
+    node_x_spacing = 280  # Increased spacing for wider nodes
+    node_y_spacing = 100
+    center_x, center_y = 300, 200 
 
-    # Central Node
+    # --- Central Node ---
+    central_symbol_kind = "method" if central_symbol.code_class else "function"
     nodes.append({
-        "id": central_node_id,
-        "data": {"label": central_symbol.name, "type": "central", "db_id": central_symbol.id}, # Add db_id for click
+        "id": central_node_id_str,
+        "data": {
+            "label": central_symbol.name,
+            "type": "central", # For specific styling of the central node
+            "db_id": central_symbol.id,
+            "symbol_kind": central_symbol_kind,
+            "doc_status": central_symbol.documentation_status,
+            "is_orphan": central_symbol.is_orphan, # Pass the raw status string
+            "loc": central_symbol.loc,
+            "cyclomatic_complexity": central_symbol.cyclomatic_complexity
+        },
         "position": {"x": center_x, "y": center_y},
-        "type": "customSymbolNode" # We'll define this custom node type in React
+        "type": "customSymbolNode" # This string must match the key in frontend nodeTypes
     })
 
-    # Caller Nodes
+    # --- Caller Nodes ---
+    # Calculate initial y position to center the callers vertically
+    num_callers = len(callers)
+    initial_caller_y = center_y - ((num_callers - 1) * node_y_spacing) / 2
+
     for i, caller in enumerate(callers):
-        caller_node_id = str(caller.id)
+        caller_node_id_str = str(caller.id)
+        caller_symbol_kind = "method" if caller.code_class else "function"
         nodes.append({
-            "id": caller_node_id,
-            "data": {"label": caller.name, "type": "caller", "db_id": caller.id},
-            "position": {"x": center_x - node_x_spacing, "y": center_y + (i - (len(callers) -1) / 2) * node_y_spacing},
+            "id": caller_node_id_str,
+            "data": {
+                "label": caller.name,
+                "type": "caller", # For styling
+                "db_id": caller.id,
+                "symbol_kind": caller_symbol_kind,
+                "doc_status": caller.documentation_status
+            },
+            "position": {"x": center_x - node_x_spacing, "y": initial_caller_y + i * node_y_spacing},
             "type": "customSymbolNode"
         })
         edges.append({
-            "id": f"e-{caller_node_id}-{central_node_id}",
-            "source": caller_node_id,
-            "target": central_node_id,
-            "animated": False # Or True for effect
+            "id": f"e-{caller_node_id_str}-to-{central_node_id_str}", # More descriptive edge ID
+            "source": caller_node_id_str,
+            "target": central_node_id_str,
+            # "animated": True, # Example: make incoming calls animated
+            # "type": "smoothstep", # Example
         })
 
-    # Callee Nodes
+    # --- Callee Nodes ---
+    num_callees = len(callees)
+    initial_callee_y = center_y - ((num_callees - 1) * node_y_spacing) / 2
+
     for i, callee in enumerate(callees):
-        callee_node_id = str(callee.id)
+        callee_node_id_str = str(callee.id)
+        callee_symbol_kind = "method" if callee.code_class else "function"
         nodes.append({
-            "id": callee_node_id,
-            "data": {"label": callee.name, "type": "callee", "db_id": callee.id},
-            "position": {"x": center_x + node_x_spacing, "y": center_y + (i - (len(callees) -1) / 2) * node_y_spacing},
+            "id": callee_node_id_str,
+            "data": {
+                "label": callee.name,
+                "type": "callee", # For styling
+                "db_id": callee.id,
+                "symbol_kind": callee_symbol_kind,
+                "doc_status": callee.documentation_status
+            },
+            "position": {"x": center_x + node_x_spacing, "y": initial_callee_y + i * node_y_spacing},
             "type": "customSymbolNode"
         })
         edges.append({
-            "id": f"e-{central_node_id}-{callee_node_id}",
-            "source": central_node_id,
-            "target": callee_node_id,
-            "animated": False
+            "id": f"e-{central_node_id_str}-to-{callee_node_id_str}",
+            "source": central_node_id_str,
+            "target": callee_node_id_str,
         })
-        
+            
     return {"nodes": nodes, "edges": edges}
 def generate_mermaid_for_symbol_dependencies(
     central_symbol: CodeSymbol, 

@@ -7,7 +7,7 @@ from .models import Repository, AsyncTaskStatus
 class RepositoryAdmin(admin.ModelAdmin):
     list_display = ('full_name', 'user', 'status', 'updated_at')
     list_filter = ('status', 'user')
-from .models import CodeFile, CodeSymbol,CodeClass,CodeDependency,Notification
+from .models import CodeFile, CodeSymbol,CodeClass,CodeDependency,Notification,EmbeddingBatchJob 
 
 admin.site.register(CodeFile)
 admin.site.register(CodeClass) # Register the new Class model
@@ -40,3 +40,41 @@ class NotificationAdmin(admin.ModelAdmin):
     def mark_as_unread(self, request, queryset):
         queryset.update(is_read=False)
     mark_as_unread.short_description = "Mark selected notifications as unread"
+
+@admin.register(EmbeddingBatchJob)
+class EmbeddingBatchJobAdmin(admin.ModelAdmin):
+    list_display = (
+        'id', 
+        'repository', 
+        'batch_id', 
+        'status', 
+        'input_file_id', 
+        'output_file_id', 
+        'created_at', 
+        'updated_at',
+        'openai_completed_at',
+        'results_processed_at'
+    )
+    list_filter = ('status', 'repository', 'created_at')
+    search_fields = ('batch_id', 'repository__full_name')
+    readonly_fields = (
+        'created_at', 
+        'updated_at', 
+        'submitted_to_openai_at', 
+        'openai_completed_at', 
+        'results_processed_at',
+        'openai_metadata' # Often better as readonly in admin
+    )
+    fieldsets = (
+        (None, {
+            'fields': ('repository', 'status', 'batch_id', 'input_file_id', 'output_file_id', 'error_file_id')
+        }),
+        ('Timestamps', {
+            'fields': ('created_at', 'updated_at', 'submitted_to_openai_at', 'openai_completed_at', 'results_processed_at'),
+            'classes': ('collapse',) # Make this section collapsible
+        }),
+        ('Details', {
+            'fields': ('openai_metadata', 'custom_metadata', 'error_details'),
+            'classes': ('collapse',)
+        }),
+    )

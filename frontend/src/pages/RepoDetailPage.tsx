@@ -1,15 +1,16 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import axios from 'axios';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
-import { FaFileCode, FaRobot } from 'react-icons/fa';
+import { FaBrain, FaFileCode, FaRobot, FaRulerCombined } from 'react-icons/fa';
 import { StatusIcon } from '../components/StatusIcon';
 import { FaSave, FaSpinner } from 'react-icons/fa'; // Added FaSpinner for loading state
 import { getCookie } from '../utils';
 import { FaMagic, FaSync } from 'react-icons/fa'; // FaMagic for generate, FaSync for processing
 import { FaGithub } from 'react-icons/fa'; // For PR button
-
+import { OrphanIndicator } from '../components/OrphanIndicator'; // <<<< IMPORT
+import { FaAngleDown, FaAngleRight } from 'react-icons/fa';
 // --- Type Definitions ---
 interface CodeSymbol {
   id: number;
@@ -20,6 +21,12 @@ interface CodeSymbol {
   content_hash: string | null;
   documentation_hash: string | null;
   documentation_status: string | null;
+  is_orphan?: boolean; // <<<< ADD THIS (optional if not always present)
+  // For context when listing orphans:
+  filePath?: string;
+  className?: string;
+  loc?: number | null;
+  cyclomatic_complexity?: number | null;
 }
 
 interface CodeClass {
@@ -72,12 +79,39 @@ export function RepoDetailPage() {
   const [activeDocGenTaskId, setActiveDocGenTaskId] = useState<string | null>(null);
   const [docGenTaskMessage, setDocGenTaskMessage] = useState<string | null>(null);
   const [docGenTaskProgress, setDocGenTaskProgress] = useState<number>(0); // Optional progress
-
+  const [showOrphanList, setShowOrphanList] = useState<boolean>(false);
   const [activePRCreationTaskId, setActivePRCreationTaskId] = useState<string | null>(null);
   const [prCreationTaskMessage, setPRCreationTaskMessage] = useState<string | null>(null);
   const [prCreationTaskProgress, setPRCreationTaskProgress] = useState<number>(0); // Optional progress
   const [prURL, setPrURL] = useState<string | null>(null); // To store the PR URL
+
   // --- YOUR CORRECT API CALL LOGIC ---
+  const orphanSymbolsList = useMemo(() => {
+    if (!repo) return [];
+    const orphans: Array<CodeSymbol & { filePath: string; className?: string }> = [];
+    repo.files.forEach(file => {
+      file.symbols.forEach(sym => {
+        if (sym.is_orphan) {
+          orphans.push({ ...sym, filePath: file.file_path });
+        }
+      });
+      file.classes.forEach(cls => {
+        cls.methods.forEach(method => {
+          if (method.is_orphan) {
+            orphans.push({ ...method, filePath: file.file_path, className: cls.name });
+          }
+        });
+      });
+    });
+    // Sort for consistent display, e.g., by file path then by name
+    orphans.sort((a, b) => {
+      if (a.filePath.localeCompare(b.filePath) !== 0) {
+        return a.filePath.localeCompare(b.filePath);
+      }
+      return a.name.localeCompare(b.name);
+    });
+    return orphans;
+  }, [repo]);
   const handleCreateBatchPRForRepo = () => {
     // Guard conditions: ensure repo is loaded, files are selected, and no other batch task is active
     if (!repo || selectedFilesForBatch.size === 0 || activePRCreationTaskId !== null || activeDocGenTaskId !== null) {
@@ -172,7 +206,7 @@ export function RepoDetailPage() {
   };
 
   // --- useEffect for Polling Batch Doc Generation Task ---
-   // Re-run if activeDocGenTaskId changes
+  // Re-run if activeDocGenTaskId changes
 
   // --- useEffect for Polling Batch PR Creation Task ---
   useEffect(() => {
@@ -284,11 +318,6 @@ export function RepoDetailPage() {
           ...prev,
           [fileId]: `Batch generation started (Task ID: ${response.data.task_id}). Docs will be updated in the database.`
         }));
-        // We don't setBatchProcessingFileId(null) here immediately.
-        // The user will need to refresh or we need a status polling mechanism
-        // to know when the backend task is truly complete.
-        // For now, the button will remain "Processing..." until a page refresh or new interaction.
-        // A simple timeout to re-enable the button after a while for UX:
         setTimeout(() => {
           setBatchProcessingFileId(null);
           // Optionally clear the message or set a "check back later" message
@@ -306,31 +335,54 @@ export function RepoDetailPage() {
       });
   };
   const fetchRepoDetails = useCallback(() => {
-  if (repoId) {
-    setLoading(true); // Consider if you want a full page loading spinner here or something more subtle
-    axios.get(`http://localhost:8000/api/v1/repositories/${repoId}/`, { withCredentials: true })
-      .then(response => {
-        const repoData = response.data;
-        console.log("REPO_DETAIL_PAGE: Fetched repoData:", JSON.parse(JSON.stringify(repoData)));
-        setRepo(repoData);
-        // If a file was selected, try to update its reference to the new data
-        if (selectedFile) {
-          const updatedSelectedFile = repoData.files.find(
-            (file: CodeFile) => file.id === selectedFile.id
-          );
-          setSelectedFile(updatedSelectedFile || null); // Update or clear if not found
-          // If selectedFile is updated, you might also want to re-fetch its content
-          // if its structure_hash changed, but that's a further optimization.
-        }
-        setLoading(false);
-      })
-      .catch(err => {
-        console.error("Error fetching repository details:", err);
-        setError('Failed to load repository details.');
-        setLoading(false);
-      });
-  }
-}, [repoId, selectedFile]);
+    if (repoId) {
+      setLoading(true); // Consider if you want a full page loading spinner here or something more subtle
+      axios.get(`http://localhost:8000/api/v1/repositories/${repoId}/`, { withCredentials: true })
+        .then(response => {
+          const repoData = response.data;
+          console.log("REPO_DETAIL_PAGE: Fetched repoData:", JSON.parse(JSON.stringify(repoData)));
+          const targetFilePath = "ImageEditor.py"; // Change to your file
+          const targetClassName = "ImageOps";    // Change to your class
+          const targetMethodName = "Capture"; // Change to your method
+
+          const fileObj = repoData.files.find(f => f.file_path === targetFilePath);
+          if (fileObj) {
+            const classObj = fileObj.classes.find(c => c.name === targetClassName);
+            if (classObj) {
+              const methodObj = classObj.methods.find(m => m.name === targetMethodName);
+              if (methodObj) {
+                console.log(`REPO_DETAIL_PAGE: Target Method Data ('${targetMethodName}'):`,
+                  JSON.parse(JSON.stringify(methodObj))
+                );
+              } else {
+                console.warn(`REPO_DETAIL_PAGE: Target method '${targetMethodName}' not found in class '${targetClassName}'.`);
+              }
+            } else {
+              console.warn(`REPO_DETAIL_PAGE: Target class '${targetClassName}' not found in file '${targetFilePath}'.`);
+            }
+          } else {
+            console.warn(`REPO_DETAIL_PAGE: Target file '${targetFilePath}' not found.`);
+          }
+          setRepo(repoData);
+
+          // If a file was selected, try to update its reference to the new data
+          if (selectedFile) {
+            const updatedSelectedFile = repoData.files.find(
+              (file: CodeFile) => file.id === selectedFile.id
+            );
+            setSelectedFile(updatedSelectedFile || null); // Update or clear if not found
+            // If selectedFile is updated, you might also want to re-fetch its content
+            // if its structure_hash changed, but that's a further optimization.
+          }
+          setLoading(false);
+        })
+        .catch(err => {
+          console.error("Error fetching repository details:", err);
+          setError('Failed to load repository details.');
+          setLoading(false);
+        });
+    }
+  }, [repoId, selectedFile]);
   useEffect(() => {
     let intervalId: NodeJS.Timeout | undefined;
     if (activeDocGenTaskId) {
@@ -759,8 +811,49 @@ export function RepoDetailPage() {
                 {prCreationTaskMessage} {/* This will render the JSX fragment with the link if set by the polling useEffect */}
               </p>
             )}
-          </div>
-        )}
+            {orphanSymbolsList.length > 0 && ( // Orphan Symbols conditional
+              <div style={{
+                padding: '15px 12px',
+                borderTop: '1px solid #30363d',
+                marginTop: '15px'
+              }}>
+                <button
+                  onClick={() => setShowOrphanList(!showOrphanList)}
+                  style={{
+                    background: 'none', border: 'none', color: '#c9d1d9', cursor: 'pointer',
+                    padding: '5px 0', width: '100%', textAlign: 'left',
+                    display: 'flex', alignItems: 'center', fontSize: '1.05em', fontWeight: 'bold'
+                  }}
+                >
+                  {showOrphanList ? <FaAngleDown style={{ marginRight: '8px' }} /> : <FaAngleRight style={{ marginRight: '8px' }} />}
+                  Potential Orphan Symbols ({orphanSymbolsList.length})
+                  <OrphanIndicator isOrphan={true} /> {/* Show a general ghost icon here too */}
+                </button>
+                {showOrphanList && (
+                  <ul style={{ listStyle: 'none', paddingLeft: '20px', marginTop: '10px', maxHeight: '200px', overflowY: 'auto' }}>
+                    {orphanSymbolsList.map(orphan => (
+                      <li key={`orphan-${orphan.id}`} style={{ marginBottom: '8px', fontSize: '0.9em' }}>
+                        <Link
+                          to={`/symbol/${orphan.id}`}
+                          title={`View details for ${orphan.name}`}
+                          style={{ color: '#9cdcfe', textDecoration: 'none' }}
+                        >
+                          {orphan.name}
+                        </Link>
+                        <span style={{ color: '#8b949e', marginLeft: '5px' }}>
+                          in {orphan.filePath}
+                          {orphan.className && ` (Class: ${orphan.className})`}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
+            {/* === END Orphan Symbols Section === */}
+
+          </div> // This closes the "Batch Actions for Selected Files" div
+        )} {/* This closes the "repo && repo.files.length > 0" conditional block */}
       </div>
 
       {/* ============================================= */}
@@ -791,7 +884,7 @@ export function RepoDetailPage() {
             <div style={{ paddingLeft: 0 }}>
               {/* --- Render Top-Level Functions (Symbols) --- */}
               {selectedFile.symbols.map(func => (
-                
+
                 <div key={`func-${func.id}`} style={{ marginBottom: '20px', border: '1px solid #444', padding: '15px', borderRadius: '8px', backgroundColor: '#252526' }}>
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
                     <strong style={{ wordBreak: 'break-all', color: '#d4d4d4', fontSize: '1.1em' }}>
@@ -803,6 +896,18 @@ export function RepoDetailPage() {
                       contentHash={func.content_hash}
                       docHash={func.documentation_hash}
                     />
+                    <div key={`func-${func.id}`} style={{ /* ... existing styles ... */ }}>
+                      {/* ... existing display: name, link, StatusIcon, OrphanIndicator ... */}
+                      <div style={{ fontSize: '0.8em', color: '#8b949e', marginTop: '4px', display: 'flex', gap: '10px' }}>
+                        {typeof func.loc === 'number' && (
+                          <span title={`LOC: ${func.loc}`}><FaRulerCombined style={{ marginRight: '3px' }} />{func.loc}</span>
+                        )}
+                        {typeof func.cyclomatic_complexity === 'number' && (
+                          <span title={`CC: ${func.cyclomatic_complexity}`}><FaBrain style={{ marginRight: '3px' }} />{func.cyclomatic_complexity}</span>
+                        )}
+                      </div>
+                      {/* ... existing buttons for generate doc, save, etc. ... */}
+                    </div>
                   </div>
                   <small style={{ color: '#888' }}>Lines: {func.start_line} - {func.end_line}</small>
 
@@ -849,7 +954,7 @@ export function RepoDetailPage() {
                       lineHeight: '1.6',
                     }}>
                       <h4 style={{ marginTop: 0, marginBottom: '10px', color: '#569cd6', borderBottom: '1px dashed #444', paddingBottom: '8px' }}>
-                        AI Generated Suggestion:
+                        Generated Docstring:
                       </h4>
                       <div style={{ whiteSpace: 'pre-wrap', maxHeight: '200px', overflowY: 'auto' }}>
                         {/* Simple attempt to format common docstring parts */}
@@ -902,7 +1007,7 @@ export function RepoDetailPage() {
                           <strong style={{ wordBreak: 'break-all' }}>
                             <Link to={`/symbol/${method.id}`} style={{ color: '#d4d4d4' }}>{method.name}</Link>
                           </strong>
-                          <StatusIcon hasDoc={!!method.documentation} contentHash={method.content_hash} docHash={method.documentation_hash} />
+                          <StatusIcon hasDoc={!!method.documentation} contentHash={method.content_hash} docHash={method.documentation_hash} documentationStatus={method.documentation_status} />
                         </div>
                         <small>Lines: {method.start_line} - {method.end_line}</small>
                         {method.documentation && !generatedDocs[method.id] && (

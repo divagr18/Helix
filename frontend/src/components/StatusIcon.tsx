@@ -1,18 +1,18 @@
 import React from 'react';
-import { 
-    FaCheckCircle, // Fresh
-    FaExclamationCircle, // Stale
-    FaTimesCircle, // No Documentation
-    FaHourglassHalf, // Pending Review (or other intermediate states)
-    FaQuestionCircle, // Unknown or other
-    FaEdit // Human Edited - Pending PR (if you use this status)
+import {
+  FaCheckCircle, // Fresh
+  FaExclamationCircle, // Stale
+  FaTimesCircle, // No Documentation
+  FaHourglassHalf, // Pending Review (or other intermediate states)
+  FaQuestionCircle, // Unknown or other
+  FaEdit // Human Edited - Pending PR (if you use this status)
 } from 'react-icons/fa';
 
 interface StatusIconProps {
-    documentationStatus?: string | null;
-    contentHash: string | null;
-    docHash: string | null;
-    hasDoc: boolean;
+  documentationStatus?: string | null;
+  contentHash?: string | null;
+  docHash?: string | null;
+  hasDoc?: boolean;
 }
 
 const DOC_STATUS = {
@@ -23,7 +23,7 @@ const DOC_STATUS = {
   FRESH: 'FRESH',
 };
 
-export const StatusIcon: React.FC<StatusIconProps> = ({ 
+export const StatusIcon: React.FC<StatusIconProps> = ({
   documentationStatus,
   // hasDoc, // We can derive this from documentationStatus mostly
   // contentHash, 
@@ -65,7 +65,7 @@ export const StatusIcon: React.FC<StatusIconProps> = ({
       // This part might need refinement based on how you handle symbols without a status yet
       title = "Documentation status unclear or needs processing";
       color = "#ffc107"; // Treat as potentially stale or needing attention
-      IconComponent = FaExclamationCircle; 
+      IconComponent = FaExclamationCircle;
       break;
   }
 

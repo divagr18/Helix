@@ -15,10 +15,13 @@ from github import Github, GithubException, UnknownObjectException
 from django.contrib.auth import get_user_model
 import datetime
 from itertools import takewhile
+import tempfile
+from django.utils import timezone
 from django.db import transaction,models  # Import the transaction module
-from .models import CodeFile, CodeSymbol, CodeClass,CodeDependency 
+from .models import CodeFile, CodeSymbol, CodeClass,CodeDependency,EmbeddingBatchJob 
 from .models import Notification, AsyncTaskStatus # Ensure Notification is imported
-
+OPENAI_EMBEDDING_BATCH_SIZE = 50
+OPENAI_EMBEDDING_BATCH_FILE_MAX_REQUESTS = 49000
 # Define the path to our compiled Rust binary INSIDE the container
 REPO_CACHE_BASE_PATH = "/var/repos"
 from openai import OpenAI # Import the OpenAI library
@@ -111,24 +114,33 @@ def process_repository(repo_id):
                 # Process top-level functions
                 for func_data in file_data.get('functions', []):
                     uid = func_data.get('unique_id')
-                    if not uid: 
-                        print(f"WARNING: Missing unique_id for function {func_data.get('name')} in {code_file_obj.file_path}")
-                        continue
+                    if not uid: continue
                     processed_unique_ids_from_rust.add(uid)
                     
-                    # update_or_create based on unique_id AND its direct parent (CodeFile)
-                    # This assumes unique_id is unique within the context of its direct parent type.
+                    # Initial defaults, not including documentation_status yet
+                    func_defaults = {
+                        'code_class': None,
+                        'name': func_data.get('name'), 'start_line': func_data.get('start_line'),
+                        'end_line': func_data.get('end_line'), 'content_hash': func_data.get('content_hash'),
+                        'is_orphan': False,'loc': func_data.get('loc'),
+                            'cyclomatic_complexity': func_data.get('cyclomatic_complexity')
+                    }
+                    
                     symbol_obj, created = CodeSymbol.objects.update_or_create(
                         unique_id=uid,
-                        code_file=code_file_obj, # Key for uniqueness if uid is not global
-                        defaults={
-                            'code_class': None,
-                            'name': func_data.get('name'), 'start_line': func_data.get('start_line'),
-                            'end_line': func_data.get('end_line'), 'content_hash': func_data.get('content_hash')
-                        }
+                        code_file=code_file_obj,
+                        defaults=func_defaults
                     )
-                    if created: print(f"Created Symbol: {uid}")
-                    else: print(f"Updated Symbol: {uid}")
+
+                    if created:
+                        # If newly created, set initial documentation_status
+                        symbol_obj.documentation_status = CodeSymbol.DocStatus.NONE
+                        symbol_obj.save(update_fields=['documentation_status']) 
+                        print(f"Created Symbol: {uid} with doc_status NONE")
+                    else:
+                        print(f"Updated Symbol: {uid} - doc_status preserved")
+                        # For updates, documentation_status is preserved (not in defaults).
+                        # The staleness check later will handle setting FRESH/STALE.
 
                     symbol_map_for_deps[uid] = symbol_obj
                     call_map_for_deps[uid] = func_data.get('calls', [])
@@ -145,24 +157,32 @@ def process_repository(repo_id):
                     )
                     for method_data in class_data.get('methods', []):
                         uid = method_data.get('unique_id')
-                        if not uid: 
-                            print(f"WARNING: Missing unique_id for method {method_data.get('name')} in class {class_obj.name}")
-                            continue
+                        if not uid: continue
                         processed_unique_ids_from_rust.add(uid)
 
-                        # update_or_create based on unique_id AND its direct parent (CodeClass)
+                        method_defaults = {
+                            'code_file': None,
+                            'name': method_data.get('name'), 'start_line': method_data.get('start_line'),
+                            'end_line': method_data.get('end_line'), 'content_hash': method_data.get('content_hash'),
+                            'is_orphan': False,'loc': method_data.get('loc'),
+                                'cyclomatic_complexity': method_data.get('cyclomatic_complexity')
+                        }
+
                         symbol_obj, created = CodeSymbol.objects.update_or_create(
                             unique_id=uid,
-                            code_class=class_obj, # Key for uniqueness if uid is not global
-                            defaults={
-                                'code_file': None, # Method belongs to a class, not directly to a file
-                                'name': method_data.get('name'), 'start_line': method_data.get('start_line'),
-                                'end_line': method_data.get('end_line'), 'content_hash': method_data.get('content_hash')
-                            }
+                            code_class=class_obj,
+                            defaults=method_defaults
                         )
-                        if created: print(f"Created Method Symbol: {uid}")
-                        else: print(f"Updated Method Symbol: {uid}")
-                        
+
+                        if created:
+                            # If newly created, set initial documentation_status
+                            symbol_obj.documentation_status = CodeSymbol.DocStatus.NONE
+                            symbol_obj.save(update_fields=['documentation_status'])
+                            print(f"Created Method Symbol: {uid} with doc_status NONE")
+                        else:
+                            print(f"Updated Method Symbol: {uid} - doc_status preserved")
+                            # For updates, documentation_status is preserved.
+
                         symbol_map_for_deps[uid] = symbol_obj
                         call_map_for_deps[uid] = method_data.get('calls', [])
             
@@ -182,28 +202,14 @@ def process_repository(repo_id):
             print(f"PROCESS_REPO_TASK: Finished Pass 1. Processed {len(processed_unique_ids_from_rust)} symbols from Rust output.")
 
             # PASS 1.5: Generate Embeddings
-            if OPENAI_CLIENT:
-                print(f"PROCESS_REPO_TASK: Starting Pass 1.5: Generating Embeddings...")
-                symbols_for_embedding_update = []
-                # Iterate over symbols that were just processed (present in symbol_map_for_deps)
-                for symbol_obj in symbol_map_for_deps.values():
-                    text_to_embed = symbol_obj.name
-                    if symbol_obj.documentation:
-                        doc_cleaned = symbol_obj.documentation.replace("\n", " ") # OpenAI recommendation
-                        text_to_embed += f"\n\n{doc_cleaned}"
-                    try:
-                        response = OPENAI_CLIENT.embeddings.create(input=text_to_embed, model=OPENAI_EMBEDDING_MODEL)
-                        symbol_obj.embedding = response.data[0].embedding
-                        symbols_for_embedding_update.append(symbol_obj)
-                    except Exception as e:
-                        print(f"Error generating OpenAI embedding for symbol {symbol_obj.unique_id}: {e}")
-                
-                if symbols_for_embedding_update:
-                    print(f"PROCESS_REPO_TASK: Saving embeddings for {len(symbols_for_embedding_update)} symbols...")
-                    CodeSymbol.objects.bulk_update(symbols_for_embedding_update, ['embedding'], batch_size=100)
-                print(f"PROCESS_REPO_TASK: Finished Pass 1.5.")
+            if OPENAI_CLIENT: # Only submit if client is available
+                print(f"PROCESS_REPO_TASK: Dispatching asynchronous batch embedding job for repo {repo.id}...")
+                submit_embedding_batch_job_task.delay(repo_id=repo.id)
+
             else:
-                print("PROCESS_REPO_TASK: Skipping Pass 1.5 (Embeddings) as OpenAI client is not available.")
+                print("PROCESS_REPO_TASK: Skipping embedding job submission as OpenAI client is not available.")
+            # --- END NEW ---
+
 
             # PASS 2: Link Dependencies
             print("PROCESS_REPO_TASK: Starting Pass 2: Linking Dependencies...")
@@ -285,11 +291,12 @@ def process_repository(repo_id):
 
             repo.root_merkle_hash = repo_analysis_data.get('root_merkle_hash')
             repo.status = Repository.Status.COMPLETED
-            repo.last_processed = datetime.datetime.now(datetime.timezone.utc) # Added timezone
+            repo.last_processed = timezone.now() # Added timezone
             repo.save(update_fields=['root_merkle_hash', 'status', 'last_processed'])
 
         print(f"PROCESS_REPO_TASK: Successfully processed and saved analysis for repository: {repo.full_name}")
-
+        print(f"PROCESS_REPO_TASK: Dispatching orphan detection for repo {repo.id}")
+        detect_orphan_symbols_task.delay(repo_id=repo.id, user_id=repo.user.id) # Pass user_id of repo owner
     except subprocess.CalledProcessError as e:
         error_message = f"Error calling Rust engine for repo_id={repo_id}. Return code: {e.returncode}. Stderr: {e.stderr[:500]}..."
         print(error_message)
@@ -652,9 +659,11 @@ def batch_generate_docstrings_task(self, code_file_id: int, user_id: int):
 
         if docstring_content:
             symbol.documentation = docstring_content
-            symbol.documentation_hash = symbol.content_hash # Mark as fresh
+            symbol.documentation_hash = symbol.content_hash
+            symbol.documentation_status = CodeSymbol.DocStatus.FRESH # Or some other status
+ # Mark as fresh
             try:
-                symbol.save(update_fields=['documentation', 'documentation_hash'])
+                symbol.save(update_fields = ['documentation', 'documentation_hash', 'documentation_status'])
                 print(f"Generated and saved doc for: {symbol.unique_id or symbol.name}")
                 successful_generations += 1
             except Exception as e:
@@ -664,7 +673,7 @@ def batch_generate_docstrings_task(self, code_file_id: int, user_id: int):
             print(f"Failed to generate doc for: {symbol.unique_id or symbol.name}")
             failed_generations += 1
         
-        time.sleep(0.5) # Basic rate limiting: 0.5 seconds between OpenAI calls
+        time.sleep(0.1) # Basic rate limiting: 0.5 seconds between OpenAI calls
 
     summary_message = f"Batch documentation generation for file '{code_file.file_path}': {successful_generations} successful, {failed_generations} failed."
     print(summary_message)
@@ -962,19 +971,22 @@ def batch_generate_docstrings_for_files_task(self, repo_id: int, user_id: int, f
                 if symbol.content_hash: # Ensure content_hash exists
                     symbol.documentation_hash = symbol.content_hash 
                     symbol.documentation_status = CodeSymbol.DocStatus.FRESH
-                    print(f"BATCH_DOC_GEN_TASK: Marking symbol {symbol.id} as FRESH. DocHash: {symbol.documentation_hash}, ContentHash: {symbol.content_hash}")
+                    print(f"BATCH_DOC_GEN_TASK: PRE-SAVE for Symbol {symbol.id}: status='{symbol.documentation_status}', doc_hash='{symbol.documentation_hash}', content_hash='{symbol.content_hash}'")
                 else:
                     # Fallback if content_hash is missing (should be rare after process_repo)
                     hasher = hashlib.sha256()
                     hasher.update(docstring_content.encode('utf-8'))
                     symbol.documentation_hash = hasher.hexdigest()
                     symbol.documentation_status = CodeSymbol.DocStatus.PENDING_REVIEW # Or some other status
-                    print(f"BATCH_DOC_GEN_TASK: Symbol {symbol.id} missing content_hash. Hashing doc itself. Status: {symbol.documentation_status}")
+                    print(f"BATCH_DOC_GEN_TASK: PRE-SAVE (no content_hash) for Symbol {symbol.id}: status='{symbol.documentation_status}', doc_hash='{symbol.documentation_hash}'")
                 
                 update_fields_to_save = ['documentation', 'documentation_hash', 'documentation_status']
                 try:
                     symbol.save(update_fields=update_fields_to_save)
-                    print(f"BATCH_DOC_GEN_TASK: Generated and saved doc for: {symbol.unique_id or symbol.name}")
+                    saved_symbol_check = CodeSymbol.objects.get(pk=symbol.pk)
+                    print(f"BATCH_DOC_GEN_TASK: POST-SAVE for Symbol {symbol.id}: DB status='{saved_symbol_check.documentation_status}', "
+                        f"DB doc_hash='{saved_symbol_check.documentation_hash}', DB content_hash='{saved_symbol_check.content_hash}', "
+                        f"DB doc empty: {not bool(saved_symbol_check.documentation.strip() if saved_symbol_check.documentation else False)}")
                     overall_successful_symbol_generations += 1
                     file_had_successful_generation_this_run = True
                 except Exception as e:
@@ -1298,3 +1310,278 @@ def create_pr_for_multiple_files_task(self, repo_id: int, user_id: int, file_ids
             except Exception as branch_delete_e:
                 print(f"BATCH_PR_TASK: Failed to cleanup branch {new_branch_name}: {branch_delete_e}")
         raise # Re-raise for Celery to handle and mark as failed
+@app.task(bind=True)
+def detect_orphan_symbols_task(self, repo_id: int, user_id: int | None = None): # user_id for potential notification
+    task_id = self.request.id
+    print(f"ORPHAN_DETECT_TASK: Started (ID: {task_id}) for repo_id={repo_id}")
+
+    task_status_obj = None
+    user_obj = None
+    repo_obj = None
+
+    try:
+        repo_obj = Repository.objects.get(id=repo_id)
+        if user_id: # If user_id is provided (e.g., if triggered by a user action)
+            user_obj = User.objects.get(id=user_id)
+        else: # If triggered systemically (e.g., after process_repository), use repo owner
+            user_obj = repo_obj.user
+
+    except (Repository.DoesNotExist, User.DoesNotExist) as e:
+        print(f"ORPHAN_DETECT_TASK: ERROR - Repo or User not found for task {task_id}: {e}")
+        return {"status": "error", "message": "Repository or initiating user not found."}
+    except Exception as e:
+        print(f"ORPHAN_DETECT_TASK: ERROR - Creating AsyncTaskStatus for {task_id}: {e}")
+
+
+    print(f"ORPHAN_DETECT_TASK: Analyzing repository: {repo_obj.full_name}")
+
+    # --- Performant Orphan Detection ---
+    # 1. Get all symbols belonging to this repository.
+    all_symbols_in_repo_ids = CodeSymbol.objects.filter(
+        Q(code_file__repository=repo_obj) | Q(code_class__code_file__repository=repo_obj)
+    ).values_list('id', flat=True)
+
+    if not all_symbols_in_repo_ids:
+        print(f"ORPHAN_DETECT_TASK: No symbols found in repository {repo_obj.full_name}.")
+        if task_status_obj:
+            task_status_obj.status = AsyncTaskStatus.TaskStatus.SUCCESS
+            task_status_obj.message = "No symbols found in repository to analyze."
+            task_status_obj.progress = 100
+            task_status_obj.save()
+        return {"status": "success", "message": "No symbols found."}
+
+    # 2. Get IDs of all symbols that are *callees* (i.e., are being called).
+    #    We only care about callees that are within the current repository.
+    called_symbol_ids_in_repo = CodeDependency.objects.filter(
+        Q(callee_id__in=all_symbols_in_repo_ids) & # Callee is in this repo
+        (Q(caller__code_file__repository=repo_obj) | Q(caller__code_class__code_file__repository=repo_obj)) # Caller is also in this repo
+    ).values_list('callee_id', flat=True).distinct()
+    
+    called_symbol_ids_set = set(called_symbol_ids_in_repo)
+    all_symbols_in_repo_ids_set = set(all_symbols_in_repo_ids)
+
+    orphan_symbol_ids = list(all_symbols_in_repo_ids_set - called_symbol_ids_set)
+    
+    symbols_to_update_as_orphan = []
+    symbols_to_update_as_not_orphan = []
+    actually_marked_orphan_count = 0
+
+    # Iterate through all symbols to update their status.
+    # We could do this in two bulk updates: one for orphans, one for non-orphans.
+    for symbol_id in all_symbols_in_repo_ids_set:
+        is_potentially_orphan = symbol_id in orphan_symbol_ids
+        
+        # Apply entry point heuristics (MVP)
+        # Example: Don't mark `__init__` methods as orphans for now.
+        # A more robust check would see if the CLASS containing the __init__ is instantiated/used.
+        is_known_entry_point = False
+        if is_potentially_orphan:
+            try:
+                # Fetch the symbol to check its name, only if potentially orphan to save queries
+                symbol_obj_for_check = CodeSymbol.objects.get(id=symbol_id)
+                if symbol_obj_for_check.name == "__init__":
+                    is_known_entry_point = True
+                # Add more heuristics here:
+                # e.g., if symbol_obj_for_check.name == "main" and not symbol_obj_for_check.code_class:
+                # is_known_entry_point = True
+            except CodeSymbol.DoesNotExist:
+                continue # Should not happen if ID came from all_symbols_in_repo_ids
+
+        is_truly_orphan = is_potentially_orphan and not is_known_entry_point
+
+        # Update the symbol's is_orphan field
+        # We collect IDs to do bulk updates for performance
+        if is_truly_orphan:
+            symbols_to_update_as_orphan.append(symbol_id)
+        else:
+            symbols_to_update_as_not_orphan.append(symbol_id)
+
+    # Bulk update symbols
+    if symbols_to_update_as_orphan:
+        updated_count = CodeSymbol.objects.filter(id__in=symbols_to_update_as_orphan).update(is_orphan=True)
+        actually_marked_orphan_count = updated_count
+        print(f"ORPHAN_DETECT_TASK: Marked {updated_count} symbols as ORPHAN.")
+    
+    if symbols_to_update_as_not_orphan:
+        updated_count = CodeSymbol.objects.filter(id__in=symbols_to_update_as_not_orphan).update(is_orphan=False)
+        print(f"ORPHAN_DETECT_TASK: Marked {updated_count} symbols as NOT ORPHAN.")
+
+
+    print(f"ORPHAN_DETECT_TASK: Orphan detection complete for repo {repo_obj.full_name}. Found {actually_marked_orphan_count} orphan symbols.")
+
+    # --- Notification Logic ---
+    if actually_marked_orphan_count > 0 and user_obj: # Check if user_obj was successfully fetched
+        # Fetch details for a few orphan symbols for the notification message
+        orphan_examples = CodeSymbol.objects.filter(id__in=symbols_to_update_as_orphan[:5]).select_related('code_file', 'code_class__code_file')
+        example_details = []
+        for orphan_sym in orphan_examples:
+            file_p = orphan_sym.code_file.file_path if orphan_sym.code_file else (orphan_sym.code_class.code_file.file_path if orphan_sym.code_class else "N/A")
+            example_details.append(f"- `{orphan_sym.name}` in `{file_p}`")
+        
+        details_msg = "\n".join(example_details)
+        if len(symbols_to_update_as_orphan) > 5:
+            details_msg += f"\n... and {len(symbols_to_update_as_orphan) - 5} more."
+
+        notification_message = (
+            f"{actually_marked_orphan_count} potential orphan (uncalled) symbol(s) "
+            f"were detected in repository '{repo_obj.full_name}'.\n\nExamples:\n{details_msg}"
+        )
+        Notification.objects.create(
+            user=user_obj, # Use the determined user object
+            repository=repo_obj,
+            message=notification_message,
+            notification_type=Notification.NotificationType.STALENESS_ALERT # Re-use or add ORPHAN_ALERT type
+            # link_url=f"/repositories/{repo_obj.id}/orphans/" # Future link to a page showing orphans
+        )
+        print(f"ORPHAN_DETECT_TASK: Created notification for {user_obj.username}.")
+
+    if task_status_obj:
+        task_status_obj.status = AsyncTaskStatus.TaskStatus.SUCCESS
+        task_status_obj.message = f"Orphan detection complete. Found {actually_marked_orphan_count} orphan symbols."
+        task_status_obj.progress = 100
+        task_status_obj.result_data = {"orphan_count": actually_marked_orphan_count}
+        task_status_obj.save()
+        
+    return {"status": "success", "orphan_count": actually_marked_orphan_count}
+
+@app.task(bind=True, max_retries=3, default_retry_delay=60) # Added retry for robustness
+def submit_embedding_batch_job_task(self, repo_id: int):
+    task_id = self.request.id # Celery task ID of this submission task
+    print(f"EMBED_BATCH_SUBMIT_TASK: Started (ID: {task_id}) for repo_id {repo_id}")
+
+    if not OPENAI_CLIENT:
+        message = "OpenAI client not available (OPENAI_API_KEY not set or init failed). Cannot submit embedding batch."
+        print(f"EMBED_BATCH_SUBMIT_TASK: {message}")
+        # Potentially create an EmbeddingBatchJob record with a FAILED_SUBMISSION status
+        # For now, we just log and exit.
+        return {"status": "error", "message": message}
+
+    try:
+        repo = Repository.objects.get(id=repo_id)
+    except Repository.DoesNotExist:
+        print(f"EMBED_BATCH_SUBMIT_TASK: Repository with ID {repo_id} not found.")
+        return {"status": "error", "message": f"Repository {repo_id} not found."}
+
+    symbols_to_embed = CodeSymbol.objects.filter(
+        (Q(code_file__repository=repo) | Q(code_class__code_file__repository=repo)),
+        embedding__isnull=True # Embed only if embedding is currently null
+    ).only('id', 'name', 'documentation', 'unique_id') # Fetch only needed fields
+
+    if not symbols_to_embed.exists():
+        message = f"No symbols requiring embedding found for repository {repo.full_name}."
+        print(f"EMBED_BATCH_SUBMIT_TASK: {message}")
+        return {"status": "success", "message": message, "batch_id": None}
+
+    print(f"EMBED_BATCH_SUBMIT_TASK: Preparing batch file for {symbols_to_embed.count()} symbols from repo {repo.full_name}.")
+
+    batch_requests_for_jsonl = []
+    # Keep track of symbol pks for which requests are created, to update them later
+    # if we decide to mark them as "embedding_job_submitted"
+    symbol_pks_in_batch = [] 
+
+    for symbol in symbols_to_embed:
+        # custom_id must be unique within the batch file, max 64 chars.
+        # Using `symbol-{pk}` is a good pattern.
+        custom_id = f"symbol-{symbol.id}" 
+        symbol_pks_in_batch.append(symbol.id)
+
+        text_to_embed = symbol.name
+        if symbol.documentation:
+            # OpenAI recommends replacing newlines with spaces for their embedding models.
+            doc_cleaned = symbol.documentation.replace("\n", " ").strip()
+            if doc_cleaned: # Only append if there's actual content after cleaning
+                text_to_embed += f"\n\n{doc_cleaned}" # Use a clear separator
+
+        batch_requests_for_jsonl.append({
+            "custom_id": custom_id,
+            "method": "POST",
+            "url": "/v1/embeddings", # Correct endpoint for embeddings
+            "body": {
+                "model": OPENAI_EMBEDDING_MODEL, # Your configured embedding model
+                "input": text_to_embed
+                # "encoding_format": "float", # Default is float, can also be "base64"
+                # "dimensions": 1536 # Optional: if using a model that supports other dimensions
+            }
+        })
+        
+        # Adhere to OpenAI's per-batch request limit
+        if len(batch_requests_for_jsonl) >= OPENAI_EMBEDDING_BATCH_FILE_MAX_REQUESTS:
+            print(f"EMBED_BATCH_SUBMIT_TASK: Reached max requests ({OPENAI_EMBEDDING_BATCH_FILE_MAX_REQUESTS}) "
+                  f"for a single batch file. Processing this batch and will skip remaining symbols for now.")
+            break
+            # A more advanced implementation would create multiple batch jobs.
+
+    if not batch_requests_for_jsonl:
+        message = f"No valid embedding requests generated for repository {repo.full_name}."
+        print(f"EMBED_BATCH_SUBMIT_TASK: {message}")
+        return {"status": "success", "message": message, "batch_id": None}
+
+    # Create an initial EmbeddingBatchJob record to track this attempt
+    # We'll update it with OpenAI IDs once the submission is successful
+    job_record = EmbeddingBatchJob.objects.create(
+        repository=repo,
+        status=EmbeddingBatchJob.JobStatus.PENDING_SUBMISSION,
+        custom_metadata={"celery_task_id": task_id, "symbol_count": len(batch_requests_for_jsonl)}
+    )
+
+    batch_input_file_path = None # Initialize for finally block
+    try:
+        # 2. Prepare your batch file (.jsonl)
+        with tempfile.NamedTemporaryFile(mode='w+', suffix=".jsonl", delete=False, encoding='utf-8') as tmp_file:
+            for request_data in batch_requests_for_jsonl:
+                tmp_file.write(json.dumps(request_data) + "\n")
+            batch_input_file_path = tmp_file.name
+        
+        print(f"EMBED_BATCH_SUBMIT_TASK: Batch input file created at {batch_input_file_path} for Job ID {job_record.id}")
+
+        # 3. Upload your batch input file to OpenAI
+        with open(batch_input_file_path, "rb") as f_for_upload:
+            uploaded_file_response = OPENAI_CLIENT.files.create(
+                file=f_for_upload,
+                purpose="batch" # This purpose is required for Batch API
+            )
+        job_record.input_file_id = uploaded_file_response.id
+        print(f"EMBED_BATCH_SUBMIT_TASK: Batch input file uploaded. OpenAI File ID: {uploaded_file_response.id} for Job ID {job_record.id}")
+
+        # 4. Create the batch job with OpenAI
+        openai_batch_response = OPENAI_CLIENT.batches.create(
+            input_file_id=uploaded_file_response.id,
+            endpoint="/v1/embeddings", # Must match the URL in your .jsonl requests
+            completion_window="24h",   # Currently, only "24h" is supported
+            metadata={ # Optional metadata for your reference on OpenAI's side
+                "helix_cme_job_id": str(job_record.id),
+                "repository_id": str(repo.id),
+                "repository_name": repo.full_name,
+                "description": f"Helix CME: Embedding generation for {repo.full_name}"
+            }
+        )
+        job_record.batch_id = openai_batch_response.id # This is the crucial OpenAI Batch ID
+        job_record.status = openai_batch_response.status # e.g., 'validating'
+        job_record.submitted_to_openai_at = timezone.now()
+        job_record.openai_metadata = openai_batch_response.to_dict() # Store the full response
+        job_record.save()
+        
+        print(f"EMBED_BATCH_SUBMIT_TASK: OpenAI Batch job created. OpenAI Batch ID: {openai_batch_response.id}, "
+              f"Status: {openai_batch_response.status} for Job ID {job_record.id}")
+        
+        return {
+            "status": "success", 
+            "message": "Embedding batch job successfully submitted to OpenAI.",
+            "helix_job_id": job_record.id,
+            "openai_batch_id": openai_batch_response.id
+        }
+
+    except Exception as e:
+        error_message = f"Error during OpenAI file upload or batch creation for Job ID {job_record.id}: {str(e)}"
+        print(f"EMBED_BATCH_SUBMIT_TASK: {error_message}")
+        job_record.status = EmbeddingBatchJob.JobStatus.FAILED # Or a specific "submission_failed" status
+        job_record.error_details = error_message
+        job_record.save()
+        # Re-raise the exception if you want Celery to retry based on max_retries
+        # self.retry(exc=e) 
+        return {"status": "error", "message": error_message, "helix_job_id": job_record.id}
+    finally:
+        # Clean up the temporary file
+        if batch_input_file_path and os.path.exists(batch_input_file_path):
+            os.remove(batch_input_file_path)
+            print(f"EMBED_BATCH_SUBMIT_TASK: Cleaned up temporary file {batch_input_file_path}")
