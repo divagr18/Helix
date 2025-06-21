@@ -1,11 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import axios from 'axios';
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
-import { FaBrain, FaFileCode, FaRobot, FaRulerCombined } from 'react-icons/fa';
-import { StatusIcon } from '../components/StatusIcon';
-import { FaSave, FaSpinner } from 'react-icons/fa'; // Added FaSpinner for loading state
+// Added FaSpinner for loading state
 import { getCookie } from '../utils';
 import { FaMagic, FaSync } from 'react-icons/fa'; // FaMagic for generate, FaSync for processing
 import { FaGithub } from 'react-icons/fa'; // For PR button
@@ -13,6 +9,9 @@ import { OrphanIndicator } from '../components/OrphanIndicator'; // <<<< IMPORT
 import { FaAngleDown, FaAngleRight } from 'react-icons/fa';
 import { CodeViewerPanel } from '../components/repo-detail/CodeViewerPanel';
 import { AnalysisPanel } from '../components/repo-detail/AnalysisPanel';
+import { FileTreePanel } from '../components/repo-detail/FileTreePanel';
+import { BatchActionsPanel } from '../components/repo-detail/BatchActionsPanel';
+import { OrphanSymbolsPanel, type OrphanSymbolDisplayItem } from '../components/repo-detail/OrphanSymbolsPanel';
 // --- Type Definitions ---
 interface CodeSymbol {
   id: number;
@@ -61,7 +60,7 @@ export function RepoDetailPage() {
   const [repo, setRepo] = useState<Repository | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-
+  
   const [selectedFile, setSelectedFile] = useState<CodeFile | null>(null);
   const [fileContent, setFileContent] = useState<string>('');
   const [contentLoading, setContentLoading] = useState(false);
@@ -86,6 +85,9 @@ export function RepoDetailPage() {
   const [prCreationTaskMessage, setPRCreationTaskMessage] = useState<string | null>(null);
   const [prCreationTaskProgress, setPRCreationTaskProgress] = useState<number>(0); // Optional progress
   const [prURL, setPrURL] = useState<string | null>(null); // To store the PR URL
+  const isAnyFileSpecificActionInProgress = batchProcessingFileId !== null || creatingPRFileId !== null;
+  const isAnyGlobalBatchActionInProgress = activeDocGenTaskId !== null || activePRCreationTaskId !== null;
+  const isAnyOperationInProgressForFileTree = isAnyFileSpecificActionInProgress || isAnyGlobalBatchActionInProgress;
 
   // --- YOUR CORRECT API CALL LOGIC ---
   const orphanSymbolsList = useMemo(() => {
@@ -550,348 +552,91 @@ export function RepoDetailPage() {
     return 'plaintext';
   };
 
-  if (loading) return <p>Loading repository...</p>;
-  if (error) return <p style={{ color: 'red' }}>{error}</p>;
-  if (!repo) return <p>Repository not found.</p>;
+  if (loading && !repo) return <p className="p-6 text-center text-foreground">Loading repository...</p>;
+  if (error) return <p className="p-6 text-center text-destructive">{error}</p>;
+  if (!repo) return <p className="p-6 text-center text-muted-foreground">Repository not found or not yet loaded.</p>;
 
   return (
-    <div style={{ display: 'flex', height: '100vh', fontFamily: 'sans-serif', backgroundColor: '#1e1e1e', color: '#d4d4d4' }}>
-      {/* ============================================= */}
-      {/* File Tree Panel                             */}
-      {/* ============================================= */}
-      <div style={{
-        width: '300px', // Or your desired width, e.g., '25vw', '280px'
-        flexShrink: 0,  // Prevent this panel from shrinking
-        borderRight: '1px solid #30363d',
-        padding: '10px',
-        overflowY: 'auto',
-        backgroundColor: '#0d1117',
-        display: 'flex', // Add this
-        flexDirection: 'column' // Add this to manage its children vertically
-      }}>
-        <h2 style={{ paddingBottom: '10px', color: '#c9d1d9' }}>
-          <Link to="/dashboard" style={{ color: '#58a6ff', textDecoration: 'none' }}>Dashboard</Link> / {repo.full_name.split('/')[1]}
-        </h2>
-        <hr style={{ borderColor: '#30363d', marginBottom: '10px' }} />
+  <div className="flex h-screen bg-background text-foreground overflow-y-hidden"> {/* Ensure overflow-y-hidden here */}
+    
+    {/* ============================================= */}
+    {/* Left Panel                                  */}
+    {/* ============================================= */}
+    {/* This aside is a flex column, and it will manage its own height and scrolling. */}
+    <aside className="w-[300px] md:w-[380px] flex-shrink-0 border-r border-border flex flex-col bg-card overflow-y-auto min-h-0">
+      
+      {/* FileTreePanel will take available space within this top part of the aside */}
+      {/* This wrapper allows ScrollArea inside FileTreePanel to work correctly by constraining its height */}
+      <div className="flex-grow overflow-y-auto min-h-0">
+        <FileTreePanel
+          repo={repo}
+          selectedFile={selectedFile}
+          onFileSelect={handleFileSelect}
+          selectedFilesForBatch={selectedFilesForBatch}
+          onSelectedFilesForBatchChange={setSelectedFilesForBatch}
+          
+          onGenerateDocsForFile={handleBatchGenerateDocsForFile}
+          batchProcessingFileId={batchProcessingFileId}
+          batchMessages={batchMessages}
+          
+          onCreatePRForFile={handleCreatePRForFile}
+          creatingPRFileId={creatingPRFileId}
+          prMessages={prMessages}
 
-        {/* Select All Checkbox */}
-        {repo && repo.files.length > 0 && (
-          <div style={{ padding: '8px 12px', display: 'flex', alignItems: 'center', borderBottom: '1px solid #30363d', marginBottom: '5px' }}>
-            <input
-              type="checkbox"
-              id="selectAllFilesCheckbox"
-              style={{ marginRight: '10px', cursor: 'pointer' }}
-              checked={selectAllFiles}
-              onChange={(e) => {
-                setSelectAllFiles(e.target.checked);
-                if (e.target.checked) {
-                  setSelectedFilesForBatch(new Set(repo.files.map(f => f.id)));
-                } else {
-                  setSelectedFilesForBatch(new Set());
-                }
-              }}
-            />
-            <label htmlFor="selectAllFilesCheckbox" style={{ cursor: 'pointer', fontWeight: 'bold' }}>
-              {selectAllFiles ? 'Deselect All Files' : 'Select All Files'} ({selectedFilesForBatch.size} / {repo.files.length} selected)
-            </label>
-          </div>
-        )}
-
-        <ul style={{ paddingLeft: 0, listStyle: 'none' }}>
-          {repo.files.map(file => (
-            <li
-              key={file.id}
-              style={{
-                marginBottom: '4px',
-                borderRadius: '6px',
-                backgroundColor: selectedFile?.id === file.id ? '#1f6feb' : 'transparent', // Highlight selected file
-                // Transition for hover effects if you add them
-              }}
-            >
-              <div style={{ display: 'flex', alignItems: 'center', padding: '8px 12px' }}>
-                {/* Individual File Checkbox */}
-                <input
-                  type="checkbox"
-                  style={{ marginRight: '10px', cursor: 'pointer', flexShrink: 0 }}
-                  checked={selectedFilesForBatch.has(file.id)}
-                  onChange={() => {
-                    const newSelectedFiles = new Set(selectedFilesForBatch);
-                    if (newSelectedFiles.has(file.id)) {
-                      newSelectedFiles.delete(file.id);
-                    } else {
-                      newSelectedFiles.add(file.id);
-                    }
-                    setSelectedFilesForBatch(newSelectedFiles);
-                    // Update selectAllFiles state if needed
-                    if (newSelectedFiles.size === repo.files.length) {
-                      setSelectAllFiles(true);
-                    } else {
-                      setSelectAllFiles(false);
-                    }
-                  }}
-                  disabled={batchProcessingRepoId !== null || creatingBatchPRRepoId !== null}
-                />
-                {/* File Icon, Name (clickable for selection) & Action Buttons */}
-                <div
-                  onClick={() => handleFileSelect(file)}
-                  style={{
-                    flexGrow: 1, /* Allow file name to take space */
-                    cursor: 'pointer',
-                    backgroundColor: selectedFile?.id === file.id ? '#1f6feb' : 'transparent',
-                    color: selectedFile?.id === file.id ? 'white' : '#c9d1d9',
-                    borderRadius: '6px', // Apply to this inner div if needed
-                    padding: '4px 8px', // Padding for the clickable file name area
-                    display: 'flex',
-                    alignItems: 'center',
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                    whiteSpace: 'nowrap'
-                  }}
-                >
-                  <FaFileCode style={{ marginRight: '8px', flexShrink: 0, color: selectedFile?.id === file.id ? 'white' : '#8b949e' }} />
-                  <span title={file.file_path}>{file.file_path}</span>
-                </div>
-
-                {/* Action Buttons Group */}
-                <div style={{ display: 'flex', alignItems: 'center', marginLeft: '10px' /* Spacing from file name */ }}>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation(); // Prevent file selection when clicking this button
-                      handleBatchGenerateDocsForFile(file.id, file.file_path);
-                    }}
-                    disabled={batchProcessingFileId !== null} // Disable if ANY batch job is running
-                    title={batchProcessingFileId === file.id ? "Processing Docs..." : (batchProcessingFileId !== null ? "Another batch job is running" : `Generate all missing/stale docs for ${file.file_path}`)}
-                    style={{
-                      padding: '4px 8px',
-                      fontSize: '0.8em',
-                      backgroundColor: batchProcessingFileId === file.id ? '#484f58' : '#2ea043',
-                      color: 'white',
-                      border: '1px solid rgba(240, 246, 252, 0.1)',
-                      borderRadius: '6px',
-                      cursor: batchProcessingFileId !== null ? 'not-allowed' : 'pointer',
-                      opacity: batchProcessingFileId !== null && batchProcessingFileId !== file.id ? 0.5 : 1,
-                      display: 'flex',
-                      alignItems: 'center',
-                      marginRight: '5px', // Space between buttons
-                    }}
-                  >
-                    {batchProcessingFileId === file.id ?
-                      <FaSync className="animate-spin" style={{ marginRight: '4px' }} /> :
-                      <FaMagic style={{ marginRight: '4px' }} />
-                    }
-                    {batchProcessingFileId === file.id ? "Processing..." : "Docs"}
-                  </button>
-
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation(); // Prevent file selection
-                      handleCreatePRForFile(file.id, file.file_path);
-                    }}
-                    disabled={creatingPRFileId !== null || batchProcessingFileId !== null} // Disable if any PR is being created OR if docs are being generated
-                    title={
-                      creatingPRFileId === file.id ? "Creating PR..." :
-                        (creatingPRFileId !== null ? "Another PR creation is in progress" :
-                          (batchProcessingFileId !== null ? "Wait for doc generation to finish" :
-                            `Create PR for ${file.file_path} doc updates`))
-                    }
-                    style={{
-                      padding: '4px 8px',
-                      fontSize: '0.8em',
-                      backgroundColor: creatingPRFileId === file.id ? '#484f58' : '#586069', // GitHub secondary button color
-                      color: 'white',
-                      border: '1px solid rgba(240, 246, 252, 0.1)',
-                      borderRadius: '6px',
-                      cursor: (creatingPRFileId !== null || batchProcessingFileId !== null) ? 'not-allowed' : 'pointer',
-                      opacity: (creatingPRFileId !== null && creatingPRFileId !== file.id) || (batchProcessingFileId !== null) ? 0.5 : 1,
-                      display: 'flex',
-                      alignItems: 'center',
-                    }}
-                  >
-                    {creatingPRFileId === file.id ?
-                      <FaSync className="animate-spin" style={{ marginRight: '4px' }} /> :
-                      <FaGithub style={{ marginRight: '4px' }} />
-                    }
-                    {creatingPRFileId === file.id ? "Creating..." : "PR"}
-                  </button>
-                </div>
-              </div>
-
-              {/* Display batch/PR message for this file */}
-              {(batchMessages[file.id] || prMessages[file.id]) && ( // Check both
-                <div style={{
-                  fontSize: '0.8em',
-                  padding: '4px 12px 8px 12px',
-                  // Check both for error styling
-                  color: (batchMessages[file.id]?.toLowerCase().includes('error') || batchMessages[file.id]?.toLowerCase().includes('failed') ||
-                    prMessages[file.id]?.toLowerCase().includes('error') || prMessages[file.id]?.toLowerCase().includes('failed'))
-                    ? '#f85149' : '#8b949e',
-                  borderTop: '1px dashed #30363d',
-                  marginTop: '4px'
-                }}>
-                  {batchMessages[file.id] || (prMessages && prMessages[file.id])}
-                </div>
-              )}
-            </li>
-          ))}
-        </ul>
-        {repo && repo.files.length > 0 && (
-          <div
-            style={{
-              padding: '15px 12px', // Consistent padding with file items
-              borderTop: '1px solid #30363d',
-              marginTop: '10px', // Space above this section
-              backgroundColor: '#0d1117' // Match panel background
-            }}
-          >
-            <h3 style={{
-              marginTop: 0,
-              marginBottom: '12px',
-              color: '#c9d1d9',
-              fontSize: '1.1em'
-            }}>
-              Batch Actions for Selected Files ({selectedFilesForBatch.size})
-            </h3>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-              <button
-                onClick={handleBatchGenerateDocsForRepo} // This handler should use setActiveDocGenTaskId and setDocGenTaskMessage
-                disabled={activeDocGenTaskId !== null || activePRCreationTaskId !== null || selectedFilesForBatch.size === 0}
-                title={
-                  selectedFilesForBatch.size === 0 ? "Select at least one file" :
-                    activeDocGenTaskId !== null ? "Documentation generation in progress..." :
-                      activePRCreationTaskId !== null ? "PR creation in progress, please wait..." :
-                        "Generate missing/stale docstrings for all selected files"
-                }
-                style={{
-                  backgroundColor: '#2ea043', color: 'white', border: '1px solid rgba(240, 246, 252, 0.1)',
-                  padding: '10px 15px', borderRadius: '6px',
-                  cursor: (activeDocGenTaskId !== null || activePRCreationTaskId !== null || selectedFilesForBatch.size === 0) ? 'not-allowed' : 'pointer',
-                  opacity: (activeDocGenTaskId !== null || activePRCreationTaskId !== null || selectedFilesForBatch.size === 0) ? 0.6 : 1,
-                  display: 'flex', alignItems: 'center', justifyContent: 'center', width: '100%'
-                }}
-              >
-                {activeDocGenTaskId ? <FaSync className="animate-spin" style={{ marginRight: '8px' }} /> : <FaMagic style={{ marginRight: '8px' }} />}
-                {activeDocGenTaskId ? `Generating Docs (${docGenTaskProgress}%)` : 'Generate Docs for Selected'}
-              </button>
-
-              {/* Button for Batch PR Creation */}
-              <button
-                onClick={handleCreateBatchPRForRepo}
-                disabled={activePRCreationTaskId !== null || activeDocGenTaskId !== null || selectedFilesForBatch.size === 0}
-                title={
-                  selectedFilesForBatch.size === 0 ? "Select files with updated docs first" :
-                    activePRCreationTaskId !== null ? "Batch PR creation in progress..." :
-                      activeDocGenTaskId !== null ? "Wait for documentation generation to complete" :
-                        "Create a single Pull Request for selected files with new/updated documentation"
-                }
-                style={{
-                  backgroundColor: '#586069', color: 'white', border: '1px solid rgba(240, 246, 252, 0.1)',
-                  padding: '10px 15px', borderRadius: '6px',
-                  cursor: (activePRCreationTaskId !== null || activeDocGenTaskId !== null || selectedFilesForBatch.size === 0) ? 'not-allowed' : 'pointer',
-                  opacity: (activePRCreationTaskId !== null || activeDocGenTaskId !== null || selectedFilesForBatch.size === 0) ? 0.6 : 1,
-                  display: 'flex', alignItems: 'center', justifyContent: 'center', width: '100%'
-                }}
-              >
-                {activePRCreationTaskId ? <FaSync className="animate-spin" style={{ marginRight: '8px' }} /> : <FaGithub style={{ marginRight: '8px' }} />}
-                {activePRCreationTaskId ? `Creating PR (${prCreationTaskProgress}%)` : 'Create PR for Selected'}
-              </button>
-            </div>
-
-            {/* Display global batch messages */}
-            {docGenTaskMessage && (
-              <p style={{
-                fontSize: '0.9em',
-                color: typeof docGenTaskMessage === 'string' && (docGenTaskMessage.toLowerCase().includes('error') || docGenTaskMessage.toLowerCase().includes('failed')) ? '#f85149' : '#8b949e',
-                marginTop: '12px', padding: '8px', backgroundColor: '#161b22',
-                borderRadius: '4px',
-                border: `1px solid ${typeof docGenTaskMessage === 'string' && (docGenTaskMessage.toLowerCase().includes('error') || docGenTaskMessage.toLowerCase().includes('failed')) ? '#f85149' : '#30363d'}`
-              }}>
-                {docGenTaskMessage}
-              </p>
-            )}
-
-            {/* Display global messages for Batch PR Creation Task */}
-            {prCreationTaskMessage && (
-              <p style={{
-                fontSize: '0.9em',
-                color: typeof prCreationTaskMessage === 'string' && (prCreationTaskMessage.toLowerCase().includes('error') || prCreationTaskMessage.toLowerCase().includes('failed')) ? '#f85149' : '#8b949e',
-                marginTop: docGenTaskMessage ? '10px' : '12px', // Adjust margin if both messages might show
-                padding: '8px', backgroundColor: '#161b22',
-                borderRadius: '4px',
-                border: `1px solid ${typeof prCreationTaskMessage === 'string' && (prCreationTaskMessage.toLowerCase().includes('error') || prCreationTaskMessage.toLowerCase().includes('failed')) ? '#f85149' : '#30363d'}`
-              }}>
-                {prCreationTaskMessage} {/* This will render the JSX fragment with the link if set by the polling useEffect */}
-              </p>
-            )}
-            {orphanSymbolsList.length > 0 && ( // Orphan Symbols conditional
-              <div style={{
-                padding: '15px 12px',
-                borderTop: '1px solid #30363d',
-                marginTop: '15px'
-              }}>
-                <button
-                  onClick={() => setShowOrphanList(!showOrphanList)}
-                  style={{
-                    background: 'none', border: 'none', color: '#c9d1d9', cursor: 'pointer',
-                    padding: '5px 0', width: '100%', textAlign: 'left',
-                    display: 'flex', alignItems: 'center', fontSize: '1.05em', fontWeight: 'bold'
-                  }}
-                >
-                  {showOrphanList ? <FaAngleDown style={{ marginRight: '8px' }} /> : <FaAngleRight style={{ marginRight: '8px' }} />}
-                  Potential Orphan Symbols ({orphanSymbolsList.length})
-                  <OrphanIndicator isOrphan={true} /> {/* Show a general ghost icon here too */}
-                </button>
-                {showOrphanList && (
-                  <ul style={{ listStyle: 'none', paddingLeft: '20px', marginTop: '10px', maxHeight: '200px', overflowY: 'auto' }}>
-                    {orphanSymbolsList.map(orphan => (
-                      <li key={`orphan-${orphan.id}`} style={{ marginBottom: '8px', fontSize: '0.9em' }}>
-                        <Link
-                          to={`/symbol/${orphan.id}`}
-                          title={`View details for ${orphan.name}`}
-                          style={{ color: '#9cdcfe', textDecoration: 'none' }}
-                        >
-                          {orphan.name}
-                        </Link>
-                        <span style={{ color: '#8b949e', marginLeft: '5px' }}>
-                          in {orphan.filePath}
-                          {orphan.className && ` (Class: ${orphan.className})`}
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            )}
-            {/* === END Orphan Symbols Section === */}
-
-          </div> // This closes the "Batch Actions for Selected Files" div
-        )} {/* This closes the "repo && repo.files.length > 0" conditional block */}
+          isAnyOperationInProgress={isAnyOperationInProgressForFileTree}
+        />
       </div>
 
-      {/* ============================================= */}
-      {/* Code View Panel                             */}
-      {/* ============================================= */}
-      <main className="flex-grow overflow-y-auto bg-background"> {/* Use bg-background for the main content area behind panels */}
-        <CodeViewerPanel
-          selectedFile={selectedFile}
-          fileContent={fileContent}
-          isLoading={contentLoading}
-          language={selectedFile ? getLanguage(selectedFile.file_path) : 'plaintext'}
-        />
-      </main>
+      {/* --- Batch Actions for Selected Files - To be extracted to BatchActionsPanel.tsx --- */}
+      {repo.files.length > 0 && (
+        <div className="p-3 md:p-4 border-t border-border bg-background shadow-inner mt-auto flex-shrink-0"> {/* flex-shrink-0 to prevent this from shrinking */}
+          <BatchActionsPanel
+            selectedFileCount={selectedFilesForBatch.size}
+            onBatchGenerateDocs={handleBatchGenerateDocsForRepo}
+            activeDocGenTaskId={activeDocGenTaskId}
+            docGenTaskMessage={docGenTaskMessage}
+            docGenTaskProgress={docGenTaskProgress}
+            onBatchCreatePR={handleCreateBatchPRForRepo}
+            activePRCreationTaskId={activePRCreationTaskId}
+            prCreationTaskMessage={prCreationTaskMessage}
+            prCreationTaskProgress={prCreationTaskProgress}
+            isAnyFileSpecificActionInProgress={isAnyFileSpecificActionInProgress} // Pass this down
+          />
+        </div>
+      )}
 
-      {/* ============================================= */}
-      {/* Analysis Panel                              */}
-      {/* ============================================= */}
-      <aside className="w-[350px] md:w-[400px] flex-shrink-0 border-l border-border flex flex-col bg-card"> {/* Use bg-card to match left panel */}
-        <AnalysisPanel
-          selectedFile={selectedFile}
-          generatedDocs={generatedDocs}
-          onGenerateDoc={handleGenerateDoc}
-          generatingDocId={generatingDocId}
-          onSaveDoc={handleSaveDoc}
-          savingDocId={savingDocId}
-        />
-      </aside>
-    </div>
-  );
+      {/* --- Orphan Symbols List - To be extracted to OrphanSymbolsPanel.tsx --- */}
+      <div className="p-3 md:p-4 border-t border-border bg-background shadow-inner">
+        <OrphanSymbolsPanel orphanSymbols={orphanSymbolsList as OrphanSymbolDisplayItem[]} /> 
+        {/* Cast orphanSymbolsList if its type doesn't exactly match OrphanSymbolDisplayItem[] yet */}
+      </div>
+    </aside>
+
+    {/* ============================================= */}
+    {/* Code View Panel (Already Refactored)          */}
+    {/* ============================================= */}
+    <main className="flex-grow flex flex-col overflow-hidden bg-background min-w-0">
+      <CodeViewerPanel
+        selectedFile={selectedFile}
+        fileContent={fileContent}
+        isLoading={contentLoading}
+        language={selectedFile ? getLanguage(selectedFile.file_path) : 'plaintext'}
+      />
+    </main>
+
+    {/* ============================================= */}
+    {/* Analysis Panel (Already Refactored)         */}
+    {/* ============================================= */}
+    <aside className="w-[350px] md:w-[400px] flex-shrink-0 border-l border-border flex flex-col bg-background overflow-hidden min-w-0">
+      <AnalysisPanel
+        selectedFile={selectedFile}
+        generatedDocs={generatedDocs}
+        onGenerateDoc={handleGenerateDoc}
+        generatingDocId={generatingDocId}
+        onSaveDoc={handleSaveDoc}
+        savingDocId={savingDocId}
+      />
+    </aside>
+  </div>
+);
 }

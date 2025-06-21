@@ -106,7 +106,7 @@ export const CodeViewerPanel: React.FC<CodeViewerPanelProps> = ({
     return (
         // The parent container in RepoDetailPage should manage overflow and height for this panel.
         // This component will try to fill the height given by its parent.
-        <div className="h-full w-full overflow-auto bg-card" > {/* Use bg-card or bg-background */}
+        <div className="h-full w-full flex flex-col overflow-auto bg-card" > {/* Use bg-card or bg-background */}
             <SyntaxHighlighter
                 language={language.toLowerCase()} // Ensure language is lowercase for Prism
                 style={syntaxHighlighterStyle}

@@ -66,7 +66,7 @@ function App() {
       </>
     );
   };
-
+  const rootVerticalPadding = '2rem';
   if (loadingAuth) {
     return <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh', backgroundColor: '#1e1e1e', color: '#d4d4d4' }}>Loading authentication...</div>;
   }
@@ -76,7 +76,8 @@ function App() {
 
       <BrowserRouter>
 
-        <div className="flex flex-col h-screen bg-background text-foreground">
+        <div className="flex flex-col h-screen bg-background text-foreground" style={{ height: `calc(100vh - ${rootVerticalPadding})` }} // Adjust height
+      >
           <AppContent />
         </div>
       </BrowserRouter>
