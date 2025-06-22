@@ -5,7 +5,7 @@ import { SymbolListItem, type SymbolForListItem } from './SymbolListItem'; // Im
 import type { CodeFile, CodeClass } from '@/types'; // Assuming central types
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 
-
+import { ClassSummarySection } from './ClassSummarySection';
 interface AnalysisPanelProps {
   selectedFile: CodeFile | null;
   generatedDocs: Record<number, string>; // Maps symbol.id to its AI generated doc string
@@ -31,10 +31,10 @@ export const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
     <div className="h-full flex flex-col bg-background"> {/* Use bg-background for the panel itself to contrast with Cards */}
       <div className="p-3 md:p-4 border-b border-border sticky top-0 bg-card z-10">
         <h3 className="text-base md:text-lg font-semibold text-foreground">
-          Analysis for: {selectedFile ? 
+          Analysis for: {selectedFile ?
             <span className="font-normal text-muted-foreground ml-1 truncate" title={selectedFile.file_path}>
               {selectedFile.file_path.split('/').pop()}
-            </span> 
+            </span>
             : <span className="font-normal text-muted-foreground ml-1">No file selected</span>
           }
         </h3>
@@ -60,15 +60,22 @@ export const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
 
               {selectedFile.classes.map(cls => (
                 <Card key={`class-${cls.id}`} className="mb-3 bg-card border-border shadow-sm">
-                  <CardHeader className="p-3 md:p-4 !pb-2"> {/* Less bottom padding for class header */}
-                    <CardTitle className="text-md md:text-lg font-semibold text-primary">Class: {cls.name}</CardTitle>
+                  <CardHeader className="p-3 md:p-4 !pb-3"> {/* Adjusted padding */}
+                    <div className="flex justify-between items-center gap-2">
+                      <CardTitle className="text-md md:text-lg font-semibold text-primary">
+                        Class: {cls.name}
+                      </CardTitle>
+                    </div>
                   </CardHeader>
+                  <div className="px-3 md:px-4 pb-3 border-b border-border">
+                    <ClassSummarySection classId={cls.id} />
+                  </div>
                   {/* No CardContent needed if SymbolListItems are direct children visually */}
                   <div className="space-y-1 px-1 pb-1 md:px-2 md:pb-2"> {/* Add padding around methods */}
                     {cls.methods.map(method => (
                       <SymbolListItem
                         key={`method-${method.id}`}
-                        symbol={{...method, className: cls.name } as SymbolForListItem}
+                        symbol={{ ...method, className: cls.name } as SymbolForListItem}
                         generatedDocForThisSymbol={generatedDocs[method.id] || null}
                         onGenerateDoc={onGenerateDoc}
                         isGeneratingAnyDoc={isAnyDocGenerating}

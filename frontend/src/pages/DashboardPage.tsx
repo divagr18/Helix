@@ -41,16 +41,39 @@ export function DashboardPage() {
     const [isAddRepoDialogOpen, setIsAddRepoDialogOpen] = useState(false);
     const [processingRepoId, setProcessingRepoId] = useState<number | null>(null); // For re-process loading state
 
-    const fetchTrackedRepos = useCallback(() => {
-        setTrackedLoading(true);
+    const fetchTrackedRepos = useCallback((showLoadingSpinner = false) => {
+        // Only show the main skeleton loader on the initial fetch
+        if (showLoadingSpinner) {
+            setTrackedLoading(true);
+        }
         axios.get('http://localhost:8000/api/v1/repositories/', { withCredentials: true })
-            .then(response => setTrackedRepos(response.data))
-            .catch(err => console.error("Error fetching tracked repositories:", err))
-            .finally(() => setTrackedLoading(false));
-    }, []);
+            .then(response => {
+                // Sort repositories, e.g., by name
+                const sortedRepos = response.data.sort((a: TrackedRepository, b: TrackedRepository) => a.full_name.localeCompare(b.full_name));
+                setTrackedRepos(sortedRepos);
+            })
+            .catch(err => {
+                console.error("Error fetching tracked repositories:", err);
+                toast.error("Could not refresh repositories.");
+            })
+            .finally(() => {
+                if (showLoadingSpinner) {
+                    setTrackedLoading(false);
+                }
+            });
+    }, []); // Empty dependency array as it has no external dependencies
 
     useEffect(() => {
-        fetchTrackedRepos();
+        fetchTrackedRepos(true); // Fetch with loading spinner on initial mount
+
+        // Set up polling to automatically refresh statuses every 15 seconds
+        const intervalId = setInterval(() => {
+            console.log("Polling for repository statuses...");
+            fetchTrackedRepos(false); // Subsequent fetches don't show the main loader
+        }, 15000); // Poll every 15 seconds
+
+        // Cleanup interval on component unmount
+        return () => clearInterval(intervalId);
     }, [fetchTrackedRepos]);
 
     const handleFetchGithubRepos = () => {
@@ -182,6 +205,7 @@ export function DashboardPage() {
                             <RepositoryCard
                                 key={repo.id}
                                 repo={repo}
+                                onSyncStarted={fetchTrackedRepos}
                                 onReProcess={handleReProcessRepo}
                                 isProcessing={processingRepoId === repo.id}
                             />

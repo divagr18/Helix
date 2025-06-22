@@ -38,13 +38,6 @@ def process_repository(repo_id):
         # For now, just return as per original logic
         return
 
-    # --- Update AsyncTaskStatus if this task is tracked ---
-    # This task itself could be tracked, or it could be a sub-step of a larger tracked task.
-    # For now, let's assume it's not directly tracked by AsyncTaskStatus, but sub-tasks it calls might be.
-    # If you want to track process_repository itself:
-    # task_id_for_process_repo = self.request.id # If bind=True
-    # AsyncTaskStatus.objects.update_or_create(task_id=task_id_for_process_repo, defaults={...})
-
     repo_path = os.path.join(REPO_CACHE_BASE_PATH, str(repo.id))
 
     try:
@@ -52,9 +45,6 @@ def process_repository(repo_id):
         repo.status = Repository.Status.INDEXING
         repo.save(update_fields=['status'])
 
-        # --- Git Cache Management ---
-        # (Your existing git clone/pull logic - seems okay)
-        # ... (ensure SocialToken and token logic is robust) ...
         social_account = repo.user.socialaccount_set.filter(provider='github').first()
         if not social_account:
             raise Exception(f"No GitHub social account found for user {repo.user.username} to process repo {repo.full_name}")
@@ -74,9 +64,7 @@ def process_repository(repo_id):
             print(f"PROCESS_REPO_TASK: Cloning new repository: {repo.full_name} to {repo_path}")
             subprocess.run(["git", "clone", "--depth", "1", clone_url, repo_path], check=True, capture_output=True, timeout=300)
         
-        # --- Call Rust Engine ---
-        # (Your existing Rust engine call logic - seems okay)
-        # ...
+
         print(f"PROCESS_REPO_TASK: Calling Rust engine for directory: {repo_path}")
         command = [RUST_ENGINE_PATH, "--dir-path", repo_path]
         result = subprocess.run(command, capture_output=True, text=True, check=True, timeout=600) # Added timeout
@@ -88,8 +76,6 @@ def process_repository(repo_id):
         with transaction.atomic():
             print("PROCESS_REPO_TASK: Starting Pass 1: Creating/Updating Files, Classes, and Symbols...")
 
-            # --- MODIFIED APPROACH: Update or Create Symbols to preserve documentation ---
-            # Map existing symbols for efficient lookup and deletion tracking
             existing_symbols_in_repo_map = {
                 s.unique_id: s for s in CodeSymbol.objects.filter(
                     Q(code_file__repository=repo) | Q(code_class__code_file__repository=repo)

@@ -6,7 +6,10 @@ from rest_framework import generics, permissions
 from .tasks import create_documentation_pr_task,batch_generate_docstrings_task # We will create this task soon
 from django.utils.decorators import method_decorator
 from rest_framework import viewsets
-from .models import CodeFile, CodeSymbol as CodeFunction, Repository, CodeSymbol,CodeDependency,AsyncTaskStatus, Notification
+from .models import CodeFile, CodeSymbol as CodeFunction, Repository, CodeSymbol,CodeDependency,AsyncTaskStatus, Notification,CodeClass
+from .ai_services import generate_class_summary_stream # 03c03c03c NEW IMPORT
+from .tasks import process_repository # Import the Celery task
+
 from .serializers import CodeSymbolSerializer, RepositorySerializer,RepositoryDetailSerializer,NotificationSerializer
 from rest_framework.views import APIView
 from django.views.decorators.csrf import csrf_exempt
@@ -708,3 +711,303 @@ class MarkNotificationReadView(APIView):
             return Response({"message": "Notification marked as read."}, status=status.HTTP_200_OK)
         except Notification.DoesNotExist:
             return Response({"error": "Notification not found or permission denied."}, status=status.HTTP_404_NOT_FOUND)
+
+def generate_explanation_stream(
+    symbol_obj: CodeSymbol, 
+    source_code: str, 
+    openai_client: OpenAIClient
+):
+    """
+    Generates a stream of text chunks for the code explanation.
+    """
+    callers_qs = CodeDependency.objects.filter(callee=symbol_obj).select_related('caller')[:3] # Limit for prompt
+    callees_qs = CodeDependency.objects.filter(caller=symbol_obj).select_related('callee')[:3] # Limit for prompt
+
+    callers_names = [dep.caller.name for dep in callers_qs]
+    callees_names = [dep.callee.name for dep in callees_qs]
+
+    symbol_file_path = symbol_obj.code_file.file_path if symbol_obj.code_file else \
+                       (symbol_obj.code_class.code_file.file_path if symbol_obj.code_class and symbol_obj.code_class.code_file else "N/A")
+    
+    symbol_kind = "method" if symbol_obj.code_class else "function"
+
+    context_parts = []
+    if callers_names:
+        context_parts.append(f"- Is typically called by: {', '.join(callers_names)}")
+    if callees_names:
+        context_parts.append(f"- It calls the following: {', '.join(callees_names)}")
+    if symbol_obj.documentation and symbol_obj.documentation.strip():
+        # Limit doc length for prompt
+        doc_preview = (symbol_obj.documentation[:200] + '...') if len(symbol_obj.documentation) > 200 else symbol_obj.documentation
+        context_parts.append(f"- Its existing documentation says: \"{doc_preview}\"")
+
+    context_str = ""
+    if context_parts:
+        context_str = f"\n\nFor context, this {symbol_kind}:\n" + "\n".join(context_parts)
+
+    prompt = (
+        f"You are Helix, an expert programming assistant. Your task is to explain a Python {symbol_kind} named `{symbol_obj.name}` "
+        f"from the file `{symbol_file_path}`.\n\n"
+        f"Explain it in simple, clear terms, as if to a developer who is new to this part of the codebase. "
+        f"Focus on its primary purpose and what it achieves. Start with a one or two-sentence summary. "
+        f"Then, briefly describe its key steps or logic. Avoid overly technical jargon unless essential. "
+        f"Do not repeat the code itself in your explanation. Aim for about 2-4 paragraphs."
+        f"{context_str}\n\n"
+        f"Here is the source code:\n```python\n{source_code}\n```\n\n"
+        f"Helix's Explanation:"
+    )
+    
+    print(f"DEBUG_EXPLAIN_PROMPT: For symbol {symbol_obj.id}\n{prompt}\n--------------------")
+
+    try:
+        stream = openai_client.chat.completions.create(
+            model="gpt-4.1-nano", # e.g., "gpt-3.5-turbo" or "gpt-4"
+            messages=[
+                {"role": "system", "content": "You are Helix, a helpful AI programming assistant that explains code clearly and concisely."},
+                {"role": "user", "content": prompt}
+            ],
+            stream=True,
+            temperature=0.3, # Lower temperature for more factual explanations
+            max_tokens=1000  # Adjust as needed for desired explanation length
+        )
+        for chunk in stream:
+            content = chunk.choices[0].delta.content
+            if content:
+                yield content
+    except Exception as e:
+        error_message = f"// Helix encountered an error while generating the explanation: {str(e)}"
+        print(f"EXPLAIN_CODE_STREAM_ERROR: {error_message}")
+        # Stream error message in a way the frontend can parse if it expects text
+        # Or handle more gracefully if frontend expects structured errors
+        yield error_message
+
+
+@method_decorator(csrf_exempt, name='dispatch') # If using SessionAuth and POST
+class ExplainCodeView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, symbol_id, *args, **kwargs): # Changed to POST as it's an action
+        print(f"VIEW_EXPLAIN_CODE: Request for symbol_id: {symbol_id} by user: {request.user.username}")
+
+        openai_client = OPENAI_CLIENT_INSTANCE
+
+        
+        if not openai_client:
+            # Return a non-streaming error if client setup fails
+            return Response(
+                {"error": "Helix's explanation service is currently unavailable."}, 
+                status=status.HTTP_503_SERVICE_UNAVAILABLE
+            )
+
+        try:
+            q_filter = Q(id=symbol_id) & (
+                Q(code_file__repository__user=request.user) |
+                Q(code_class__code_file__repository__user=request.user)
+            )
+            symbol_obj = CodeSymbol.objects.select_related(
+                'code_file__repository', 
+                'code_class__code_file__repository'
+            ).get(q_filter)
+        except CodeSymbol.DoesNotExist:
+            return Response(
+                {"error": "Symbol not found or permission denied."}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        source_code = symbol_obj.source_code # Use your existing helper
+        if not source_code or source_code.startswith("# Error:"):
+            error_msg = source_code if source_code else "Could not retrieve source code for the symbol."
+            print(f"VIEW_EXPLAIN_CODE: {error_msg} for symbol {symbol_obj.name}")
+            return Response({"error": error_msg}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        # Check if source_code is just an error message from the helper
+        if source_code.strip().startswith("# Error:"):
+             print(f"VIEW_EXPLAIN_CODE: Source code retrieval failed: {source_code} for symbol {symbol_obj.name}")
+             return Response({"error": f"Helix could not retrieve valid source code: {source_code}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+        response_stream = generate_explanation_stream(symbol_obj, source_code, openai_client)
+        
+        # It's good practice to set appropriate headers for streaming
+        response = StreamingHttpResponse(response_stream, content_type='text/plain; charset=utf-8')
+        response['X-Accel-Buffering'] = 'no'  # Useful for Nginx to disable buffering
+        response['Cache-Control'] = 'no-cache'
+        return response
+    
+
+
+def generate_tests_stream(
+    symbol_obj: CodeSymbol,
+    source_code: str,
+    openai_client: OpenAIClient
+):
+    """
+    Generates a stream of pytest code for the given symbol.
+    """
+    symbol_file_path = symbol_obj.code_file.file_path if symbol_obj.code_file else \
+                       (symbol_obj.code_class.code_file.file_path if symbol_obj.code_class and symbol_obj.code_class.code_file else "N/A")
+    
+    symbol_kind = "method" if symbol_obj.code_class else "function"
+    
+    context_parts = []
+    if symbol_obj.code_class:
+        context_parts.append(f"It is a method of the class `{symbol_obj.code_class.name}`.")
+    if symbol_obj.documentation and symbol_obj.documentation.strip():
+        doc_preview = (symbol_obj.documentation[:250] + '...') if len(symbol_obj.documentation) > 250 else symbol_obj.documentation
+        context_parts.append(f"Its documentation says: \"{doc_preview}\"")
+
+    context_str = " ".join(context_parts)
+
+    prompt = (
+        f"You are Helix, an expert Python developer and QA engineer specialized in writing comprehensive unit tests using the `pytest` framework.\n\n"
+        f"Your task is to analyze the provided Python {symbol_kind} and suggest 3 to 5 critical unit test cases. For each case, provide complete, runnable `pytest` code.\n\n"
+        f"The {symbol_kind} is named `{symbol_obj.name}` and is located in `{symbol_file_path}`. {context_str}\n\n"
+        f"Here is its source code:\n```python\n{source_code}\n```\n\n"
+        f"Instructions:\n"
+        f"1. Focus on testing the 'happy path,' common edge cases (e.g., empty lists, zero, None values), and potential error conditions.\n"
+        f"2. The generated code should be a single, complete Python code block. Do not add any explanation outside of the code block.\n"
+        f"3. Assume necessary imports like `pytest` are available. For the code under test, assume it can be imported (e.g., `from {symbol_file_path.replace('.py', '').replace('/', '.')} import {symbol_obj.code_class.name if symbol_obj.code_class else symbol_obj.name}`).\n"
+        f"4. If the function is a method of a class, show how to instantiate the class in the test.\n"
+        f"5. Use clear and descriptive test function names, like `test_{symbol_obj.name}_[condition_being_tested]`.\n"
+        f"6. Use `assert` statements to check for expected outcomes. For expected errors, use `pytest.raises`.\n\n"
+        f"Generate the complete `pytest` code now:"
+    )
+
+    print(f"DEBUG_SUGGEST_TESTS_PROMPT: For symbol {symbol_obj.id}\n{prompt}\n--------------------")
+
+    try:
+        stream = openai_client.chat.completions.create(
+            model="gpt-4.1-mini", # "gpt-4-turbo-preview" is great for code
+            messages=[
+                {"role": "system", "content": "You are a helpful AI programming assistant that writes Python unit tests using pytest."},
+                {"role": "user", "content": prompt}
+            ],
+            stream=True,
+            temperature=0.4, # A bit of creativity for edge cases, but still factual
+            max_tokens=1500  # Allow for longer code blocks
+        )
+        for chunk in stream:
+            content = chunk.choices[0].delta.content
+            if content:
+                yield content
+    except Exception as e:
+        error_message = f"// Helix encountered an error while generating test suggestions: {str(e)}"
+        print(f"SUGGEST_TESTS_STREAM_ERROR: {error_message}")
+        yield error_message
+
+
+# --- NEW VIEW CLASS ---
+@method_decorator(csrf_exempt, name='dispatch')
+class SuggestTestsView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, symbol_id, *args, **kwargs):
+        print(f"VIEW_SUGGEST_TESTS: Request for symbol_id: {symbol_id} by user: {request.user.username}")
+
+        openai_client = OPENAI_CLIENT_INSTANCE
+        
+        if not openai_client:
+            return Response(
+                {"error": "Helix's AI service is currently unavailable."}, 
+                status=status.HTTP_503_SERVICE_UNAVAILABLE
+            )
+
+        try:
+            q_filter = Q(id=symbol_id) & (
+                Q(code_file__repository__user=request.user) |
+                Q(code_class__code_file__repository__user=request.user)
+            )
+            symbol_obj = CodeSymbol.objects.select_related(
+                'code_file', 
+                'code_class'
+            ).get(q_filter)
+        except CodeSymbol.DoesNotExist:
+            return Response(
+                {"error": "Symbol not found or permission denied."}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        source_code = get_source_for_symbol_from_view(symbol_obj)
+        if not source_code or source_code.strip().startswith("# Error:"):
+            error_msg = source_code if source_code else "Could not retrieve source code for the symbol."
+            print(f"VIEW_SUGGEST_TESTS: {error_msg} for symbol {symbol_obj.name}")
+            return Response({"error": f"Helix could not retrieve valid source code: {source_code}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        response_stream = generate_tests_stream(symbol_obj, source_code, openai_client)
+        
+        response = StreamingHttpResponse(response_stream, content_type='text/plain; charset=utf-8')
+        response['X-Accel-Buffering'] = 'no'
+        response['Cache-Control'] = 'no-cache'
+        return response
+    
+@method_decorator(csrf_exempt, name='dispatch')
+class ClassSummaryView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, class_id, *args, **kwargs):
+        print(f"VIEW_CLASS_SUMMARY: Request for class_id: {class_id} by user: {request.user.username}")
+
+        openai_client = OPENAI_CLIENT_INSTANCE
+
+        
+        if not openai_client:
+            return Response({"error": "Helix's AI service is currently unavailable."}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+        try:
+            # Check ownership via the file the class belongs to
+            code_class_obj = CodeClass.objects.select_related(
+                'code_file__repository__user'
+            ).get(
+                id=class_id,
+                code_file__repository__user=request.user
+            )
+        except CodeClass.DoesNotExist:
+            return Response({"error": "Class not found or permission denied."}, status=status.HTTP_404_NOT_FOUND)
+        
+        response_stream = generate_class_summary_stream(code_class_obj, openai_client)
+        
+        response = StreamingHttpResponse(response_stream, content_type='text/plain; charset=utf-8')
+        response['X-Accel-Buffering'] = 'no'
+        response['Cache-Control'] = 'no-cache'
+        return response
+    
+@method_decorator(csrf_exempt, name='dispatch')
+class ReprocessRepositoryView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, repo_id, *args, **kwargs):
+        """
+        Triggers a Celery task to re-process a repository.
+        """
+        print(f"VIEW_REPROCESS_REPO: Request for repo_id: {repo_id} by user: {request.user.username}")
+        
+        try:
+            # Ensure the user owns the repository they are trying to reprocess
+            repo = Repository.objects.get(id=repo_id, user=request.user)
+        except Repository.DoesNotExist:
+            return Response(
+                {"error": "Repository not found or permission denied."}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        # Check if the repository is already being processed to avoid duplicate tasks
+        if repo.status == Repository.Status.INDEXING:
+            return Response(
+                {"message": f"Repository '{repo.full_name}' is already being processed."},
+                status=status.HTTP_409_CONFLICT # 409 Conflict is a good status for this
+            )
+        
+        # Update status immediately to provide instant feedback in the UI
+        repo.status = Repository.Status.PENDING
+        repo.save(update_fields=['status'])
+
+        # Dispatch the Celery task
+        task = process_repository.delay(repo_id=repo.id)
+        
+        print(f"VIEW_REPROCESS_REPO: Dispatched process_repository task {task.id} for repo {repo.id}")
+
+        # Return the task ID so the frontend can potentially monitor it
+        return Response(
+            {"message": f"Re-processing for '{repo.full_name}' has been initiated.", "task_id": task.id},
+            status=status.HTTP_202_ACCEPTED # 202 Accepted is perfect for async task initiation
+        )

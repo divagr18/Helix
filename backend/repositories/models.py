@@ -2,7 +2,7 @@ from django.db import models
 from django.conf import settings
 from pgvector.django import VectorField # Import VectorField
 from django.contrib.auth import get_user_model
-
+from .utils import get_source_for_symbol
 User = get_user_model()
 class Repository(models.Model):
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
@@ -71,6 +71,15 @@ class CodeSymbol(models.Model):
     documentation_hash = models.CharField(max_length=64, blank=True, null=True)
     documentation = models.TextField(blank=True, null=True)
     embedding = VectorField(dimensions=1536, blank=True, null=True)
+    @property
+    def source_code(self) -> str:
+        """
+        Retrieves the source code for this symbol from the cached file on disk
+        by calling the utility function.
+        
+        Returns a descriptive error string prefixed with '# Error:' if not found.
+        """
+        return get_source_for_symbol(self)
     class DocStatus(models.TextChoices):
         NONE = 'NONE', 'No Documentation'
         PENDING_REVIEW = 'PENDING_REVIEW', 'AI Generated - Pending Review' # From previous plan
@@ -265,3 +274,49 @@ class EmbeddingBatchJob(models.Model):
         ordering = ['-created_at']
         verbose_name = "Embedding Batch Job"
         verbose_name_plural = "Embedding Batch Jobs"
+
+class Insight(models.Model):
+    """
+    Stores a single piece of generated insight about a repository change.
+    """
+    class InsightType(models.TextChoices):
+        # --- Start with types from our Structural Diff ---
+        SYMBOL_ADDED = 'SYMBOL_ADDED', 'Symbol Added'
+        SYMBOL_REMOVED = 'SYMBOL_REMOVED', 'Symbol Removed'
+        SYMBOL_MODIFIED = 'SYMBOL_MODIFIED', 'Symbol Modified'
+        DEPENDENCY_ADDED = 'DEPENDENCY_ADDED', 'Dependency Added'
+        DEPENDENCY_REMOVED = 'DEPENDENCY_REMOVED', 'Dependency Removed'
+        # --- We will add more types later (e.g., REFACTOR_SUGGESTION) ---
+
+    repository = models.ForeignKey(Repository, on_delete=models.CASCADE, related_name='insights')
+    
+    # The commit hash this insight is associated with.
+    # We'll need to get this from the git pull.
+    commit_hash = models.CharField(max_length=40, db_index=True)
+
+    insight_type = models.CharField(max_length=30, choices=InsightType.choices, db_index=True)
+    
+    # A human-readable message for the insight.
+    message = models.TextField()
+    
+    # JSON field to store structured data, e.g., symbol names, file paths.
+    data = models.JSONField(default=dict, null=True, blank=True)
+
+    # Link to a specific symbol if the insight is about one.
+    # Use SET_NULL to keep the insight even if the symbol is deleted.
+    related_symbol = models.ForeignKey(CodeSymbol, on_delete=models.SET_NULL, null=True, blank=True, related_name='insights')
+    
+    # Allows users to dismiss or action an insight.
+    is_resolved = models.BooleanField(default=False, db_index=True)
+    
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'repository_insights'
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['repository', 'commit_hash']),
+        ]
+
+    def __str__(self):
+        return f"{self.get_insight_type_display()} for {self.repository.name} at {self.commit_hash[:7]}"

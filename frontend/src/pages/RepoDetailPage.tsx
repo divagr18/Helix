@@ -12,6 +12,7 @@ import { AnalysisPanel } from '../components/repo-detail/AnalysisPanel';
 import { FileTreePanel } from '../components/repo-detail/FileTreePanel';
 import { BatchActionsPanel } from '../components/repo-detail/BatchActionsPanel';
 import { OrphanSymbolsPanel, type OrphanSymbolDisplayItem } from '../components/repo-detail/OrphanSymbolsPanel';
+
 // --- Type Definitions ---
 interface CodeSymbol {
   id: number;
@@ -60,7 +61,7 @@ export function RepoDetailPage() {
   const [repo, setRepo] = useState<Repository | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  
+
   const [selectedFile, setSelectedFile] = useState<CodeFile | null>(null);
   const [fileContent, setFileContent] = useState<string>('');
   const [contentLoading, setContentLoading] = useState(false);
@@ -557,86 +558,86 @@ export function RepoDetailPage() {
   if (!repo) return <p className="p-6 text-center text-muted-foreground">Repository not found or not yet loaded.</p>;
 
   return (
-  <div className="flex h-screen bg-background text-foreground overflow-y-hidden"> {/* Ensure overflow-y-hidden here */}
-    
-    {/* ============================================= */}
-    {/* Left Panel                                  */}
-    {/* ============================================= */}
-    {/* This aside is a flex column, and it will manage its own height and scrolling. */}
-    <aside className="w-[300px] md:w-[380px] flex-shrink-0 border-r border-border flex flex-col bg-card overflow-y-auto min-h-0">
-      
-      {/* FileTreePanel will take available space within this top part of the aside */}
-      {/* This wrapper allows ScrollArea inside FileTreePanel to work correctly by constraining its height */}
-      <div className="flex-grow overflow-y-auto min-h-0">
-        <FileTreePanel
-          repo={repo}
-          selectedFile={selectedFile}
-          onFileSelect={handleFileSelect}
-          selectedFilesForBatch={selectedFilesForBatch}
-          onSelectedFilesForBatchChange={setSelectedFilesForBatch}
-          
-          onGenerateDocsForFile={handleBatchGenerateDocsForFile}
-          batchProcessingFileId={batchProcessingFileId}
-          batchMessages={batchMessages}
-          
-          onCreatePRForFile={handleCreatePRForFile}
-          creatingPRFileId={creatingPRFileId}
-          prMessages={prMessages}
+    <div className="flex h-screen bg-background text-foreground overflow-y-hidden"> {/* Ensure overflow-y-hidden here */}
 
-          isAnyOperationInProgress={isAnyOperationInProgressForFileTree}
-        />
-      </div>
+      {/* ============================================= */}
+      {/* Left Panel                                  */}
+      {/* ============================================= */}
+      {/* This aside is a flex column, and it will manage its own height and scrolling. */}
+      <aside className="w-[300px] md:w-[380px] flex-shrink-0 border-r border-border flex flex-col bg-card overflow-y-auto min-h-0">
 
-      {/* --- Batch Actions for Selected Files - To be extracted to BatchActionsPanel.tsx --- */}
-      {repo.files.length > 0 && (
-        <div className="p-3 md:p-4 border-t border-border bg-background shadow-inner mt-auto flex-shrink-0"> {/* flex-shrink-0 to prevent this from shrinking */}
-          <BatchActionsPanel
-            selectedFileCount={selectedFilesForBatch.size}
-            onBatchGenerateDocs={handleBatchGenerateDocsForRepo}
-            activeDocGenTaskId={activeDocGenTaskId}
-            docGenTaskMessage={docGenTaskMessage}
-            docGenTaskProgress={docGenTaskProgress}
-            onBatchCreatePR={handleCreateBatchPRForRepo}
-            activePRCreationTaskId={activePRCreationTaskId}
-            prCreationTaskMessage={prCreationTaskMessage}
-            prCreationTaskProgress={prCreationTaskProgress}
-            isAnyFileSpecificActionInProgress={isAnyFileSpecificActionInProgress} // Pass this down
+        {/* FileTreePanel will take available space within this top part of the aside */}
+        {/* This wrapper allows ScrollArea inside FileTreePanel to work correctly by constraining its height */}
+        <div className="flex-grow overflow-y-auto min-h-0">
+          <FileTreePanel
+            repo={repo}
+            selectedFile={selectedFile}
+            onFileSelect={handleFileSelect}
+            selectedFilesForBatch={selectedFilesForBatch}
+            onSelectedFilesForBatchChange={setSelectedFilesForBatch}
+
+            onGenerateDocsForFile={handleBatchGenerateDocsForFile}
+            batchProcessingFileId={batchProcessingFileId}
+            batchMessages={batchMessages}
+
+            onCreatePRForFile={handleCreatePRForFile}
+            creatingPRFileId={creatingPRFileId}
+            prMessages={prMessages}
+
+            isAnyOperationInProgress={isAnyOperationInProgressForFileTree}
           />
         </div>
-      )}
 
-      {/* --- Orphan Symbols List - To be extracted to OrphanSymbolsPanel.tsx --- */}
-      <div className="p-3 md:p-4 border-t border-border bg-background shadow-inner">
-        <OrphanSymbolsPanel orphanSymbols={orphanSymbolsList as OrphanSymbolDisplayItem[]} /> 
-        {/* Cast orphanSymbolsList if its type doesn't exactly match OrphanSymbolDisplayItem[] yet */}
-      </div>
-    </aside>
+        {/* --- Batch Actions for Selected Files - To be extracted to BatchActionsPanel.tsx --- */}
+        {repo.files.length > 0 && (
+          <div className="p-3 md:p-4 border-t border-border bg-background shadow-inner mt-auto flex-shrink-0"> {/* flex-shrink-0 to prevent this from shrinking */}
+            <BatchActionsPanel
+              selectedFileCount={selectedFilesForBatch.size}
+              onBatchGenerateDocs={handleBatchGenerateDocsForRepo}
+              activeDocGenTaskId={activeDocGenTaskId}
+              docGenTaskMessage={docGenTaskMessage}
+              docGenTaskProgress={docGenTaskProgress}
+              onBatchCreatePR={handleCreateBatchPRForRepo}
+              activePRCreationTaskId={activePRCreationTaskId}
+              prCreationTaskMessage={prCreationTaskMessage}
+              prCreationTaskProgress={prCreationTaskProgress}
+              isAnyFileSpecificActionInProgress={isAnyFileSpecificActionInProgress} // Pass this down
+            />
+          </div>
+        )}
 
-    {/* ============================================= */}
-    {/* Code View Panel (Already Refactored)          */}
-    {/* ============================================= */}
-    <main className="flex-grow flex flex-col overflow-hidden bg-background min-w-0">
-      <CodeViewerPanel
-        selectedFile={selectedFile}
-        fileContent={fileContent}
-        isLoading={contentLoading}
-        language={selectedFile ? getLanguage(selectedFile.file_path) : 'plaintext'}
-      />
-    </main>
+        {/* --- Orphan Symbols List - To be extracted to OrphanSymbolsPanel.tsx --- */}
+        <div className="p-3 md:p-4 border-t border-border bg-background shadow-inner">
+          <OrphanSymbolsPanel orphanSymbols={orphanSymbolsList as OrphanSymbolDisplayItem[]} />
+          {/* Cast orphanSymbolsList if its type doesn't exactly match OrphanSymbolDisplayItem[] yet */}
+        </div>
+      </aside>
 
-    {/* ============================================= */}
-    {/* Analysis Panel (Already Refactored)         */}
-    {/* ============================================= */}
-    <aside className="w-[350px] md:w-[400px] flex-shrink-0 border-l border-border flex flex-col bg-background overflow-hidden min-w-0">
-      <AnalysisPanel
-        selectedFile={selectedFile}
-        generatedDocs={generatedDocs}
-        onGenerateDoc={handleGenerateDoc}
-        generatingDocId={generatingDocId}
-        onSaveDoc={handleSaveDoc}
-        savingDocId={savingDocId}
-      />
-    </aside>
-  </div>
-);
+      {/* ============================================= */}
+      {/* Code View Panel (Already Refactored)          */}
+      {/* ============================================= */}
+      <main className="flex-grow flex flex-col overflow-hidden bg-background min-w-0">
+        <CodeViewerPanel
+          selectedFile={selectedFile}
+          fileContent={fileContent}
+          isLoading={contentLoading}
+          language={selectedFile ? getLanguage(selectedFile.file_path) : 'plaintext'}
+        />
+      </main>
+
+      {/* ============================================= */}
+      {/* Analysis Panel (Already Refactored)         */}
+      {/* ============================================= */}
+      <aside className="w-[350px] md:w-[400px] flex-shrink-0 border-l border-border flex flex-col bg-background overflow-hidden min-w-0">
+        <AnalysisPanel
+          selectedFile={selectedFile}
+          generatedDocs={generatedDocs}
+          onGenerateDoc={handleGenerateDoc}
+          generatingDocId={generatingDocId}
+          onSaveDoc={handleSaveDoc}
+          savingDocId={savingDocId}
+        />
+      </aside>
+    </div>
+  );
 }

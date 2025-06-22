@@ -9,6 +9,8 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { toast } from 'sonner'; // <-- Import toast
+import { CodeExplanationSection } from '../components/symbol-detail/CodeExplanationSection'; // <-- NEW IMPORT
+import { AiInsightsTab } from '../components/symbol-detail/AIInsightsTab'; // <-- NEW IMPORT
 
 // Lucide Icons
 import { Github, Loader2, TriangleAlert, Share2, Network, FileText } from 'lucide-react';
@@ -71,6 +73,13 @@ export function SymbolDetailPage() {
     const [flowLoading, setFlowLoading] = useState<boolean>(false);
     const [flowError, setFlowError] = useState<string | null>(null);
     const [initialLoadAttempted, setInitialLoadAttempted] = useState<boolean>(false);
+    const [isExplainingCode, setIsExplainingCode] = useState<boolean>(false);
+    const [codeExplanation, setCodeExplanation] = useState<string | null>(null);
+    const [explanationError, setExplanationError] = useState<string | null>(null);
+
+    const [isSuggestingTests, setIsSuggestingTests] = useState<boolean>(false);
+    const [testSuggestion, setTestSuggestion] = useState<string | null>(null);
+    const [testSuggestionError, setTestSuggestionError] = useState<string | null>(null);
 
     const handleNavigateBack = () => navigate(-1);
 
@@ -84,7 +93,7 @@ export function SymbolDetailPage() {
             case 'ts': return 'typescript';
             case 'jsx': return 'jsx';
             case 'tsx': return 'tsx';
-            default: return 'python';
+            default: return 'plaintext';
         }
     }, []);
 
@@ -119,7 +128,62 @@ export function SymbolDetailPage() {
             setIsGeneratingAIDoc(false);
         }
     }, [symbol]);
+    const handleExplainCode = useCallback(async () => {
+        if (!symbol) return;
 
+        setIsExplainingCode(true);
+        setCodeExplanation(""); // Clear previous, set to empty for streaming
+        setExplanationError(null);
+        toast.info("Helix is analyzing the code...", {
+            description: "Your explanation will appear shortly.",
+        });
+
+        try {
+            const response = await fetch(
+                `http://localhost:8000/api/v1/symbols/${symbol.id}/explain-code/`,
+                {
+                    method: 'POST', // Use POST as defined in the backend
+                    credentials: 'include',
+                    headers: {
+                        'X-CSRFToken': getCookie('csrftoken') || '', // Include CSRF token for POST
+                    },
+                }
+            );
+
+            if (!response.ok) {
+                const errorText = await response.text();
+                throw new Error(errorText || `Helix explanation failed (status: ${response.status})`);
+            }
+            if (!response.body) throw new Error("Response body is null.");
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let streamedText = "";
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                const chunk = decoder.decode(value, { stream: true });
+
+                // Check for our specific error message format from the backend stream
+                if (chunk.includes("// Helix encountered an error")) {
+                    throw new Error(chunk.replace("// Helix encountered an error:", "").trim());
+                }
+
+                streamedText += chunk;
+                setCodeExplanation(streamedText);
+            }
+            return streamedText.trim();
+        } catch (err) {
+            console.error("Error generating code explanation:", err);
+            const errorMessage = err instanceof Error ? err.message : String(err);
+            setExplanationError(errorMessage);
+            toast.error("Explanation Failed", {
+                description: errorMessage,
+            });
+        } finally {
+            setIsExplainingCode(false);
+        }
+    }, [symbol]);
     const saveDocumentationForSymbol = useCallback(async (docText: string): Promise<boolean> => {
         if (!symbol) return false;
         try {
@@ -171,7 +235,48 @@ export function SymbolDetailPage() {
             setIsCreatingPR(false);
         }
     }, [symbol]);
+    const handleSuggestTests = useCallback(async () => {
+        if (!symbol) return;
 
+        setIsSuggestingTests(true);
+        setTestSuggestion(""); // Clear previous
+        setTestSuggestionError(null);
+        toast.info("Helix is preparing test cases...");
+
+        try {
+            const response = await fetch(
+                `http://localhost:8000/api/v1/symbols/${symbol.id}/suggest-tests/`,
+                {
+                    method: 'POST',
+                    credentials: 'include',
+                    headers: { 'X-CSRFToken': getCookie('csrftoken') || '' },
+                }
+            );
+
+            if (!response.ok) throw new Error(await response.text());
+            if (!response.body) throw new Error("Response body is null.");
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let streamedText = "";
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                const chunk = decoder.decode(value, { stream: true });
+                if (chunk.includes("// Helix encountered an error")) {
+                    throw new Error(chunk.replace("// Helix encountered an error:", "").trim());
+                }
+                streamedText += chunk;
+                setTestSuggestion(streamedText);
+            }
+        } catch (err) {
+            const errorMessage = err instanceof Error ? err.message : String(err);
+            setTestSuggestionError(errorMessage);
+            toast.error("Test Suggestion Failed", { description: errorMessage });
+        } finally {
+            setIsSuggestingTests(false);
+        }
+    }, [symbol]);
     const handleLoadFlowData = useCallback(() => {
         if (!symbol) return;
         setFlowLoading(true);
@@ -237,8 +342,7 @@ export function SymbolDetailPage() {
 
                 {/* Documentation Card (col-span-1) */}
                 <Card
-                    className="col-span-1 flex flex-col border border-[#161616] bg-card/95 backdrop-blur-sm shadow-lg hover:shadow-xl transition-colors duration-300 hover:border-[#858585] overflow-hidden"
-                    style={{ backgroundColor: '#161616' }}
+                    className="col-span-1 md:col-span-2 flex flex-col border border-border bg-card/95 backdrop-blur-sm shadow-lg hover:shadow-primary/10 transition-shadow duration-300 overflow-hidden"
                 >
                     <CardHeader className="pb-3">
                         <CardTitle className="text-base md:text-lg flex items-center">
@@ -275,8 +379,7 @@ export function SymbolDetailPage() {
 
                 {/* Source Code Card (col-span-1) */}
                 <Card
-                    className="col-span-1 flex flex-col border border-[#161616] bg-card/95 backdrop-blur-sm shadow-lg hover:shadow-xl transition-colors duration-300 hover:border-[#858585] overflow-hidden"
-                    style={{ backgroundColor: '#161616' }}
+                    className="col-span-1 flex flex-col border border-border bg-card/95 backdrop-blur-sm shadow-lg hover:shadow-primary/10 transition-shadow duration-300 overflow-hidden"
                 >
                     <CardHeader className="pb-3">
                         <CardTitle className="text-base md:text-lg flex items-center">
@@ -290,11 +393,20 @@ export function SymbolDetailPage() {
                         />
                     </CardContent>
                 </Card>
+                <AiInsightsTab
+                    onExplainCode={handleExplainCode}
+                    isExplaining={isExplainingCode}
+                    explanation={codeExplanation}
+                    explanationError={explanationError}
+                    onSuggestTests={handleSuggestTests}
+                    isSuggestingTests={isSuggestingTests}
+                    testSuggestion={testSuggestion}
+                    testSuggestionError={testSuggestionError}
+                />
 
                 {/* Local Architecture Diagram Card (col-span-1) */}
                 <Card
-                    className="col-span-1 flex flex-col border border-[#161616] bg-card/95 backdrop-blur-sm shadow-lg hover:shadow-xl transition-colors duration-300 hover:border-[#858585] overflow-hidden"
-                    style={{ backgroundColor: '#161616' }}
+                    className="col-span-1 flex flex-col border border-[#161616] bg-card/95 backdrop-blur-sm shadow-lg hover:shadow-primary/10 transition-shadow duration-300 overflow-hidden"
                 >
                     <CardHeader className="pb-3">
                         <CardTitle className="text-base md:text-lg flex items-center">
@@ -339,8 +451,7 @@ export function SymbolDetailPage() {
 
                 {/* Called By (Incoming Dependencies) Card (col-span-1) */}
                 <Card
-                    className="col-span-1 flex flex-col border border-[#161616] bg-card/95 backdrop-blur-sm shadow-lg hover:shadow-xl transition-colors duration-300 hover:border-[#858585] overflow-hidden"
-                    style={{ backgroundColor: '#161616' }}
+                    className="col-span-1 flex flex-col border border-[#161616] bg-card/95 backdrop-blur-sm shadow-lg hover:shadow-primary/10 transition-shadow duration-300 overflow-hidden"
                 >
                     <CardHeader className="pb-2 pt-4 px-4">
                         <CardTitle className="text-base md:text-lg font-semibold flex items-center">
@@ -363,8 +474,8 @@ export function SymbolDetailPage() {
 
                 {/* Calls (Outgoing Dependencies) Card (col-span-1) */}
                 <Card
-                    className="col-span-1 flex flex-col border border-[#161616] bg-card/95 backdrop-blur-sm shadow-lg hover:shadow-xl transition-colors duration-300 hover:border-[#858585] overflow-hidden"
-                    style={{ backgroundColor: '#161616' }}
+                    className="col-span-1 flex flex-col border border-[#161616] bg-card/95 backdrop-blur-sm shadow-lg hover:shadow-primary/10 hover:border-[#636363] transition-shadow duration-300 overflow-hidden"
+                    style={{ backgroundColor: '#111111' }}
                 >
                     <CardHeader className="pb-2 pt-4 px-4">
                         <CardTitle className="text-base md:text-lg font-semibold flex items-center">
@@ -388,8 +499,8 @@ export function SymbolDetailPage() {
                 {/* PR Actions Card (col-span-1) */}
                 {symbol.documentation && symbol.content_hash === symbol.documentation_hash && (
                     <Card
-                        className="col-span-1 flex flex-col border border-[#161616] bg-card/95 backdrop-blur-sm shadow-lg hover:shadow-xl transition-colors duration-300 hover:border-[#858585] overflow-hidden"
-                        style={{ backgroundColor: '#161616' }}
+                        className="col-span-1 flex flex-col border border-[#161616] bg-card/95 backdrop-blur-sm shadow-lg hover:shadow-primary/10 hover:border-[#636363] transition-shadow duration-300 overflow-hidden"
+                        style={{ backgroundColor: '#111111' }}
                     >
                         <CardHeader className="pb-3">
                             <CardTitle className="text-base md:text-lg flex items-center">

@@ -22,7 +22,8 @@ from repositories.views import (
     # --- IMPORT THE NEW VIEWS (we will create these next) ---
     BatchGenerateDocsForSelectedFilesView,
     CreateBatchPRForSelectedFilesView,
-    TaskStatusView,ApproveDocstringView
+    TaskStatusView,ApproveDocstringView,ExplainCodeView, SuggestTestsView,
+    ClassSummaryView,ReprocessRepositoryView 
 )
 # The variable name 'urlpatterns' is what Django expects to find.
 urlpatterns = router.urls
@@ -49,5 +50,13 @@ urlpatterns += [
     path('symbols/<int:symbol_id>/approve-docstring/', ApproveDocstringView.as_view(), name='approve-docstring'),
     path('notifications/', UserNotificationsView.as_view(), name='user-notifications'),
     path('notifications/<int:notification_id>/mark-read/', MarkNotificationReadView.as_view(), name='notification-mark-read'),
+    path('symbols/<int:symbol_id>/explain-code/', ExplainCodeView.as_view(), name='symbol-explain-code'), 
+    path('symbols/<int:symbol_id>/suggest-tests/', SuggestTestsView.as_view(), name='symbol-suggest-tests'),
+    path('classes/<int:class_id>/summarize/', ClassSummaryView.as_view(), name='class-summarize'),
+    path('repositories/<int:repo_id>/reprocess/', ReprocessRepositoryView.as_view(), name='repository-reprocess'), 
+
+
+
+
 ]
 
