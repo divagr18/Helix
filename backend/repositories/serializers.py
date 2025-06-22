@@ -1,6 +1,6 @@
 # backend/repositories/serializers.py
 from rest_framework import serializers
-from .models import Repository, CodeFile, CodeClass, CodeSymbol, CodeDependency,AsyncTaskStatus
+from .models import Repository, CodeFile, CodeClass, CodeSymbol, CodeDependency,AsyncTaskStatus,Insight
 from rest_framework import generics, permissions
 import os # Ensure os is imported
 REPO_CACHE_BASE_PATH = "/var/repos" # Use the same constant
@@ -176,3 +176,26 @@ class NotificationSerializer(serializers.ModelSerializer):
             'message', 'is_read', 'created_at', 'link_url'
         ]
         read_only_fields = ('user', 'created_at')
+    
+class InsightSymbolSerializer(serializers.ModelSerializer):
+    """A minimal serializer for the symbol linked in an insight."""
+    class Meta:
+        model = CodeSymbol
+        fields = ['id', 'name', 'unique_id']
+
+class InsightSerializer(serializers.ModelSerializer):
+    related_symbol = InsightSymbolSerializer(read_only=True)
+
+    class Meta:
+        model = Insight
+        fields = [
+            'id',
+            'commit_hash',
+            'insight_type',
+            'get_insight_type_display', # Use the display name for UI
+            'message',
+            'data',
+            'related_symbol',
+            'is_resolved',
+            'created_at',
+        ]

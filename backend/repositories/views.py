@@ -6,7 +6,7 @@ from rest_framework import generics, permissions
 from .tasks import create_documentation_pr_task,batch_generate_docstrings_task # We will create this task soon
 from django.utils.decorators import method_decorator
 from rest_framework import viewsets
-from .models import CodeFile, CodeSymbol as CodeFunction, Repository, CodeSymbol,CodeDependency,AsyncTaskStatus, Notification,CodeClass
+from .models import CodeFile, CodeSymbol as CodeFunction, Repository, CodeSymbol,CodeDependency,AsyncTaskStatus, Notification,CodeClass,Insight
 from .ai_services import generate_class_summary_stream # 03c03c03c NEW IMPORT
 from .tasks import process_repository # Import the Celery task
 
@@ -27,7 +27,7 @@ from .tasks import batch_generate_docstrings_for_files_task, create_pr_for_multi
 from .diagram_utils import generate_react_flow_data
 from openai import OpenAI as OpenAIClient # Renaming to avoid conflict if you have an 'OpenAI' model
 from pgvector.django import L2Distance # Or CosineDistance, MaxInnerProduct
-from .serializers import CodeSymbolSerializer,AsyncTaskStatusSerializer # We can reuse this for results
+from .serializers import CodeSymbolSerializer,AsyncTaskStatusSerializer,InsightSerializer # We can reuse this for results
 import os
 REPO_CACHE_BASE_PATH = "/var/repos" # Use the same constant
 OPENAI_CLIENT_INSTANCE = OpenAIClient()
@@ -1011,3 +1011,20 @@ class ReprocessRepositoryView(APIView):
             {"message": f"Re-processing for '{repo.full_name}' has been initiated.", "task_id": task.id},
             status=status.HTTP_202_ACCEPTED # 202 Accepted is perfect for async task initiation
         )
+class RepositoryInsightsView(generics.ListAPIView):
+    """
+    Returns a paginated list of insights for a given repository.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = InsightSerializer
+    # Optional: Add pagination
+    # from rest_framework.pagination import PageNumberPagination
+    # pagination_class = PageNumberPagination
+
+    def get_queryset(self):
+        repo_id = self.kwargs.get('repo_id')
+        # Ensure user owns the repo they are requesting insights for
+        if not Repository.objects.filter(id=repo_id, user=self.request.user).exists():
+            return Insight.objects.none() # Return empty queryset if no permission
+        
+        return Insight.objects.filter(repository_id=repo_id).order_by('-created_at')

@@ -3,16 +3,14 @@ import { useParams, Link } from 'react-router-dom';
 import axios from 'axios';
 // Added FaSpinner for loading state
 import { getCookie } from '../utils';
-import { FaMagic, FaSync } from 'react-icons/fa'; // FaMagic for generate, FaSync for processing
-import { FaGithub } from 'react-icons/fa'; // For PR button
-import { OrphanIndicator } from '../components/OrphanIndicator'; // <<<< IMPORT
-import { FaAngleDown, FaAngleRight } from 'react-icons/fa';
 import { CodeViewerPanel } from '../components/repo-detail/CodeViewerPanel';
 import { AnalysisPanel } from '../components/repo-detail/AnalysisPanel';
 import { FileTreePanel } from '../components/repo-detail/FileTreePanel';
 import { BatchActionsPanel } from '../components/repo-detail/BatchActionsPanel';
 import { OrphanSymbolsPanel, type OrphanSymbolDisplayItem } from '../components/repo-detail/OrphanSymbolsPanel';
-
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { LayoutGrid, History } from 'lucide-react';
+import { ActivityFeed } from '@/components/repo-detail/ActivityFeed';
 // --- Type Definitions ---
 interface CodeSymbol {
   id: number;
@@ -558,86 +556,126 @@ export function RepoDetailPage() {
   if (!repo) return <p className="p-6 text-center text-muted-foreground">Repository not found or not yet loaded.</p>;
 
   return (
-    <div className="flex h-screen bg-background text-foreground overflow-y-hidden"> {/* Ensure overflow-y-hidden here */}
+    // The main container is now a flex column to hold the header and the tabs
+    <div className="flex flex-col h-screen bg-background text-foreground overflow-y-hidden">
 
-      {/* ============================================= */}
-      {/* Left Panel                                  */}
-      {/* ============================================= */}
-      {/* This aside is a flex column, and it will manage its own height and scrolling. */}
-      <aside className="w-[300px] md:w-[380px] flex-shrink-0 border-r border-border flex flex-col bg-card overflow-y-auto min-h-0">
-
-        {/* FileTreePanel will take available space within this top part of the aside */}
-        {/* This wrapper allows ScrollArea inside FileTreePanel to work correctly by constraining its height */}
-        <div className="flex-grow overflow-y-auto min-h-0">
-          <FileTreePanel
-            repo={repo}
-            selectedFile={selectedFile}
-            onFileSelect={handleFileSelect}
-            selectedFilesForBatch={selectedFilesForBatch}
-            onSelectedFilesForBatchChange={setSelectedFilesForBatch}
-
-            onGenerateDocsForFile={handleBatchGenerateDocsForFile}
-            batchProcessingFileId={batchProcessingFileId}
-            batchMessages={batchMessages}
-
-            onCreatePRForFile={handleCreatePRForFile}
-            creatingPRFileId={creatingPRFileId}
-            prMessages={prMessages}
-
-            isAnyOperationInProgress={isAnyOperationInProgressForFileTree}
-          />
-        </div>
-
-        {/* --- Batch Actions for Selected Files - To be extracted to BatchActionsPanel.tsx --- */}
-        {repo.files.length > 0 && (
-          <div className="p-3 md:p-4 border-t border-border bg-background shadow-inner mt-auto flex-shrink-0"> {/* flex-shrink-0 to prevent this from shrinking */}
-            <BatchActionsPanel
-              selectedFileCount={selectedFilesForBatch.size}
-              onBatchGenerateDocs={handleBatchGenerateDocsForRepo}
-              activeDocGenTaskId={activeDocGenTaskId}
-              docGenTaskMessage={docGenTaskMessage}
-              docGenTaskProgress={docGenTaskProgress}
-              onBatchCreatePR={handleCreateBatchPRForRepo}
-              activePRCreationTaskId={activePRCreationTaskId}
-              prCreationTaskMessage={prCreationTaskMessage}
-              prCreationTaskProgress={prCreationTaskProgress}
-              isAnyFileSpecificActionInProgress={isAnyFileSpecificActionInProgress} // Pass this down
+        {/* ============================================= */}
+        {/* Header (FileTreeHeader) - Stays at the top    */}
+        {/* ============================================= */}
+        {repo && (
+            <FileTreePanel
+                repoId={repo.id}
+                repoFullName={repo.full_name}
+                repoStatus={repo.status}
+                onSyncStart={fetchRepoDetails} // Assuming you have this handler
             />
-          </div>
         )}
 
-        {/* --- Orphan Symbols List - To be extracted to OrphanSymbolsPanel.tsx --- */}
-        <div className="p-3 md:p-4 border-t border-border bg-background shadow-inner">
-          <OrphanSymbolsPanel orphanSymbols={orphanSymbolsList as OrphanSymbolDisplayItem[]} />
-          {/* Cast orphanSymbolsList if its type doesn't exactly match OrphanSymbolDisplayItem[] yet */}
-        </div>
-      </aside>
+        {/* ============================================= */}
+        {/* Tabs for switching between views            */}
+        {/* ============================================= */}
+        <Tabs defaultValue="files" className="flex-grow flex flex-col min-h-0">
+            
+            {/* --- 2. Tab Triggers (The navigation bar for the tabs) --- */}
+            <div className="px-4 border-b border-border flex-shrink-0">
+                <TabsList className="bg-transparent p-0">
+                    <TabsTrigger value="files" className="text-sm h-full py-2.5">
+                        <LayoutGrid className="mr-2 h-4 w-4" />
+                        Browser
+                    </TabsTrigger>
+                    <TabsTrigger value="activity" className="text-sm h-full py-2.5">
+                        <History className="mr-2 h-4 w-4" />
+                        Activity & Insights
+                    </TabsTrigger>
+                </TabsList>
+            </div>
 
-      {/* ============================================= */}
-      {/* Code View Panel (Already Refactored)          */}
-      {/* ============================================= */}
-      <main className="flex-grow flex flex-col overflow-hidden bg-background min-w-0">
-        <CodeViewerPanel
-          selectedFile={selectedFile}
-          fileContent={fileContent}
-          isLoading={contentLoading}
-          language={selectedFile ? getLanguage(selectedFile.file_path) : 'plaintext'}
-        />
-      </main>
+            {/* --- 3. Tab Content for "File Browser" --- */}
+            <TabsContent value="files" className="flex-grow flex flex-row overflow-y-hidden mt-0">
+                {/* Your existing three-panel layout is now wrapped in this TabsContent */}
+                {/* It remains a flex row to keep the side-by-side panel structure */}
 
-      {/* ============================================= */}
-      {/* Analysis Panel (Already Refactored)         */}
-      {/* ============================================= */}
-      <aside className="w-[350px] md:w-[400px] flex-shrink-0 border-l border-border flex flex-col bg-background overflow-hidden min-w-0">
-        <AnalysisPanel
-          selectedFile={selectedFile}
-          generatedDocs={generatedDocs}
-          onGenerateDoc={handleGenerateDoc}
-          generatingDocId={generatingDocId}
-          onSaveDoc={handleSaveDoc}
-          savingDocId={savingDocId}
-        />
-      </aside>
+                {/* ============================================= */}
+                {/* Left Panel (File Tree, Batch Actions, Orphans)*/}
+                {/* ============================================= */}
+                <aside className="w-[300px] md:w-[380px] flex-shrink-0 border-r border-border flex flex-col bg-card overflow-y-auto min-h-0">
+                    {/* This wrapper ensures the panels inside don't overflow the aside */}
+                    <div className="flex-grow flex flex-col min-h-0">
+                        <div className="flex-grow overflow-y-auto min-h-0">
+                            <FileTreePanel
+                                repo={repo}
+                                selectedFile={selectedFile}
+                                onFileSelect={handleFileSelect}
+                                selectedFilesForBatch={selectedFilesForBatch}
+                                onSelectedFilesForBatchChange={setSelectedFilesForBatch}
+                                onGenerateDocsForFile={handleBatchGenerateDocsForFile}
+                                batchProcessingFileId={batchProcessingFileId}
+                                batchMessages={batchMessages}
+                                onCreatePRForFile={handleCreatePRForFile}
+                                creatingPRFileId={creatingPRFileId}
+                                prMessages={prMessages}
+                                isAnyOperationInProgress={isAnyOperationInProgressForFileTree}
+                            />
+                        </div>
+                        
+                        {repo.files.length > 0 && (
+                            <div className="p-3 md:p-4 border-t border-border bg-background shadow-inner mt-auto flex-shrink-0">
+                                <BatchActionsPanel
+                                    selectedFileCount={selectedFilesForBatch.size}
+                                    onBatchGenerateDocs={handleBatchGenerateDocsForRepo}
+                                    activeDocGenTaskId={activeDocGenTaskId}
+                                    docGenTaskMessage={docGenTaskMessage}
+                                    docGenTaskProgress={docGenTaskProgress}
+                                    onBatchCreatePR={handleCreateBatchPRForRepo}
+                                    activePRCreationTaskId={activePRCreationTaskId}
+                                    prCreationTaskMessage={prCreationTaskMessage}
+                                    prCreationTaskProgress={prCreationTaskProgress}
+                                    isAnyFileSpecificActionInProgress={isAnyFileSpecificActionInProgress}
+                                />
+                            </div>
+                        )}
+
+                        <div className="p-3 md:p-4 border-t border-border bg-background shadow-inner">
+                            <OrphanSymbolsPanel orphanSymbols={orphanSymbolsList as OrphanSymbolDisplayItem[]} />
+                        </div>
+                    </div>
+                </aside>
+
+                {/* ============================================= */}
+                {/* Center Panel (Code Viewer)                  */}
+                {/* ============================================= */}
+                <main className="flex-grow flex flex-col overflow-hidden bg-background min-w-0">
+                    <CodeViewerPanel
+                        selectedFile={selectedFile}
+                        fileContent={fileContent}
+                        isLoading={contentLoading}
+                        language={selectedFile ? getLanguage(selectedFile.file_path) : 'plaintext'}
+                    />
+                </main>
+
+                {/* ============================================= */}
+                {/* Right Panel (Analysis)                      */}
+                {/* ============================================= */}
+                <aside className="w-[350px] md:w-[400px] flex-shrink-0 border-l border-border flex flex-col bg-background overflow-hidden min-w-0">
+                    <AnalysisPanel
+                        selectedFile={selectedFile}
+                        generatedDocs={generatedDocs}
+                        onGenerateDoc={handleGenerateDoc}
+                        generatingDocId={generatingDocId}
+                        onSaveDoc={handleSaveDoc}
+                        savingDocId={savingDocId}
+                    />
+                </aside>
+            </TabsContent>
+
+            {/* --- 4. Tab Content for "Activity & Insights" --- */}
+            <TabsContent value="activity" className="flex-grow overflow-y-auto mt-0">
+                {/* The new ActivityFeed component will live here. */}
+                {/* It will manage its own layout (e.g., the two-pane commit graph + details). */}
+                {repo && <ActivityFeed repoId={repo.id} />}
+            </TabsContent>
+
+        </Tabs>
     </div>
-  );
+);
 }

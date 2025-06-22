@@ -7,7 +7,7 @@ from .models import Repository, AsyncTaskStatus
 class RepositoryAdmin(admin.ModelAdmin):
     list_display = ('full_name', 'user', 'status', 'updated_at')
     list_filter = ('status', 'user')
-from .models import CodeFile, CodeSymbol,CodeClass,CodeDependency,Notification,EmbeddingBatchJob 
+from .models import CodeFile, CodeSymbol,CodeClass,CodeDependency,Notification,EmbeddingBatchJob,Insight
 
 admin.site.register(CodeFile)
 admin.site.register(CodeClass) # Register the new Class model
@@ -78,3 +78,44 @@ class EmbeddingBatchJobAdmin(admin.ModelAdmin):
             'classes': ('collapse',)
         }),
     )
+    
+@admin.register(Insight)
+class InsightAdmin(admin.ModelAdmin):
+    """
+    Admin interface for the Insight model.
+    """
+    list_display = (
+        'repository', 
+        'insight_type', 
+        'message_summary', 
+        'commit_hash_short',
+        'related_symbol_link',
+        'is_resolved',
+        'created_at',
+    )
+    list_filter = ('repository', 'insight_type', 'is_resolved', 'created_at')
+    search_fields = ('repository__full_name', 'commit_hash', 'message', 'data')
+    readonly_fields = ('created_at', 'repository', 'commit_hash', 'insight_type', 'message', 'data', 'related_symbol')
+    list_per_page = 50
+
+    def message_summary(self, obj):
+        """Shortens the message for display in the list view."""
+        return (obj.message[:75] + '...') if len(obj.message) > 75 else obj.message
+    message_summary.short_description = 'Message'
+
+    def commit_hash_short(self, obj):
+        """Shows the short version of the commit hash."""
+        return obj.commit_hash[:8] if obj.commit_hash else 'N/A'
+    commit_hash_short.short_description = 'Commit'
+
+    def related_symbol_link(self, obj):
+        """Creates a clickable link to the related symbol in the admin."""
+        if obj.related_symbol:
+            from django.utils.html import format_html
+            from django.urls import reverse
+            
+            link = reverse("admin:repositories_codesymbol_change", args=[obj.related_symbol.id])
+            return format_html('<a href="{}">{}</a>', link, obj.related_symbol.name)
+        return "N/A"
+    related_symbol_link.short_description = 'Related Symbol'
+    related_symbol_link.allow_tags = True

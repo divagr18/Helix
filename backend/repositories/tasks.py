@@ -18,7 +18,7 @@ from itertools import takewhile
 import tempfile
 from django.utils import timezone
 from django.db import transaction,models  # Import the transaction module
-from .models import CodeFile, CodeSymbol, CodeClass,CodeDependency,EmbeddingBatchJob 
+from .models import CodeFile, CodeSymbol, CodeClass,CodeDependency,EmbeddingBatchJob,Insight
 from .models import Notification, AsyncTaskStatus # Ensure Notification is imported
 OPENAI_EMBEDDING_BATCH_SIZE = 50
 OPENAI_EMBEDDING_BATCH_FILE_MAX_REQUESTS = 49000
@@ -45,6 +45,9 @@ def process_repository(repo_id):
         repo.status = Repository.Status.INDEXING
         repo.save(update_fields=['status'])
 
+        # --- Git Cache Management ---
+        # (Your existing git clone/pull logic - seems okay)
+        # ... (ensure SocialToken and token logic is robust) ...
         social_account = repo.user.socialaccount_set.filter(provider='github').first()
         if not social_account:
             raise Exception(f"No GitHub social account found for user {repo.user.username} to process repo {repo.full_name}")
@@ -56,15 +59,42 @@ def process_repository(repo_id):
         token = social_token.token
         clone_url = f"https://oauth2:{token}@github.com/{repo.full_name}.git"
 
+        previous_commit_hash = None
         if os.path.exists(repo_path):
-            print(f"PROCESS_REPO_TASK: Pulling latest changes for {repo.full_name}")
-            # Added timeout to git commands
-            subprocess.run(["git", "-C", repo_path, "pull"], check=True, capture_output=True, timeout=300)
+            try:
+                # Get the hash of the current HEAD
+                result = subprocess.run(['git', '-C', repo_path, 'rev-parse', 'HEAD'], check=True, capture_output=True, text=True)
+                previous_commit_hash = result.stdout.strip()
+                
+                print(f"PROCESS_REPO_TASK: Previous commit hash for repo {repo.id} is {previous_commit_hash[:7]}")
+                subprocess.run(['git', '-C', repo_path, 'pull'], check=True, capture_output=True, timeout=300)
+            except subprocess.CalledProcessError as e:
+                # Handle git errors
+                print(f"Git pull failed: {e.stderr}")
+                repo.status = Repository.Status.FAILED; repo.save(); return
         else:
-            print(f"PROCESS_REPO_TASK: Cloning new repository: {repo.full_name} to {repo_path}")
-            subprocess.run(["git", "clone", "--depth", "1", clone_url, repo_path], check=True, capture_output=True, timeout=300)
-        
+            # Cloning new repo
+            subprocess.run(['git', 'clone', '--depth', '1', clone_url, repo_path], check=True, capture_output=True, timeout=300)
 
+        # Get commit hash AFTER pull
+        try:
+            result = subprocess.run(['git', '-C', repo_path, 'rev-parse', 'HEAD'], check=True, capture_output=True, text=True)
+            latest_commit_hash = result.stdout.strip()
+        except subprocess.CalledProcessError as e:
+            print(f"Could not get latest commit hash: {e.stderr}")
+            repo.status = Repository.Status.FAILED; repo.save(); return
+
+        # If nothing changed, we can stop early
+        if previous_commit_hash and previous_commit_hash == latest_commit_hash:
+            print(f"PROCESS_REPO_TASK: No new commits for repo {repo.id}. Processing complete.")
+            repo.status = Repository.Status.COMPLETED
+            repo.last_processed = datetime.datetime.now(datetime.timezone.utc)
+            repo.save(update_fields=['status', 'last_processed'])
+            return # Stop here
+        
+        # --- Call Rust Engine ---
+        # (Your existing Rust engine call logic - seems okay)
+        # ...
         print(f"PROCESS_REPO_TASK: Calling Rust engine for directory: {repo_path}")
         command = [RUST_ENGINE_PATH, "--dir-path", repo_path]
         result = subprocess.run(command, capture_output=True, text=True, check=True, timeout=600) # Added timeout
@@ -76,12 +106,17 @@ def process_repository(repo_id):
         with transaction.atomic():
             print("PROCESS_REPO_TASK: Starting Pass 1: Creating/Updating Files, Classes, and Symbols...")
 
-            existing_symbols_in_repo_map = {
-                s.unique_id: s for s in CodeSymbol.objects.filter(
-                    Q(code_file__repository=repo) | Q(code_class__code_file__repository=repo)
-                ).select_related('code_file', 'code_class__code_file') # Ensure we can trace back to repo
+            # --- MODIFIED APPROACH: Update or Create Symbols to preserve documentation ---
+            # Map existing symbols for efficient lookup and deletion tracking
+            existing_symbols_map = {
+            s.unique_id: s for s in CodeSymbol.objects.filter(
+                Q(code_file__repository=repo) | Q(code_class__code_file__repository=repo)
+                )
             }
+        
             processed_unique_ids_from_rust = set()
+            added_symbols_data = []
+            modified_symbols_data = []
 
             # Delete old files not present in new analysis
             current_file_paths_from_rust = {file_data.get('path') for file_data in repo_analysis_data.get('files', [])}
@@ -119,10 +154,9 @@ def process_repository(repo_id):
                     )
 
                     if created:
-                        # If newly created, set initial documentation_status
-                        symbol_obj.documentation_status = CodeSymbol.DocStatus.NONE
-                        symbol_obj.save(update_fields=['documentation_status']) 
-                        print(f"Created Symbol: {uid} with doc_status NONE")
+                        added_symbols_data.append({'id': symbol_obj.id, 'name': symbol_obj.name, 'file_path': file_data.get('path')})
+                    elif uid in existing_symbols_map and existing_symbols_map[uid].content_hash != symbol_obj.content_hash:
+                        modified_symbols_data.append({'id': symbol_obj.id, 'name': symbol_obj.name, 'file_path': file_data.get('path')})
                     else:
                         print(f"Updated Symbol: {uid} - doc_status preserved")
                         # For updates, documentation_status is preserved (not in defaults).
@@ -161,10 +195,9 @@ def process_repository(repo_id):
                         )
 
                         if created:
-                            # If newly created, set initial documentation_status
-                            symbol_obj.documentation_status = CodeSymbol.DocStatus.NONE
-                            symbol_obj.save(update_fields=['documentation_status'])
-                            print(f"Created Method Symbol: {uid} with doc_status NONE")
+                            added_symbols_data.append({'id': symbol_obj.id, 'name': symbol_obj.name, 'file_path': file_data.get('path'), 'class_name': class_data.get('name')})
+                        elif uid in existing_symbols_map and existing_symbols_map[uid].content_hash != symbol_obj.content_hash:
+                            modified_symbols_data.append({'id': symbol_obj.id, 'name': symbol_obj.name, 'file_path': file_data.get('path'), 'class_name': class_data.get('name')})
                         else:
                             print(f"Updated Method Symbol: {uid} - doc_status preserved")
                             # For updates, documentation_status is preserved.
@@ -173,16 +206,18 @@ def process_repository(repo_id):
                         call_map_for_deps[uid] = method_data.get('calls', [])
             
             # Delete symbols that were in the DB (for this repo) but not in the new Rust output
-            unique_ids_to_delete = set(existing_symbols_in_repo_map.keys()) - processed_unique_ids_from_rust
-            if unique_ids_to_delete:
-                print(f"PROCESS_REPO_TASK: Deleting {len(unique_ids_to_delete)} old symbols for repo {repo.id}")
-                # This delete needs to be careful if unique_id is not globally unique.
-                # We need to ensure we only delete symbols belonging to THIS repo.
-                # The existing_symbols_in_repo_map already filtered by repo.
+            removed_uids = set(existing_symbols_map.keys()) - processed_unique_ids_from_rust
+            removed_symbols_data = []
+            if removed_uids:
+                # We need to get their details before deleting them
+                for uid in removed_uids:
+                    symbol_to_delete = existing_symbols_map[uid]
+                    removed_symbols_data.append({'name': symbol_to_delete.name, 'file_path': symbol_to_delete.code_file.file_path if symbol_to_delete.code_file else "N/A"})
+                
                 CodeSymbol.objects.filter(
-    Q(unique_id__in=unique_ids_to_delete) &
-    (Q(code_file__repository=repo) | Q(code_class__code_file__repository=repo))
-).delete()
+                Q(unique_id__in=list(removed_uids)) &
+                (Q(code_file__repository=repo) | Q(code_class__code_file__repository=repo))
+            ).delete()
 
 
             print(f"PROCESS_REPO_TASK: Finished Pass 1. Processed {len(processed_unique_ids_from_rust)} symbols from Rust output.")
@@ -279,6 +314,18 @@ def process_repository(repo_id):
             repo.status = Repository.Status.COMPLETED
             repo.last_processed = timezone.now() # Added timezone
             repo.save(update_fields=['root_merkle_hash', 'status', 'last_processed'])
+        diff_report = {
+        'added_symbols': added_symbols_data,
+        'modified_symbols': modified_symbols_data,
+        'removed_symbols': removed_symbols_data,
+    }
+    
+        print(f"PROCESS_REPO_TASK: Dispatching insights generation for repo {repo.id} at commit {latest_commit_hash[:7]}")
+        generate_insights_on_change_task.delay(
+            repo_id=repo.id,
+            commit_hash=latest_commit_hash,
+            diff_report=diff_report
+        )
 
         print(f"PROCESS_REPO_TASK: Successfully processed and saved analysis for repository: {repo.full_name}")
         print(f"PROCESS_REPO_TASK: Dispatching orphan detection for repo {repo.id}")
@@ -1571,3 +1618,66 @@ def submit_embedding_batch_job_task(self, repo_id: int):
         if batch_input_file_path and os.path.exists(batch_input_file_path):
             os.remove(batch_input_file_path)
             print(f"EMBED_BATCH_SUBMIT_TASK: Cleaned up temporary file {batch_input_file_path}")
+            
+@app.task
+def generate_insights_on_change_task(repo_id: int, commit_hash: str, diff_report: dict):
+    """
+    Analyzes a diff report from process_repository and creates Insight records.
+    """
+    print(f"INSIGHTS_TASK: Started for repo {repo_id}, commit {commit_hash[:7]}")
+    
+    try:
+        repo = Repository.objects.get(id=repo_id)
+    except Repository.DoesNotExist:
+        print(f"INSIGHTS_TASK: ERROR - Repository {repo_id} not found.")
+        return
+
+    insights_to_create = []
+
+    # Process added symbols
+    for symbol_data in diff_report.get('added_symbols', []):
+        message = f"Symbol '{symbol_data['name']}' was added in file '{symbol_data['file_path']}'."
+        insights_to_create.append(
+            Insight(
+                repository=repo,
+                commit_hash=commit_hash,
+                insight_type=Insight.InsightType.SYMBOL_ADDED,
+                message=message,
+                data=symbol_data,
+                related_symbol_id=symbol_data.get('id')
+            )
+        )
+
+    # Process modified symbols
+    for symbol_data in diff_report.get('modified_symbols', []):
+        message = f"Symbol '{symbol_data['name']}' was modified in file '{symbol_data['file_path']}'."
+        insights_to_create.append(
+            Insight(
+                repository=repo,
+                commit_hash=commit_hash,
+                insight_type=Insight.InsightType.SYMBOL_MODIFIED,
+                message=message,
+                data=symbol_data,
+                related_symbol_id=symbol_data.get('id')
+            )
+        )
+
+    # Process removed symbols
+    for symbol_data in diff_report.get('removed_symbols', []):
+        message = f"Symbol '{symbol_data['name']}' was removed from file '{symbol_data['file_path']}'."
+        insights_to_create.append(
+            Insight(
+                repository=repo,
+                commit_hash=commit_hash,
+                insight_type=Insight.InsightType.SYMBOL_REMOVED,
+                message=message,
+                data=symbol_data,
+                # related_symbol will be null since it's deleted
+            )
+        )
+
+    if insights_to_create:
+        Insight.objects.bulk_create(insights_to_create)
+        print(f"INSIGHTS_TASK: Created {len(insights_to_create)} new insights for repo {repo_id}.")
+    else:
+        print(f"INSIGHTS_TASK: No structural changes found to generate insights for repo {repo_id}.")

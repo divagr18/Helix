@@ -64,3 +64,29 @@ export interface Repository {
   root_merkle_hash: string | null;
   files: CodeFile[];
 }
+export interface InsightRelatedSymbol {
+  id: number;
+  name: string;
+  unique_id: string;
+}
+
+// The main Insight type, matching the Django serializer output
+export interface Insight {
+  id: number;
+  commit_hash: string;
+  insight_type: 'SYMBOL_ADDED' | 'SYMBOL_REMOVED' | 'SYMBOL_MODIFIED' | 'DEPENDENCY_ADDED' | 'DEPENDENCY_REMOVED'; // Add more as you create them
+  get_insight_type_display: string; // The human-readable version
+  message: string;
+  data: {
+    // The structure of 'data' can vary, so we define it loosely
+    // or create specific types for each insight_type if needed.
+    id?: number;
+    name: string;
+    file_path: string;
+    class_name?: string;
+    [key: string]: any; // Allows for other properties
+  };
+  related_symbol: InsightRelatedSymbol | null;
+  is_resolved: boolean;
+  created_at: string; // ISO 8601 date string
+}
