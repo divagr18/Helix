@@ -22,7 +22,7 @@ from repositories.views import (
     # --- IMPORT THE NEW VIEWS (we will create these next) ---
     BatchGenerateDocsForSelectedFilesView,
     CreateBatchPRForSelectedFilesView,
-    TaskStatusView,ApproveDocstringView,ExplainCodeView, SuggestTestsView,RepositoryInsightsView,
+    TaskStatusView,ApproveDocstringView,ExplainCodeView, SuggestTestsView,RepositoryInsightsView,CommitHistoryView,
     ClassSummaryView,ReprocessRepositoryView 
 )
 # The variable name 'urlpatterns' is what Django expects to find.
@@ -55,7 +55,7 @@ urlpatterns += [
     path('classes/<int:class_id>/summarize/', ClassSummaryView.as_view(), name='class-summarize'),
     path('repositories/<int:repo_id>/reprocess/', ReprocessRepositoryView.as_view(), name='repository-reprocess'), 
     path('repositories/<int:repo_id>/insights/', RepositoryInsightsView.as_view(), name='repository-insights'),
-
+    path('repositories/<int:repo_id>/commit-history/', CommitHistoryView.as_view(), name='repository-commit-history'),
 
 
 

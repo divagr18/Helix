@@ -6,18 +6,6 @@ import { PrismLight as SyntaxHighlighter } from 'react-syntax-highlighter'; // R
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { FileText, Code, Loader2 } from 'lucide-react'; // Lucide icons
 
-// Languages for SyntaxHighlighter (import only what you need)
-// Make sure these are registered globally ONCE, e.g., in your App.tsx or a central config file
-// to avoid re-registering them on every CodeViewerPanel render.
-// For this component, we assume they are already registered.
-// import jsx from 'react-syntax-highlighter/dist/esm/languages/prism/jsx';
-// import tsx from 'react-syntax-highlighter/dist/esm/languages/prism/tsx';
-// import python from 'react-syntax-highlighter/dist/esm/languages/prism/python';
-// SyntaxHighlighter.registerLanguage('jsx', jsx);
-// SyntaxHighlighter.registerLanguage('tsx', tsx);
-// SyntaxHighlighter.registerLanguage('python', python);
-// etc.
-
 import { type CodeFile } from '@/pages/RepoDetailPage'; // Assuming types are in RepoDetailPage or a types file
 // Adjust path if you move types to a central location like src/types.ts
 

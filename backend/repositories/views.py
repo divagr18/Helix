@@ -9,7 +9,7 @@ from rest_framework import viewsets
 from .models import CodeFile, CodeSymbol as CodeFunction, Repository, CodeSymbol,CodeDependency,AsyncTaskStatus, Notification,CodeClass,Insight
 from .ai_services import generate_class_summary_stream # 03c03c03c NEW IMPORT
 from .tasks import process_repository # Import the Celery task
-
+import json
 from .serializers import CodeSymbolSerializer, RepositorySerializer,RepositoryDetailSerializer,NotificationSerializer
 from rest_framework.views import APIView
 from django.views.decorators.csrf import csrf_exempt
@@ -1028,3 +1028,85 @@ class RepositoryInsightsView(generics.ListAPIView):
             return Insight.objects.none() # Return empty queryset if no permission
         
         return Insight.objects.filter(repository_id=repo_id).order_by('-created_at')
+
+class CommitHistoryView(APIView):
+    """
+    Returns the commit history for a given repository by running git log,
+    formatted to match the frontend's expected CommitNode structure.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, repo_id, *args, **kwargs):
+        print(f"VIEW_COMMIT_HISTORY: Request for repo_id: {repo_id} by user: {request.user.username}")
+
+        try:
+            repo = Repository.objects.get(id=repo_id, user=request.user)
+        except Repository.DoesNotExist:
+            return Response(
+                {"error": "Repository not found or permission denied."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        repo_path = os.path.join(REPO_CACHE_BASE_PATH, str(repo.id))
+
+        if not os.path.isdir(os.path.join(repo_path, '.git')):
+            return Response(
+                {"error": "Repository cache not found on server. Please re-process the repository."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        try:
+            # This format string is designed to be parsed into the desired JSON structure.
+            # We use a unique, unlikely separator to split commits reliably.
+            # We capture parent hashes in a single string, which we will split later.
+            # %H: commit hash, %an: author name, %aI: author date (ISO 8601), %s: subject, %P: parent hashes
+            log_format = '{"commit": "%H", "author": "%an", "date": "%aI", "message": "%s", "parents_str": "%P"}'
+            
+            # Limit to a reasonable number of commits for performance.
+            # --all ensures we get the history from all branches, which is important for a complete graph.
+            command = [
+                'git', '-C', repo_path, 'log',
+                '--all',
+                '--max-count=150',
+                f'--pretty=format:{log_format}'
+            ]
+
+            result = subprocess.run(command, check=True, capture_output=True, text=True, encoding='utf-8')
+            
+            # The output is a string of concatenated JSON objects, each on a new line.
+            commit_lines = result.stdout.strip().split('\n')
+            
+            commit_history = []
+            for line in commit_lines:
+                if not line:
+                    continue
+                try:
+                    # Parse the JSON string for a single commit
+                    commit_data = json.loads(line)
+                    
+                    # --- THIS IS THE KEY CHANGE ---
+                    # The "%P" format gives a space-separated string of parent hashes.
+                    # We split this string to create a proper list, which matches the mock data's format.
+                    # If there are no parents, `parents_str` will be an empty string, and split() will correctly return [].
+                    parent_hashes_str = commit_data.get('parents_str', '')
+                    commit_data['parents'] = parent_hashes_str.split()
+                    
+                    # Remove the temporary 'parents_str' key to keep the final JSON clean.
+                    del commit_data['parents_str']
+                    # --- END KEY CHANGE ---
+                    
+                    commit_history.append(commit_data)
+                except json.JSONDecodeError:
+                    print(f"VIEW_COMMIT_HISTORY: Warning - Could not decode JSON for line: {line}")
+                    continue # Skip any potentially malformed lines from git log
+            print(commit_history)        
+            return Response(commit_history, status=status.HTTP_200_OK)
+
+        except subprocess.CalledProcessError as e:
+            error_message = f"Failed to execute git log: {e.stderr}"
+            print(f"VIEW_COMMIT_HISTORY: ERROR - {error_message}")
+            return Response({"error": error_message}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        except Exception as e:
+            error_message = f"An unexpected error occurred while fetching commit history: {str(e)}"
+            print(f"VIEW_COMMIT_HISTORY: ERROR - {error_message}")
+            return Response({"error": error_message}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
