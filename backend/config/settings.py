@@ -16,7 +16,7 @@ from rest_framework.authentication import SessionAuthentication
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
-
+import os
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/5.0/howto/deployment/checklist/
@@ -31,7 +31,8 @@ DEBUG = True
 
 ALLOWED_HOSTS = ['*']
 
-
+READONLY_DB_USER = os.environ.get('READONLY_POSTGRES_USER')
+READONLY_DB_PASSWORD = os.environ.get('READONLY_POSTGRES_PASSWORD')
 # Application definition
 
 INSTALLED_APPS = [

@@ -1,5 +1,5 @@
 # backend/repositories/ai_services.py
-from typing import Generator
+from typing import Generator,Optional
 from django.conf import settings
 from openai import OpenAI as OpenAIClient
 
@@ -204,109 +204,12 @@ def generate_refactor_stream(
         print(f"SUGGEST_REFACTORS_STREAM_ERROR: {error_message}")
         yield error_message
 
-def handle_chat_query_stream(
-    repo_id: int,
-    query: str,
-    openai_client: OpenAIClient
-) -> Generator[str, None, None]:
-    """
-    Handles a user's chat query by performing a multi-layered RAG search
-    and streaming a synthesized answer from an LLM.
-    """
-    print(f"CHAT_SERVICE: Handling query for repo {repo_id}: '{query}'")
 
-    # 1. Generate Query Embedding
-    try:
-        print("CHAT_SERVICE: Generating embedding for user query...")
-        query_embedding = openai_client.embeddings.create(
-            input=[query], 
-            model="text-embedding-3-small"
-        ).data[0].embedding
-        print("CHAT_SERVICE: Query embedding generated successfully.")
-    except Exception as e:
-        print(f"CHAT_SERVICE: FATAL - Could not generate query embedding: {e}")
-        yield f"// Helix encountered an error processing your question. Could not generate embedding."
-        return
-
-    # 2. Perform Vector Search to find relevant context
-    # We search for the top 5 most relevant chunks, regardless of type, for simplicity.
-    # The context formatting will differentiate them for the LLM.
-    try:
-        print("CHAT_SERVICE: Performing vector search on KnowledgeChunks...")
-        retrieved_chunks = KnowledgeChunk.objects.filter(
-            repository_id=repo_id
-        ).order_by(
-            L2Distance('embedding', query_embedding)
-        )[:5] # Retrieve the top 5 most relevant chunks
-
-        if not retrieved_chunks:
-            print("CHAT_SERVICE: No relevant knowledge chunks found.")
-            yield "I could not find any relevant documentation or source code in this repository to answer your question. Please try rephrasing or asking something else."
-            return
-        
-        print(f"CHAT_SERVICE: Retrieved {len(retrieved_chunks)} relevant chunks.")
-    except Exception as e:
-        print(f"CHAT_SERVICE: FATAL - Vector search failed: {e}")
-        yield f"// Helix encountered an error searching the knowledge base."
-        return
-
-    # 3. Assemble Context for the Final Prompt
-    context_str = ""
-    for chunk in retrieved_chunks:
-        header = ""
-        # Create a descriptive header for each piece of context
-        if chunk.chunk_type == KnowledgeChunk.ChunkType.SYMBOL_DOCSTRING:
-            header = f"--- Context from Documentation for function '{chunk.related_symbol.name}' in file '{chunk.related_file.file_path}' ---"
-        elif chunk.chunk_type == KnowledgeChunk.ChunkType.SYMBOL_SOURCE:
-            header = f"--- Context from Source Code for function '{chunk.related_symbol.name}' in file '{chunk.related_file.file_path}' ---"
-        
-        context_str += f"{header}\n{chunk.content}\n\n"
-
-    # 4. Construct the Final Prompt
-    final_prompt = (
-        "You are Helix, a helpful AI assistant answering questions about a software repository. "
-        "Use ONLY the provided context below to answer the user's question. "
-        "The context is sourced directly from the repository's documentation and source code. "
-        "If the context does not contain the answer, you MUST state that you could not find an answer in the provided context. "
-        "Be concise and helpful. When possible, cite your sources by mentioning the function name or file path from the context headers.\n\n"
-        f"{context_str}"
-        f"User's Question: \"{query}\"\n\n"
-        "Answer:"
-    )
-
-    print(f"CHAT_SERVICE: Sending final prompt to LLM. Context length: {len(context_str)}, Total prompt length: {len(final_prompt)}")
-    # For debugging, you can print the full prompt:
-    # print(f"DEBUG_CHAT_PROMPT:\n{final_prompt}\n--------------------")
-
-    # 5. Stream the Response from the LLM
-    try:
-        stream = openai_client.chat.completions.create(
-            model="gpt-4.1-mini",
-            messages=[
-                {"role": "user", "content": final_prompt}
-            ],
-            stream=True,
-            temperature=0.2, # Low temperature for factual, grounded answers
-        )
-        for chunk in stream:
-            content = chunk.choices[0].delta.content
-            if content:
-                yield content
-    except Exception as e:
-        print(f"CHAT_SERVICE: FATAL - LLM streaming failed: {e}")
-        yield f"// Helix encountered an error while generating the final answer."
         
         
-from .agno_tools import HelixStructuralQueryTool
 from django.conf import settings
 from agno.tools.postgres import PostgresTools
-postgres_tools = PostgresTools(
-    host="localhost",
-    port=5432,
-    db_name="helix_dev",
-    user="helix",
-    password="helix"
-)
+
 from agno.agent import Agent, AgentKnowledge
 from agno.models.openai import OpenAIChat
 from agno.vectordb.pgvector import PgVector, SearchType
@@ -335,42 +238,52 @@ def get_helix_knowledge_base() -> AgentKnowledge:
     # We don't need to provide a source (like a PDF) because we populate the DB ourselves.
     # We just need to give the AgentKnowledge object the configured vector_db connection.
     return AgentKnowledge(vector_db=vector_db)
+from .models import Repository  # <--- Import the Repository model
 
+from .agno_tools import helix_knowledge_search,execute_structural_query,HelixPostgresTools
+db_settings = settings.DATABASES['default']
 
-def get_helix_qa_agent(repo_id: int, file_path: str | None = None ) -> Agent:
+def get_helix_qa_agent(user_id: int, repo_id: int, file_path: Optional[str] = None) -> Agent:
     """
     Factory function to create and configure the Helix Q&A agent.
     This is the central point for defining the agent's capabilities.
     """
-    knowledge_base = get_helix_knowledge_base()
+    user_scoped_postgres_tools = HelixPostgresTools(user_id=user_id)
+    try:
+        repo = Repository.objects.get(id=repo_id)
+        repo_name = repo.full_name
+    except Repository.DoesNotExist:
+        repo_name = f"ID: {repo_id}"
     agent = Agent(
         name="Helix",
         model=OpenAIChat(id="gpt-4.1-mini"),
         
         # 1. Provide the knowledge base for RAG
-        knowledge=knowledge_base,
         
         # 2. Let Agno create its default `search_knowledge_base` tool.
         #    This is True by default when `knowledge` is provided.
-        search_knowledge=True,
         
         # 3. Add our one custom tool for metadata queries.
         tools=[
-            HelixStructuralQueryTool(repo_id=repo_id, file_path=file_path),
+            helix_knowledge_search,
+            execute_structural_query,
+            user_scoped_postgres_tools
         ],
-        
+        show_tool_calls=False,
         markdown=True,
         instructions=(
-            "You are Helix, an AI assistant for a software repository. You have two tools available. You are in the repo {repo_id}. Use this info for your database operations.\n"
+            f"You are Helix, an AI assistant for a software repository. You have two tools available. You are in the repo with id{repo_id} and name {repo_name}, talking to user with userid {user_id}. Use this info for your database operations.\n"
             "The columns in your vector DB are: id,chunk_type,content,embedding,related_class_id,related_file_id,related_symbol_id,repository_id,created_at"
-            "1. `search_knowledge_base`: Use this for questions about the 'how' or 'purpose' of code, or for implementation examples. This tool searches documentation and source code.\n"
-            "2. `structural_query`: Use this for questions that ask for lists of items or metadata, like 'list all functions' or 'how many orphans' or 'what repo am I in'.\n"
+            "1. `helix_knowledge_search`: Use this for questions about the 'how' or 'purpose' of code, or for implementation examples. This tool searches documentation and source code.\n"
+            "2. `execute_structural_query`: Use this for questions that ask for lists of items or metadata that are function level, not repo level., like 'list all functions' or 'how many orphans' If you don't find your answer in first run of the tool use the user_scoped_postgres_tools.\n"
+            "3. `user_scoped_postgres_tools`: Use this for questions that ask for data about files, symbols etc. This lets you look at the database that stores everything. You MUST first run show_tables to see all the tables, and only then run your query. You do not let the user know that you are using this SQL tool. You must pass user_id to this tool.'.\n"
+
             "Based on the user's query, choose the best tool, execute it, and then formulate a helpful answer based on the tool's output. Cite function names or file paths when possible."
         ),debug_mode=True
     )
     return agent
 
-def handle_chat_query_stream2(repo_id: int, query: str, file_path: str | None = None) -> Generator[str, None, None]:
+def handle_chat_query_stream(user_id: int,repo_id: int, query: str, file_path: str | None = None) -> Generator[str, None, None]:
     """
     Handles a user's chat query by invoking the Agno-powered Q&A agent.
     This function is now a simple wrapper around the agent's execution.
@@ -378,7 +291,7 @@ def handle_chat_query_stream2(repo_id: int, query: str, file_path: str | None = 
     print(f"AGNO_SERVICE: Handling query for repo {repo_id} with Agno agent. Query: '{query}'")
     try:
         # Get a freshly configured agent with the latest context
-        agent = get_helix_qa_agent(repo_id=repo_id,file_path=file_path)
+        agent = get_helix_qa_agent(user_id=user_id, repo_id=repo_id,file_path=file_path)
         run_iterator = agent.run(message=query, stream=True) # Also stream intermediate steps for debugging
         
         # Loop through the iterator and yield each chunk's content

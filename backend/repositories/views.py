@@ -1190,7 +1190,7 @@ class SuggestRefactorsView(APIView):
         response['Cache-Control'] = 'no-cache'
         return response
     
-from .ai_services import handle_chat_query_stream,handle_chat_query_stream2
+from .ai_services import handle_chat_query_stream
 
 
 @method_decorator(csrf_exempt, name='dispatch')
@@ -1221,7 +1221,8 @@ class ChatView(APIView):
             )
 
         # Call the service function, now passing the file_path
-        response_stream = handle_chat_query_stream2(
+        response_stream = handle_chat_query_stream(
+            user_id=request.user.id,
             repo_id=repo_id,
             query=query.strip(),
             file_path=current_file_path # Pass the context

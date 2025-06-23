@@ -1,75 +1,200 @@
 # backend/repositories/agno_tools.py
 from agno.tools import tool
-from openai import OpenAI # Import the OpenAI library
+from openai import OpenAI
+import psycopg2 # Import the OpenAI library
 # We need access to our models and the OpenAI client
 from .models import KnowledgeChunk, CodeSymbol, Repository
 OPENAI_CLIENT = OpenAI()
+from pgvector.django import L2Distance
+
 from typing import Optional
 from django.db.models import Q ,F,Count # <--- ADD THIS IMPORT
 
-
-class HelixStructuralQueryTool():
+@tool
+def helix_knowledge_search(query: str, repo_id: int, file_path: Optional[str] = None) -> str:
     """
-    A custom Agno tool to answer structural questions about the codebase
-    by directly querying the Django database models.
+    Searches the repository's knowledge base (documentation and source code)
+    to answer questions about how code works, its purpose, or for implementation examples.
+    This is the primary tool for understanding code.
     """
-    name: str = "structural_query"
-    description: str = (
-        "Use this tool for questions that ask for lists of items, relationships, "
-        "or metadata about the code structure. Examples: 'What functions are in this file?', "
-        "'List all classes in the repository', 'How many orphan symbols are there?'"
-    )
+    print(f"AGNO_TOOL: Executing HelixKnowledgeSearchTool for repo {repo_id} with query: '{query}'")
+    
+    try:
+        # 1. Generate an embedding for the user's query
+        query_embedding = OPENAI_CLIENT.embeddings.create(
+            input=[query], 
+            model="text-embedding-3-small" # Or from settings
+        ).data[0].embedding
 
-    # We can pass parameters during initialization
-    def __init__(self, repo_id: int, file_path: Optional[str] = None, **kwargs):
-        super().__init__(**kwargs)
-        self.repo_id = repo_id
-        self.file_path = file_path
+        # 2. Perform a vector search combined with a metadata filter
+        # This is where the power of our hybrid model comes in.
+        # We are already filtering by repo_id before doing the vector search.
+        retrieved_chunks = KnowledgeChunk.objects.filter(
+            repository_id=repo_id
+        ).order_by(
+            L2Distance('embedding', query_embedding)
+        )[:4] # Get the top 4 most relevant chunks
 
-    def execute(self, query: str) -> str:
-        """
-        Executes the structural query against the database.
-        """
-        print(f"AGNO_TOOL: Executing StructuralQueryTool for repo {self.repo_id} with query: '{query}'")
+        if not retrieved_chunks:
+            return "No relevant information found in the knowledge base for that query."
+
+        # 3. Format the results into a string for the agent's context
+        context_str = "--- Retrieved Context ---\n"
+        for chunk in retrieved_chunks:
+            context_str += f"Source: {chunk.get_chunk_type_display()} for '{chunk.related_symbol.name}' in '{chunk.related_file.file_path}'\n"
+            context_str += f"Content:\n{chunk.content}\n\n"
         
-        # This is a simplified "mini-router" within the tool.
-        # A more advanced version could use an LLM to parse the natural language query
-        # into more complex ORM calls.
-        query_lower = query.lower()
+        return context_str
 
-        if "functions" in query_lower and "file" in query_lower:
-            if not self.file_path:
-                return "To list functions in a file, the user must have a file open. Please ask the user to open a file."
+    except Exception as e:
+        print(f"AGNO_TOOL: ERROR in HelixKnowledgeSearchTool: {e}")
+        import traceback
+        traceback.print_exc()
+        return f"An error occurred while searching the knowledge base: {e}"
+
+
+# Your existing HelixStructuralQueryTool can remain as is, but we'll make it a @tool function
+@tool(name="SearchTool")
+def execute_structural_query(repo_id: int, query: str, file_path: Optional[str] = None) -> str:
+    """
+    Executes a structural query against the Django database models.
+
+    Parameters:
+    - repo_id: int - The ID of the repository.
+    - query: str - The natural language query.
+    - file_path: Optional[str] - The path to the file (required for some queries).
+
+    Returns:
+    - str - The result of the query.
+    """
+    print(f"AGNO_TOOL: Executing StructuralQueryTool for repo {repo_id} with query: '{query}'")
+    query_lower = query.lower()
+
+    if "functions" in query_lower and "file" in query_lower:
+        if not file_path:
+            return "To list functions in a file, the user must have a file open. Please ask the user to open a file."
+
+        try:
+            symbols = CodeSymbol.objects.filter(
+                code_file__repository_id=repo_id,
+                code_file__file_path=file_path,
+                code_class__isnull=True  # Top-level functions
+            ).values_list('name', flat=True)
+
+            if not symbols:
+                return f"No top-level functions were found in the file '{file_path}'."
+
+            function_list = "\n".join([f"- `{name}`" for name in symbols])
+            return f"The functions in '{file_path}' are:\n{function_list}"
+
+        except Exception as e:
+            print(f"AGNO_TOOL: ERROR in StructuralQueryTool (functions in file): {e}")
+            return f"An error occurred while querying for functions: {e}"
+
+    elif "orphan" in query_lower and "how many" in query_lower:
+        try:
+            orphan_count = CodeSymbol.objects.filter(
+                Q(code_file__repository_id=repo_id) | Q(code_class__code_file__repository_id=repo_id),
+                is_orphan=True
+            ).count()
+            return f"There are currently {orphan_count} orphan symbols detected in the repository."
+        except Exception as e:
+            print(f"AGNO_TOOL: ERROR in StructuralQueryTool (orphan count): {e}")
+            return f"An error occurred while counting orphan symbols: {e}"
+
+    return "This structural query is not yet supported. I can list functions in a specific file or count orphan symbols."
+from agno.tools.postgres import PostgresTools
+from agno.utils.log import log_info, log_error
+from django.conf import settings
+from typing import Dict, Optional
+
+class HelixPostgresTools(PostgresTools):
+    """
+    A custom Toolkit that inherits from PostgresTools to provide a full suite of
+    database tools, but overrides the connection and query execution to enforce
+    user-scoped Row-Level Security (RLS) and read-only access.
+    """
+    def __init__(self, user_id: int, **kwargs):
+        self.user_id = user_id
+        self.db_settings = settings.DATABASES['default']
+        # We manage the connection ourselves, so initialize it to None.
+        # The parent class also has a `_connection` attribute, which we will now control.
+        self._connection = None
+        
+        # Call the parent's __init__ to register all its tools (`show_tables`, etc.).
+        # We pass the connection details from our Django settings.
+        # The parent class will handle adding the tools to the toolkit.
+        super().__init__(
+            db_name=self.db_settings.get('NAME'),
+            user=settings.READONLY_DB_USER,
+            password=settings.READONLY_DB_PASSWORD,
+            host=self.db_settings.get('HOST', 'localhost'),
+            port=self.db_settings.get('PORT', 5432),
+            # You can configure which of the parent's tools to enable here
+            run_queries=True,
+            inspect_queries=False,
+            summarize_tables=True,
+            export_tables=False, # Disable potentially risky tools if desired
+            **kwargs
+        )
+
+    @property
+    def connection(self) -> psycopg2.extensions.connection:
+        """
+        Overrides the parent's connection property to establish a secure,
+        user-scoped, read-only database connection.
+        """
+        if self._connection is None or self._connection.closed:
+            log_info(f"AGNO_TOOL_CONNECT: Establishing new RLS-scoped connection for user {self.user_id}")
+            conn_params = {
+                "host": self.host,
+                "port": self.port,
+                "dbname": self.db_name,
+                "user": self.user,
+                "password": self.password, # This now correctly uses the value set in __init__
+            }
+            self._connection = psycopg2.connect(**conn_params)
+            self._connection.set_session(readonly=True)
             
+            # This is the crucial part: set the RLS session variable
             try:
-                symbols = CodeSymbol.objects.filter(
-                    code_file__repository_id=self.repo_id,
-                    code_file__file_path=self.file_path,
-                    code_class__isnull=True # Filter for top-level functions
-                ).values_list('name', flat=True)
-
-                if not symbols:
-                    return f"No top-level functions were found in the file '{self.file_path}'."
-                
-                function_list = "\n".join([f"- `{name}`" for name in symbols])
-                return f"The functions in '{self.file_path}' are:\n{function_list}"
-
+                with self._connection.cursor() as cursor:
+                    cursor.execute("SET app.current_user_id = %s", (str(self.user_id),))
+                log_info(f"AGNO_TOOL_INIT: Set app.current_user_id = {self.user_id} for this session.")
             except Exception as e:
-                print(f"AGNO_TOOL: ERROR in StructuralQueryTool (functions in file): {e}")
-                return f"An error occurred while querying for functions: {e}"
+                log_error(f"AGNO_TOOL_INIT: FATAL - Failed to set session variable for RLS: {e}")
+                self._connection.close()
+                self._connection = None
+                raise
+        
+        return self._connection
 
-        # Add another rule for a different type of structural query
-        elif "orphan" in query_lower and "how many" in query_lower:
-            try:
-                orphan_count = CodeSymbol.objects.filter(
-                    Q(code_file__repository_id=self.repo_id) | Q(code_class__code_file__repository_id=self.repo_id),
-                    is_orphan=True
-                ).count()
-                
-                return f"There are currently {orphan_count} orphan symbols detected in the repository."
-            except Exception as e:
-                print(f"AGNO_TOOL: ERROR in StructuralQueryTool (orphan count): {e}")
-                return f"An error occurred while counting orphan symbols: {e}"
+    def run_query(self, query: str) -> str:
+        """
+        Overrides the parent's run_query method to enforce a strict SELECT-only policy.
+        All other tools from the parent class (like show_tables) will now use this safe version.
+        """
+        print(f"AGNO_TOOL: Executing OVERRIDDEN run_query with query: '{query}'")
+        # Security check: only allow SELECT statements
+        if not query.strip().lower().startswith('select'):
+            return "Error: This tool only supports read-only SELECT queries."
 
-        # Default fallback if no rule matches
-        return "This structural query is not yet supported. I can list functions in a specific file or count orphan symbols."
+        try:
+            # Use the secure connection from our overridden property
+            with self.connection.cursor() as cursor:
+                cursor.execute(query)
+                if cursor.description:
+                    columns = [desc[0] for desc in cursor.description]
+                    rows = cursor.fetchall()
+                    # Use a more robust formatting like the parent class
+                    result_rows = [",".join(map(str, row)) for row in rows]
+                    result_data = "\n".join(result_rows)
+                    return ",".join(columns) + "\n" + result_data
+                else:
+                    return f"Query executed successfully. Status message: {cursor.statusmessage}"
+        except Exception as e:
+            print(f"AGNO_TOOL: ERROR in overridden run_query: {e}")
+            # Rollback in case of error to keep the transaction state clean
+            if self._connection and not self._connection.closed:
+                self._connection.rollback()
+            return f"An error occurred while executing the SQL query: {e}"
