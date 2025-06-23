@@ -557,7 +557,7 @@ export function RepoDetailPage() {
 
   return (
     // The main container is now a flex column to hold the header and the tabs
-    <div className="flex flex-col h-screen bg-background text-foreground overflow-y-hidden">
+    <div className="flex flex-col h-full bg-background text-foreground overflow-y-hidden">
 
         {/* ============================================= */}
         {/* Header (FileTreeHeader) - Stays at the top    */}

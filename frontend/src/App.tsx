@@ -1,121 +1,95 @@
 // frontend/src/App.tsx
-import { BrowserRouter, Routes, Route, useLocation } from 'react-router-dom';
+import React, { useEffect, useState } from 'react';
+import { BrowserRouter, Routes, Route, Navigate, Outlet } from 'react-router-dom';
+import axios from 'axios';
+
+// Components
+import { Header } from './components/Header';
+import { ThemeProvider } from "@/components/theme-provider";
+import { Toaster } from 'sonner';
+import { ChatModal } from './components/chat/ChatModal';
+import { GlobalKeyboardShortcuts } from './components/GlobalKeyboardShortcuts'; // Keep this component as is
+
+// Pages
 import { LoginPage } from './pages/LoginPage';
 import { DashboardPage } from './pages/DashboardPage';
-import './App.css';
-import './index.css';
-import axios from 'axios'; // Import axios here
-import { Header } from './components/Header'; // Import the Header
-import { useEffect, useState } from 'react';
 import { RepoDetailPage } from './pages/RepoDetailPage';
 import { SymbolDetailPage } from './pages/SymbolDetailPage';
-import { SearchResultsPage } from './pages/SearchResultsPage'; // Import
-import { ThemeProvider } from "@/components/theme-provider"
-import { Toaster } from 'sonner'; // <-- 1. Import the Toaster
-import { useChatStore } from './stores/chatStore'; // Import the store
-import { ChatModal } from './components/chat/ChatModal';
-import { Outlet, useLocation, useParams } from 'react-router-dom'; // Assuming you use react-router
+import { SearchResultsPage } from './pages/SearchResultsPage';
 
-import { MessageCircleQuestion } from 'lucide-react';
-// Import the new page
-
+// Axios Defaults
 axios.defaults.xsrfCookieName = 'csrftoken';
 axios.defaults.xsrfHeaderName = 'X-CSRFToken';
 axios.defaults.withCredentials = true;
 
-const MainLayout = ({ children }: { children: React.ReactNode }) => {
+/**
+ * This is our main authenticated layout. It renders the common UI shell
+ * and an <Outlet /> for the child pages to be rendered into.
+ */
+const AuthenticatedLayout = () => {
   return (
-    <>
+    // This div provides the overall flex-column structure for the entire authenticated app.
+    // Your page components will replace the <Outlet /> and become the flex-grow element.
+    <div className="flex flex-col h-screen bg-background text-foreground">
       <Header />
-      <main>{children}</main> {/* Pages will be rendered here */}
-    </>
+      <GlobalKeyboardShortcuts />
+      <main className="flex-grow min-h-0"> {/* The main content area will grow to fill space */}
+        <Outlet /> {/* Child routes will be rendered here */}
+      </main>
+    </div>
   );
 };
 
 function App() {
-  const { openChat } = useChatStore();
-  const params = useParams();
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [loadingAuth, setLoadingAuth] = useState(true);
-  useEffect(() => {
-    const down = (e: KeyboardEvent) => {
-      // Open chat with Cmd+K or Ctrl+K
-      if (e.key === 'k' && (e.metaKey || e.ctrlKey)) {
-        e.preventDefault();
-        // Only open if we are in a repository context
-        const repoId = params.repoId ? parseInt(params.repoId, 10) : null;
-        if (repoId) {
-          useChatStore.getState().openChat(repoId);
-        }
-      }
-    };
+    const [isAuthenticated, setIsAuthenticated] = useState(false);
+    const [loadingAuth, setLoadingAuth] = useState(true);
 
-    document.addEventListener('keydown', down);
-    return () => document.removeEventListener('keydown', down);
-  }, [params.repoId]); // Rerun effect if the repoId in the URL changes
+    useEffect(() => {
+        axios.get('http://localhost:8000/api/v1/auth/check/')
+            .then(() => setIsAuthenticated(true))
+            .catch(() => setIsAuthenticated(false))
+            .finally(() => setLoadingAuth(false));
+    }, []);
 
-  const handleChatButtonClick = () => {
-    const repoId = params.repoId ? parseInt(params.repoId, 10) : null;
-    if (repoId) {
-      openChat(repoId);
+    if (loadingAuth) {
+        return (
+            <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh', backgroundColor: '#0D1117', color: '#c9d1d9' }}>
+                Loading...
+            </div>
+        );
     }
-  };
-
-  // Only show the chat button when inside a repository page
-  const showChatButton = !!params.repoId;
-  // Simple auth check on app load (you might have a more robust context/state for this)
-  useEffect(() => {
-    axios.get('http://localhost:8000/api/v1/auth/check/', { withCredentials: true })
-      .then(() => setIsAuthenticated(true))
-      .catch(() => setIsAuthenticated(false))
-      .finally(() => setLoadingAuth(false));
-  }, []);
-
-  // A helper component to conditionally render the Header
-  const AppContent = () => {
-    const location = useLocation();
-    const showHeader = location.pathname !== '/'; // Don't show header on login page
 
     return (
-      <>
-        {showHeader && isAuthenticated && <Header />} {/* Show header if not login and authenticated */}
-        <Routes>
-          <Route path="/" element={<LoginPage />} />
-          {/* Wrap authenticated routes */}
-          {isAuthenticated ? (
-            <>
-              <Route path="/dashboard" element={<DashboardPage />} />
-              <Route path="/repository/:repoId" element={<RepoDetailPage />} />
-              <Route path="/symbol/:symbolId" element={<SymbolDetailPage />} />
-              <Route path="/search" element={<SearchResultsPage />} />
-            </>
-          ) : (
-            // Optionally, redirect to login or show a "not authenticated" message
-            // For now, these routes just won't match if not authenticated
-            <Route path="*" element={<LoginPage />} /> // Redirect to login if not authenticated and trying other paths
-          )}
-        </Routes>
-      </>
+        <ThemeProvider defaultTheme="dark" storageKey="vite-ui-theme">
+            <BrowserRouter>
+                {/* Global components that are not part of the page layout */}
+                <Toaster richColors closeButton position="top-right" />
+                <ChatModal />
+
+                <Routes>
+                    {isAuthenticated ? (
+                        // If authenticated, use the AuthenticatedLayout as a parent route.
+                        // All nested routes will be rendered inside its <Outlet />.
+                        <Route path="/" element={<AuthenticatedLayout />}>
+                            <Route index element={<Navigate to="/dashboard" replace />} />
+                            <Route path="dashboard" element={<DashboardPage />} />
+                            <Route path="repository/:repoId" element={<RepoDetailPage />} />
+                            <Route path="symbol/:symbolId" element={<SymbolDetailPage />} />
+                            <Route path="search" element={<SearchResultsPage />} />
+                            {/* A catch-all for any other authenticated path */}
+                            <Route path="*" element={<Navigate to="/dashboard" replace />} />
+                        </Route>
+                    ) : (
+                        // If not authenticated, only the login page is available.
+                        <>
+                            <Route path="/" element={<LoginPage />} />
+                            <Route path="*" element={<Navigate to="/" replace />} />
+                        </>
+                    )}
+                </Routes>
+            </BrowserRouter>
+        </ThemeProvider>
     );
-  };
-  const rootVerticalPadding = '2rem';
-  if (loadingAuth) {
-    return <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh', backgroundColor: '#1e1e1e', color: '#d4d4d4' }}>Loading authentication...</div>;
-  }
-
-  return (
-    <ThemeProvider defaultTheme="dark" storageKey="vite-ui-theme">
-
-      <BrowserRouter>
-        <Toaster richColors closeButton position="top-right" />
-        <div className="flex flex-col h-screen bg-background text-foreground" style={{ height: `calc(100vh - ${rootVerticalPadding})` }} // Adjust height
-        >
-          <AppContent />
-        </div>
-      </BrowserRouter>
-    </ThemeProvider>
-
-  );
 }
 
 export default App;

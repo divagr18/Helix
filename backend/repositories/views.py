@@ -1190,7 +1190,7 @@ class SuggestRefactorsView(APIView):
         response['Cache-Control'] = 'no-cache'
         return response
     
-from .ai_services import handle_chat_query_stream
+from .ai_services import handle_chat_query_stream,handle_chat_query_stream2
 
 
 @method_decorator(csrf_exempt, name='dispatch')
@@ -1199,22 +1199,19 @@ class ChatView(APIView):
 
     def post(self, request, repo_id, *args, **kwargs):
         query = request.data.get('query')
+        # --- NEW: Get optional file_path context from the request ---
+        current_file_path = request.data.get('current_file_path')
 
-        if not query or not isinstance(query, str) or len(query.strip()) < 5:
+        if not query or not isinstance(query, str) or len(query.strip()) < 3:
             return Response(
                 {"error": "A meaningful query string is required."},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        print(f"CHAT_VIEW: Received query for repo {repo_id}: '{query}'")
+        print(f"CHAT_VIEW: Received query for repo {repo_id}: '{query}'. File context: '{current_file_path}'")
 
-        if not OPENAI_CLIENT_INSTANCE:
-            return Response(
-                {"error": "Helix's AI service is currently unavailable."}, 
-                status=status.HTTP_503_SERVICE_UNAVAILABLE
-            )
-
-        # Check that the user has access to the repository
+        # The OPENAI_CLIENT check is no longer needed here as the service handles it
+        
         try:
             Repository.objects.get(id=repo_id, user=request.user)
         except Repository.DoesNotExist:
@@ -1223,11 +1220,11 @@ class ChatView(APIView):
                 status=status.HTTP_404_NOT_FOUND
             )
 
-        # Call the service function to get the streaming generator
-        response_stream = handle_chat_query_stream(
+        # Call the service function, now passing the file_path
+        response_stream = handle_chat_query_stream2(
             repo_id=repo_id,
             query=query.strip(),
-            openai_client=OPENAI_CLIENT_INSTANCE
+            file_path=current_file_path # Pass the context
         )
         
         response = StreamingHttpResponse(response_stream, content_type='text/plain; charset=utf-8')

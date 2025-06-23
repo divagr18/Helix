@@ -11,6 +11,7 @@ export interface ChatMessage {
 
 interface ChatState {
     isOpen: boolean;
+    activeFilePath: string | null;
     messages: ChatMessage[];
     isLoading: boolean;
     activeRepoId: number | null; // To know which repo to query against
@@ -27,15 +28,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
     messages: [],
     isLoading: false,
     activeRepoId: null,
+    activeFilePath: null,
 
     /**
      * Opens the chat modal and sets the context for the current repository.
      */
-    openChat: (repoId: number) => set({
+    openChat: (repoId: number, filePath?: string) => set({
         isOpen: true,
         messages: [], // Clear previous conversation
         isLoading: false,
-        activeRepoId: repoId
+        activeRepoId: repoId,
+        activeFilePath: filePath || null
     }),
 
     /**

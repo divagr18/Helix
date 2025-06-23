@@ -1,7 +1,7 @@
 # backend/config/api_router.py
 
 from rest_framework.routers import DefaultRouter
-from repositories.views import RepositoryViewSet,GithubReposView,FileContentView,GenerateDocstringView, CodeSymbolDetailView
+from repositories.views import ChatView, RepositoryViewSet,GithubReposView,FileContentView,GenerateDocstringView, CodeSymbolDetailView
 router = DefaultRouter()
 from django.urls import path # Make sure path is imported
 from users.views import AuthCheckView
@@ -57,7 +57,7 @@ urlpatterns += [
     path('repositories/<int:repo_id>/insights/', RepositoryInsightsView.as_view(), name='repository-insights'),
     path('repositories/<int:repo_id>/commit-history/', CommitHistoryView.as_view(), name='repository-commit-history'),
     path('symbols/<int:symbol_id>/suggest-refactors/', SuggestRefactorsView.as_view(), name='symbol-suggest-refactors'), # 03c03c03c NEW PATH
-
+    path('repositories/<int:repo_id>/chat/', ChatView.as_view(), name='repository-chat'),
 
 
 

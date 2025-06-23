@@ -220,7 +220,7 @@ def handle_chat_query_stream(
         print("CHAT_SERVICE: Generating embedding for user query...")
         query_embedding = openai_client.embeddings.create(
             input=[query], 
-            model=settings.OPENAI_EMBEDDING_MODEL
+            model="text-embedding-3-small"
         ).data[0].embedding
         print("CHAT_SERVICE: Query embedding generated successfully.")
     except Exception as e:
@@ -295,3 +295,105 @@ def handle_chat_query_stream(
     except Exception as e:
         print(f"CHAT_SERVICE: FATAL - LLM streaming failed: {e}")
         yield f"// Helix encountered an error while generating the final answer."
+        
+        
+from .agno_tools import HelixStructuralQueryTool
+from django.conf import settings
+from agno.tools.postgres import PostgresTools
+postgres_tools = PostgresTools(
+    host="localhost",
+    port=5432,
+    db_name="helix_dev",
+    user="helix",
+    password="helix"
+)
+from agno.agent import Agent, AgentKnowledge
+from agno.models.openai import OpenAIChat
+from agno.vectordb.pgvector import PgVector, SearchType
+
+def get_helix_knowledge_base() -> AgentKnowledge:
+    """
+    Creates and configures the connection to our knowledge base in pgvector.
+    This tells Agno how to interface with our existing KnowledgeChunk table.
+    """
+    # Construct the database URL from Django settings for Agno
+    db_settings = settings.DATABASES['default']
+    db_url = (
+        f"postgresql://helix:helix@db:5432/helix_dev"
+    )
+
+    # Configure the PgVector connection to our specific table and columns
+    vector_db = PgVector(
+        table_name="knowledge_chunks",  # The table created by our Django model
+        db_url=db_url,
+        schema="public",
+        
+        # Tell Agno about other columns it can use for metadata filtering (future use)
+        search_type=SearchType.vector 
+    )
+
+    # We don't need to provide a source (like a PDF) because we populate the DB ourselves.
+    # We just need to give the AgentKnowledge object the configured vector_db connection.
+    return AgentKnowledge(vector_db=vector_db)
+
+
+def get_helix_qa_agent(repo_id: int, file_path: str | None = None ) -> Agent:
+    """
+    Factory function to create and configure the Helix Q&A agent.
+    This is the central point for defining the agent's capabilities.
+    """
+    knowledge_base = get_helix_knowledge_base()
+    agent = Agent(
+        name="Helix",
+        model=OpenAIChat(id="gpt-4.1-mini"),
+        
+        # 1. Provide the knowledge base for RAG
+        knowledge=knowledge_base,
+        
+        # 2. Let Agno create its default `search_knowledge_base` tool.
+        #    This is True by default when `knowledge` is provided.
+        search_knowledge=True,
+        
+        # 3. Add our one custom tool for metadata queries.
+        tools=[
+            HelixStructuralQueryTool(repo_id=repo_id, file_path=file_path),
+        ],
+        
+        markdown=True,
+        instructions=(
+            "You are Helix, an AI assistant for a software repository. You have two tools available. You are in the repo {repo_id}. Use this info for your database operations.\n"
+            "The columns in your vector DB are: id,chunk_type,content,embedding,related_class_id,related_file_id,related_symbol_id,repository_id,created_at"
+            "1. `search_knowledge_base`: Use this for questions about the 'how' or 'purpose' of code, or for implementation examples. This tool searches documentation and source code.\n"
+            "2. `structural_query`: Use this for questions that ask for lists of items or metadata, like 'list all functions' or 'how many orphans' or 'what repo am I in'.\n"
+            "Based on the user's query, choose the best tool, execute it, and then formulate a helpful answer based on the tool's output. Cite function names or file paths when possible."
+        ),debug_mode=True
+    )
+    return agent
+
+def handle_chat_query_stream2(repo_id: int, query: str, file_path: str | None = None) -> Generator[str, None, None]:
+    """
+    Handles a user's chat query by invoking the Agno-powered Q&A agent.
+    This function is now a simple wrapper around the agent's execution.
+    """
+    print(f"AGNO_SERVICE: Handling query for repo {repo_id} with Agno agent. Query: '{query}'")
+    try:
+        # Get a freshly configured agent with the latest context
+        agent = get_helix_qa_agent(repo_id=repo_id,file_path=file_path)
+        run_iterator = agent.run(message=query, stream=True) # Also stream intermediate steps for debugging
+        
+        # Loop through the iterator and yield each chunk's content
+        for chunk in run_iterator:
+            # The chunk object from agno likely has a .content attribute for the text token
+            if chunk and hasattr(chunk, 'content') and chunk.content:
+                # You might want to format this as SSE JSON if the consumer expects it
+                # For a simple generator, just yielding the text is fine.
+                # Let's assume you want to yield the raw token string.
+                yield chunk.content
+        
+            
+    except Exception as e:
+        print(f"AGNO_SERVICE: FATAL - Error during agent execution: {e}")
+        # Use traceback for more details in your server logs
+        import traceback
+        traceback.print_exc()
+        yield f"// Helix encountered a critical error while processing your request."   

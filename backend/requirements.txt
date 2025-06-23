@@ -8,7 +8,7 @@ psycopg2-binary==2.9.10
 django-allauth
 requests
 celery==5.5.3   
-
+sqlalchemy
 redis==6.2.0
 django-cors-headers
 djangorestframework-simplejwt
@@ -20,3 +20,5 @@ PyGithub
 astor
 ruff
 django-celery-beat
+agno
+psycopg[binary]
