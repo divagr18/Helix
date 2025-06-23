@@ -5,13 +5,17 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'; // Import Tabs
-import { BrainCircuit, Loader2, TriangleAlert, Sparkles, FlaskConical, Copy } from 'lucide-react';
+import { BrainCircuit, Wrench, Loader2, TriangleAlert, Sparkles, FlaskConical, Copy } from 'lucide-react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { toast } from 'sonner';
-
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
+// Choose your theme. `vscDarkPlus` is a great choice for a dark theme.
+// Other options: `oneDark`, `materialDark`, `coldarkDark`, etc.
+import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 // Reusing SourceCodeViewer for test case syntax highlighting
 import { SourceCodeViewer } from './SourceCodeViewer';
+import remarkBreaks from 'remark-breaks';
 
 interface AiInsightsTabProps {
     // Explanation Props
@@ -25,6 +29,11 @@ interface AiInsightsTabProps {
     isSuggestingTests: boolean;
     testSuggestion: string | null;
     testSuggestionError: string | null;
+
+    onSuggestRefactors: () => void;
+    isSuggestingRefactors: boolean;
+    refactorSuggestion: string | null;
+    refactorError: string | null;
 }
 
 export const AiInsightsTab: React.FC<AiInsightsTabProps> = ({
@@ -36,6 +45,10 @@ export const AiInsightsTab: React.FC<AiInsightsTabProps> = ({
     isSuggestingTests,
     testSuggestion,
     testSuggestionError,
+    onSuggestRefactors,
+    isSuggestingRefactors,
+    refactorSuggestion,
+    refactorError,
 }) => {
 
     const handleCopyToClipboard = (textToCopy: string | null) => {
@@ -60,12 +73,15 @@ export const AiInsightsTab: React.FC<AiInsightsTabProps> = ({
                             Helix AI Insights
                         </CardTitle>
                         {/* The TabsList will serve as our primary navigation within the card */}
-                        <TabsList className="grid w-full max-w-[220px] grid-cols-2 h-9">
+                        <TabsList className="grid w-full max-w-[330px] grid-cols-3 h-9">
                             <TabsTrigger value="explanation">
                                 <BrainCircuit className="mr-2 h-4 w-4" /> Explanation
                             </TabsTrigger>
                             <TabsTrigger value="tests">
                                 <FlaskConical className="mr-2 h-4 w-4" /> Tests
+                            </TabsTrigger>
+                            <TabsTrigger value="refactor">
+                                <Wrench className="mr-2 h-4 w-4" /> Refactor
                             </TabsTrigger>
                         </TabsList>
                     </div>
@@ -125,6 +141,90 @@ export const AiInsightsTab: React.FC<AiInsightsTabProps> = ({
                                         {/* Reuse your existing SourceCodeViewer for syntax highlighting */}
                                         <SourceCodeViewer sourceCode={testSuggestion} language="python" />
                                     </div>
+                                )}
+                            </div>
+                        </div>
+                    </TabsContent>
+                    <TabsContent value="refactor" className="flex-grow flex flex-col mt-0">
+                        <div className="flex-grow border-t border-border pt-4 flex flex-col">
+                            <div className="flex items-center justify-between mb-4">
+                                <p className="text-sm text-muted-foreground">Suggestions to improve code quality.</p>
+                                <Button
+                                    onClick={onSuggestRefactors}
+                                    disabled={isSuggestingRefactors}
+                                    variant="outline"
+                                    size="sm"
+                                >
+                                    {isSuggestingRefactors
+                                        ? <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                        : <Wrench className="mr-2 h-4 w-4" />}
+                                    {isSuggestingRefactors
+                                        ? 'Analyzing...'
+                                        : (refactorSuggestion ? 'Regenerate' : 'Suggest Refactors')}
+                                </Button>
+                            </div>
+
+                            <div className="flex-grow min-h-[200px] relative">
+                                {isSuggestingRefactors && !refactorSuggestion && (
+                                    <div className="absolute inset-0 flex items-center justify-center text-muted-foreground bg-background/30 rounded-md">
+                                        <Loader2 className="h-6 w-6 animate-spin" />
+                                    </div>
+                                )}
+
+                                {refactorError && (
+                                    <Alert variant="destructive">
+                                        <TriangleAlert className="h-4 w-4" />
+                                        <AlertDescription>{refactorError}</AlertDescription>
+                                    </Alert>
+                                )}
+
+                                {refactorSuggestion && !refactorError && (
+                                    <ScrollArea className="h-full max-h-72 pr-3">
+                                        <div className="prose prose-sm dark:prose-invert max-w-none text-left">
+                                            <Markdown
+                                                remarkPlugins={[remarkGfm, remarkBreaks]}
+                                                components={{
+                                                    hr() {
+                                                        return <div className="my-12" />;  // my-12 ≈ 3rem top & bottom padding
+                                                    },
+                                                    h2({ node, children, ...props }) {
+                                                        return (
+                                                            <h2
+                                                                className="text-2xl md:text-3xl font-semibold mt-8 mb-4"
+                                                                {...props}
+                                                            >
+                                                                {children}
+                                                            </h2>
+                                                        );
+                                                    },
+                                                    code({ node, inline, className, children, ...props }) {
+                                                        const match = /language-(\w+)/.exec(className || '');
+
+                                                        if (!inline && match) {
+                                                            return (
+                                                                <SyntaxHighlighter
+                                                                    style={vscDarkPlus}
+                                                                    language={match[1]}
+                                                                    PreTag="div"
+                                                                    {...props}
+                                                                >
+                                                                    {String(children).replace(/\n$/, '')}
+                                                                </SyntaxHighlighter>
+                                                            );
+                                                        }
+
+                                                        return (
+                                                            <code className={className} {...props}>
+                                                                {children}
+                                                            </code>
+                                                        );
+                                                    }
+                                                }}
+                                            >
+                                                {refactorSuggestion}
+                                            </Markdown>
+                                        </div>
+                                    </ScrollArea>
                                 )}
                             </div>
                         </div>

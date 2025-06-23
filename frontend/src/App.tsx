@@ -12,7 +12,11 @@ import { SymbolDetailPage } from './pages/SymbolDetailPage';
 import { SearchResultsPage } from './pages/SearchResultsPage'; // Import
 import { ThemeProvider } from "@/components/theme-provider"
 import { Toaster } from 'sonner'; // <-- 1. Import the Toaster
+import { useChatStore } from './stores/chatStore'; // Import the store
+import { ChatModal } from './components/chat/ChatModal';
+import { Outlet, useLocation, useParams } from 'react-router-dom'; // Assuming you use react-router
 
+import { MessageCircleQuestion } from 'lucide-react';
 // Import the new page
 
 axios.defaults.xsrfCookieName = 'csrftoken';
@@ -29,9 +33,36 @@ const MainLayout = ({ children }: { children: React.ReactNode }) => {
 };
 
 function App() {
+  const { openChat } = useChatStore();
+  const params = useParams();
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [loadingAuth, setLoadingAuth] = useState(true);
+  useEffect(() => {
+    const down = (e: KeyboardEvent) => {
+      // Open chat with Cmd+K or Ctrl+K
+      if (e.key === 'k' && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        // Only open if we are in a repository context
+        const repoId = params.repoId ? parseInt(params.repoId, 10) : null;
+        if (repoId) {
+          useChatStore.getState().openChat(repoId);
+        }
+      }
+    };
 
+    document.addEventListener('keydown', down);
+    return () => document.removeEventListener('keydown', down);
+  }, [params.repoId]); // Rerun effect if the repoId in the URL changes
+
+  const handleChatButtonClick = () => {
+    const repoId = params.repoId ? parseInt(params.repoId, 10) : null;
+    if (repoId) {
+      openChat(repoId);
+    }
+  };
+
+  // Only show the chat button when inside a repository page
+  const showChatButton = !!params.repoId;
   // Simple auth check on app load (you might have a more robust context/state for this)
   useEffect(() => {
     axios.get('http://localhost:8000/api/v1/auth/check/', { withCredentials: true })

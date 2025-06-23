@@ -1,7 +1,9 @@
 # backend/repositories/admin.py
 
 from django.contrib import admin
-from .models import Repository, AsyncTaskStatus
+from .models import Repository, AsyncTaskStatus,KnowledgeChunk
+from django.utils.html import format_html
+from django.urls import reverse
 
 @admin.register(Repository)
 class RepositoryAdmin(admin.ModelAdmin):
@@ -119,3 +121,77 @@ class InsightAdmin(admin.ModelAdmin):
         return "N/A"
     related_symbol_link.short_description = 'Related Symbol'
     related_symbol_link.allow_tags = True
+
+@admin.register(KnowledgeChunk)
+class KnowledgeChunkAdmin(admin.ModelAdmin):
+    """
+    Admin interface for the KnowledgeChunk model.
+    Provides a read-only view into the indexed content for debugging.
+    """
+    # --- List View Configuration ---
+    list_display = (
+        'repository',
+        'chunk_type',
+        'content_summary',
+        'related_item_link',
+        'created_at',
+    )
+    list_filter = ('repository', 'chunk_type', 'created_at')
+    search_fields = ('repository__full_name', 'content', 'related_symbol__name')
+    list_per_page = 50
+
+    # --- Detail View Configuration ---
+    # Make the entire view read-only as these should be system-generated
+    fields = (
+        'repository',
+        'chunk_type',
+        'content',
+        'embedding_preview',   # ← Make sure this is here, in the right spot!
+        'related_file',
+        'related_class',
+        'related_symbol',
+        'created_at',
+    )
+    readonly_fields = fields  # all of them are read-only
+    exclude = ('embedding',)
+
+    # Exclude the raw embedding field from the form to avoid clutter
+    exclude = ('embedding',)
+
+    def has_add_permission(self, request):
+        # Prevent manual creation of chunks via the admin
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        # Allow deletion for manual cleanup if needed, but you could set this to False
+        return True
+
+    # --- Custom Methods for Display ---
+    def content_summary(self, obj):
+        """Shortens the content for display in the list view."""
+        return (obj.content[:100] + '...') if len(obj.content) > 100 else obj.content
+    content_summary.short_description = 'Content Preview'
+
+    def related_item_link(self, obj):
+        """Creates a clickable link to the most specific related item."""
+        if obj.related_symbol:
+            link = reverse("admin:repositories_codesymbol_change", args=[obj.related_symbol.id])
+            return format_html('<a href="{}">Symbol: {}</a>', link, obj.related_symbol.name)
+        if obj.related_class:
+            link = reverse("admin:repositories_codeclass_change", args=[obj.related_class.id])
+            return format_html('<a href="{}">Class: {}</a>', link, obj.related_class.name)
+        if obj.related_file:
+            link = reverse("admin:repositories_codefile_change", args=[obj.related_file.id])
+            return format_html('<a href="{}">File: {}</a>', link, obj.related_file.file_path)
+        return "N/A"
+    related_item_link.short_description = 'Related Item'
+    related_item_link.allow_tags = True
+
+    def embedding_preview(self, obj):
+        """Shows a preview of the embedding vector."""
+        if obj.embedding:
+            # Display the first few dimensions of the vector
+            preview = str(obj.embedding[:5])[:-1] + ', ...]'
+            return f"Vector (1x{len(obj.embedding)}): {preview}"
+        return "Not set"
+    embedding_preview.short_description = 'Embedding Vector'

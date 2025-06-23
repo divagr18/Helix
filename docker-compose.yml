@@ -60,7 +60,16 @@ services:
     depends_on:
       - backend
       - cache
-
+  beat:
+    build: ./backend
+    command: celery -A config beat -l info --scheduler django_celery_beat.schedulers:DatabaseScheduler
+    volumes:
+      - ./backend:/app
+    depends_on:
+      - db
+      - cache
+    env_file:
+      - .env
 volumes:
   postgres_data:
   repo_cache: {}

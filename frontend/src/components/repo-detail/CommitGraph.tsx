@@ -1,212 +1,250 @@
+// src/components/activity/CommitGraph.tsx
 import React, { useState, useEffect, useMemo } from 'react';
 import axios from 'axios';
-import { Gitgraph, Orientation, templateExtend, TemplateName, type Branch, type Commit } from '@gitgraph/react';
-import { Loader2, AlertCircle, GitBranch, User, Calendar } from 'lucide-react';
+import { Gitgraph, Orientation, templateExtend, TemplateName, Mode } from '@gitgraph/react';
+import { Loader2, AlertCircle, Sparkles } from 'lucide-react';
 import { toast } from 'sonner';
 
-// The data structure for a single commit, matching the backend API response.
+// Define the shape of the commit data from our backend
 interface CommitNode {
     commit: string;
     author: string;
     date: string;
     message: string;
-    parents: string[]; // This is an array of parent commit hashes.
+    parents: string[];
 }
 
-// Props expected by the CommitGraph component from its parent (ActivityView).
 interface CommitGraphProps {
     repoId: number;
     onCommitSelect: (commitHash: string | null) => void;
     selectedCommit: string | null;
+    commitsWithInsights: Set<string>; // Prop for highlighting
 }
 
-// A custom template for @gitgraph/react to create a dark, modern theme.
+// --- REFINED STYLING TEMPLATE ---
 const gitGraphTemplate = templateExtend(TemplateName.Metro, {
-    colors: ["#60a5fa", "#34d399", "#facc15", "#f87171", "#a78bfa"], // Branch colors
+    colors: ["#6b7280", "#3b82f6", "#22c55e", "#f97316", "#ef4444", "#a855f7"], // Muted grays and vibrant accents
     branch: {
         lineWidth: 2,
-        spacing: 40,
-        label: { display: false }, // We don't need to show branch names for this view.
+        spacing: 35, // Tighter spacing
+        label: { display: false },
     },
     commit: {
-        spacing: 70, // Increased vertical spacing to fit our custom component.
+        spacing: 55, // Tighter spacing
         dot: {
-            size: 8,
+            size: 6, // Smaller default dots
+            strokeWidth: 0, // No border on default dots
         },
         message: {
-            display: false, // CRITICAL: Disable the default SVG text message.
+            display: true,
+            font: "13px 'Inter', sans-serif",
+            color: "#FFFFFF", // Use muted text for non-selected commits
         },
     },
 });
 
-// A custom React component to render the details for each commit.
-// This gives us full control over styling with HTML and CSS (via Tailwind).
-
-export const CommitGraph: React.FC<CommitGraphProps> = ({ repoId, onCommitSelect, selectedCommit }) => {
+export const CommitGraph: React.FC<CommitGraphProps> = ({ repoId, onCommitSelect, selectedCommit, commitsWithInsights }) => {
     const [commits, setCommits] = useState<CommitNode[]>([]);
     const [isLoading, setIsLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
-
-    // Effect to fetch commit history from the backend when the component mounts or repoId changes.
+    const [hoveredCommit, setHoveredCommit] = useState<string | null>(null);
+    const [hoveredSha, setHoveredSha] = useState<string | null>(null);
     useEffect(() => {
         setIsLoading(true);
-        setError(null);
-
-        axios.get<CommitNode[]>(`http://localhost:8000/api/v1/repositories/${repoId}/commit-history/`)
-            .then(({ data }) => {
-                // The backend provides the data in the correct format.
-                // We just sort it by date descending to ensure we process the newest commits first.
-                const sortedCommits = (data || []).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-                setCommits(sortedCommits);
-            })
+        axios.get(`http://localhost:8000/api/v1/repositories/${repoId}/commit-history/`)
+            .then(response => setCommits(response.data || []))
             .catch(err => {
-                console.error('Failed to fetch commit history:', err);
-                const msg = axios.isAxiosError(err)
-                    ? err.response?.data?.error || 'Could not load commit history.'
-                    : 'An unknown error occurred.';
-                setError(msg);
-                toast.error(msg);
+                setError("Could not load commit history.");
+                toast.error("Could not load commit history.");
             })
             .finally(() => setIsLoading(false));
     }, [repoId]);
 
-    // Memoize the commit map for efficient O(1) lookups by hash during graph rendering.
-    const commitMap = useMemo(() => new Map(commits.map(c => [c.commit, c])), [commits]);
+    const commitMap = useMemo(() => new Map(commits.map((c) => [c.commit, c])), [commits]);
 
-    // Render loading state
     if (isLoading) {
-        return (
-            <div className="flex justify-center items-center h-full">
-                <Loader2 className="h-8 w-8 animate-spin text-primary" />
-            </div>
-        );
+        return <div className="flex justify-center items-center h-full"><Loader2 className="h-6 w-6 animate-spin text-primary" /></div>;
     }
-
-    // Render error state
     if (error) {
-        return (
-            <div className="flex justify-center items-center h-full text-destructive p-4 text-center">
-                <AlertCircle className="mr-2 h-5 w-5" />
-                {error}
-            </div>
-        );
+        return <div className="flex justify-center items-center h-full text-destructive"><AlertCircle className="mr-2" />{error}</div>;
     }
-
-    // Render empty state
     if (commits.length === 0) {
-        return (
-            <div className="text-center p-8 text-muted-foreground">
-                <GitBranch className="h-10 w-10 mx-auto mb-4" />
-                <p>No commit history found for this repository.</p>
-            </div>
-        );
+        return <div className="text-center p-8 text-muted-foreground">No commit history found.</div>;
     }
 
     return (
-        <div className="h-full overflow-y-auto bg-background p-4">
+        // The parent container provides the scroll area
+        <div className="h-full overflow-y-auto bg-background p-4 pl-8">
             <Gitgraph
                 options={{
                     template: gitGraphTemplate,
                     orientation: Orientation.VerticalReverse,
+                    // Using "compact" mode can sometimes help with complex histories, but can also be less clear.
+                    // mode: Mode.Compact, 
                 }}
             >
                 {(gitgraph) => {
-                    // --- THIS IS THE CORRECTED RENDERING LOGIC ---
-                    const branchMap = new Map<string, Branch<React.ReactElement<SVGElement>>>();
                     const renderedCommits = new Set<string>();
+                    const branches = new Map<string, any>();
 
-                    // This recursive function is a more reliable way to build the graph
-                    const renderGraphRecursive = (commitSha: string) => {
-                        // 1. Base cases: stop if commit is invalid or already rendered
-                        if (!commitSha || renderedCommits.has(commitSha)) return;
+                    const renderCommitRecursive = (commitSha: string, currentBranch: any) => {
+                        if (renderedCommits.has(commitSha)) return;
 
                         const commitData = commitMap.get(commitSha);
                         if (!commitData) return;
 
-                        // 2. Render the parent(s) first
-                        commitData.parents.forEach(parentSha => renderGraphRecursive(parentSha));
+                        renderedCommits.add(commitSha);
 
-                        // 3. Determine the target branch for this commit
-                        let targetBranch: Branch<React.ReactElement<SVGElement>>;
-                        if (commitData.parents.length === 0) {
-                            // Root commit: create the main branch
-                            targetBranch = gitgraph.branch("main");
-                        } else {
-                            // Default to the branch of the first parent
-                            targetBranch = branchMap.get(commitData.parents[0])!;
-                            if (!targetBranch) {
-                                // This case handles a parent that is the start of a new branch line
-                                targetBranch = gitgraph.branch({ from: commitData.parents[0] });
-                            }
-                        }
-
-                        // 4. Create the commit options, using the REAL commit hash as the key
+                        // --- REFINED COMMIT RENDERING ---
                         const isSelected = selectedCommit === commitData.commit;
-                        const commitOptions = {
-                            subject: commitData.message,
-                            hash: commitData.commit, // USE THE REAL, UNIQUE HASH
-                            onClick: () => onCommitSelect(commitData.commit),
-                            renderMessage: (c: Commit<React.ReactElement<SVGElement>>) => <CustomCommitMessage commit={c} isSelected={isSelected} />,
-                            attributes: { data: commitData },
-                        };
+                        const hasInsights = commitsWithInsights.has(commitData.commit);
 
-                        // 5. Handle merges vs. regular commits
+                        // Merge logic: The second parent and onwards create new branches and merge in.
                         if (commitData.parents.length > 1) {
-                            const branchToMerge = branchMap.get(commitData.parents[1]);
-                            if (branchToMerge && branchToMerge !== targetBranch) {
-                                targetBranch.merge({
-                                    branch: branchToMerge,
-                                    fastForward: false,
-                                    commitOptions,
+                            // The first parent continues the current branch line.
+                            // We render it *after* the merge commits.
+                            const otherParents = commitData.parents.slice(1);
+                            otherParents.forEach(parentSha => {
+                                // Create a new branch for the parent to be merged.
+                                const newBranch = gitgraph.branch(parentSha);
+                                // Recursively render the history of this new branch.
+                                renderCommitRecursive(parentSha, newBranch);
+                                // Merge this branch into our current one.
+                                currentBranch.merge({
+                                    branch: newBranch,
+                                    commitOptions: {
+                                        // This is the merge commit itself
+                                        subject: commitData.message,
+                                        hash: commitData.commit,
+                                        style: {
+                                            dot: {
+                                                size: isSelected ? 10 : 8,
+                                                color: isSelected ? 'hsl(var(--primary))' : '#6b7280',
+                                            },
+                                            message: {
+                                                color: isSelected ? '#FFFFFF' : '#FFFFFF',
+                                                fontWeight: isSelected ? '600' : '400',
+                                            },
+                                        },
+                                        onClick: () => onCommitSelect(commitData.commit),
+                                        // Custom render function for the message to add the insight icon
+                                        renderMessage: (_commit) => {
+                                            const sha = commitData.commit;
+                                            const isHovered = hoveredCommit === sha;
+                                            return (
+                                                <g
+                                                    transform={`translate(20, ${_commit.style.dot.size})`}
+                                                    onClick={() => onCommitSelect(sha)}
+                                                    onMouseEnter={() => setHoveredCommit(sha)}
+                                                    onMouseLeave={() => setHoveredCommit(null)}
+                                                    style={{
+                                                        cursor: 'pointer',
+                                                        opacity: isHovered ? 0.8 : 1,
+                                                        transition: 'opacity 150ms ease-in-out',
+                                                        pointerEvents: 'all',
+                                                    }}
+                                                >
+                                                    {/* Dot + message + icon all live inside this <g> */}
+                                                    <text
+                                                        alignmentBaseline="central"
+                                                        fill="#FFFFFF"
+                                                        fontFamily={_commit.style.message.font}
+                                                        style={{
+                                                            fontWeight: _commit.style.message.fontWeight,
+                                                            fontSize: '13px',
+                                                        }}
+                                                    >
+                                                        {commitData.message}
+                                                    </text>
+                                                    {commitsWithInsights.has(sha) && (
+                                                        <foreignObject x={5} y="-10" width="16" height="16">
+                                                            <Sparkles className="h-3.5 w-3.5 text-primary/80" />
+                                                        </foreignObject>
+                                                    )}
+                                                </g>
+                                            );
+                                        },
+                                    },
                                 });
-                            } else {
-                                // Fallback if merge target is weird, just commit it
-                                targetBranch.commit(commitOptions);
-                            }
+                            });
+                            // Now continue the main line of history with the first parent.
+                            renderCommitRecursive(commitData.parents[0], currentBranch);
                         } else {
-                            // Regular commit
-                            targetBranch.commit(commitOptions);
-                        }
+                            // Standard commit (0 or 1 parent)
+                            currentBranch.commit({
+                                subject: commitData.message,
+                                hash: commitData.commit,
+                                style: {
+                                    dot: {
+                                        size: isSelected ? 10 : 6,
+                                        color: isSelected ? 'hsl(var(--primary))' : undefined,
+                                    },
+                                    message: {
+                                        color: isSelected ? 'hsl(var(--foreground))' : 'hsl(var(--muted-foreground))',
+                                        fontWeight: isSelected ? '600' : '400',
+                                    },
+                                },
 
-                        // 6. Mark as rendered and map the branch for children to find
-                        renderedCommits.add(commitData.commit);
-                        branchMap.set(commitData.commit, targetBranch);
+                                onClick: () => onCommitSelect(commitData.commit),
+                                renderMessage: (_commit) => {
+                                    const sha = commitData.commit;
+                                    const isHovered = hoveredCommit === sha;
+                                    return (
+                                        <g
+                                            transform={`translate(20, ${_commit.style.dot.size})`}
+                                            onClick={() => onCommitSelect(sha)}
+                                            onMouseEnter={() => setHoveredCommit(sha)}
+                                            onMouseLeave={() => setHoveredCommit(null)}
+                                            style={{
+                                                cursor: 'pointer',
+                                                opacity: isHovered ? 0.8 : 1,
+                                                transition: 'opacity 150ms ease-in-out',
+                                                pointerEvents: 'all',
+                                            }}
+                                        >
+                                            {/* Dot + message + icon all live inside this <g> */}
+                                            <text
+                                                alignmentBaseline="central"
+                                                fill="#FFFFFF"
+                                                fontFamily={_commit.style.message.font}
+                                                style={{
+                                                    fontWeight: _commit.style.message.fontWeight,
+                                                    fontSize: '13px',
+                                                }}
+                                            >
+                                                {commitData.message}
+                                            </text>
+                                            {commitsWithInsights.has(sha) && (
+                                                <foreignObject x={5} y="-10" width="16" height="16">
+                                                    <Sparkles className="h-3.5 w-3.5 text-primary/80" />
+                                                </foreignObject>
+                                            )}
+                                        </g>
+                                    );
+                                },
+                            });
+                            // Continue rendering history for single-parent commits.
+                            if (commitData.parents.length === 1) {
+                                renderCommitRecursive(commitData.parents[0], currentBranch);
+                            }
+                        }
                     };
 
-                    // To build the graph correctly, we must start from the "heads"
-                    // (commits that are not parents of any other commit in our list)
+                    // Find all branch heads (commits with no children in our list)
                     const parentHashes = new Set(commits.flatMap(c => c.parents));
                     const heads = commits.filter(c => !parentHashes.has(c.commit));
+                    if (heads.length === 0 && commits.length > 0) heads.push(commits[0]);
 
-                    if (heads.length > 0) {
-                        heads.forEach(head => renderGraphRecursive(head.commit));
-                    } else if (commits.length > 0) {
-                        // Fallback for a simple, linear history where every commit is a parent
-                        renderGraphRecursive(commits[0].commit);
-                    }
+                    // Start rendering from each head
+                    heads.forEach(head => {
+                        const branchName = head.commit;
+                        if (!branches.has(branchName)) {
+                            branches.set(branchName, gitgraph.branch(branchName));
+                        }
+                        renderCommitRecursive(head.commit, branches.get(branchName));
+                    });
                 }}
             </Gitgraph>
         </div>
-    );
-};
-
-// You need to re-include the CustomCommitMessage component here as well
-const CustomCommitMessage: React.FC<{ commit: Commit<React.ReactElement<SVGElement>>; isSelected: boolean }> = ({ commit, isSelected }) => {
-    const commitData = commit.attributes.data as CommitNode;
-    return (
-        <foreignObject x={20} y={-25} width="300" height="60">
-            <div
-                xmlns="http://www.w3.org/1999/xhtml"
-                className={`p-2 rounded-md transition-all duration-200 w-full h-full ${isSelected ? 'bg-primary/10 border border-primary/50' : 'bg-transparent'}`}
-            >
-                <p className={`font-semibold truncate text-sm ${isSelected ? 'text-primary' : 'text-foreground'}`}>
-                    {commitData.message}
-                </p>
-                <div className="flex items-center gap-4 text-xs text-muted-foreground mt-1.5">
-                    <div className="flex items-center gap-1.5"><User className="h-3 w-3" /><span>{commitData.author}</span></div>
-                    <div className="flex items-center gap-1.5"><Calendar className="h-3 w-3" /><span>{new Date(commitData.date).toLocaleDateString()}</span></div>
-                </div>
-            </div>
-        </foreignObject>
     );
 };

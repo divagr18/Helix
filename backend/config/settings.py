@@ -46,6 +46,7 @@ INSTALLED_APPS = [
     'corsheaders',
     "repositories",
     'rest_framework',
+    "django_celery_beat",
     'allauth',
     'allauth.account',
     'allauth.socialaccount',
@@ -162,7 +163,7 @@ CORS_ALLOWED_ORIGINS = [
 # This is the crucial setting that allows the browser to send
 # the session cookie to our backend.
 CORS_ALLOW_CREDENTIALS = True
-
+SOCIALACCOUNT_LOGIN_ON_GET = True
 ACCOUNT_EMAIL_VERIFICATION = 'none'
 SOCIALACCOUNT_AUTO_SIGNUP = True
 CSRF_TRUSTED_ORIGINS = [

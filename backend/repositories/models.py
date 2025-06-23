@@ -1,6 +1,8 @@
 from django.db import models
 from django.conf import settings
 from pgvector.django import VectorField # Import VectorField
+from pgvector.django import HnswIndex
+
 from django.contrib.auth import get_user_model
 from .utils import get_source_for_symbol
 User = get_user_model()
@@ -228,7 +230,15 @@ class EmbeddingBatchJob(models.Model):
         blank=True,
         help_text="OpenAI File ID for the error details .jsonl file"
     )
-    
+    class JobType(models.TextChoices):
+        SYMBOL_EMBEDDING = 'SYMBOL_EMBEDDING', 'Symbol Embedding'
+        KNOWLEDGE_CHUNK_EMBEDDING = 'KNOWLEDGE_CHUNK_EMBEDDING', 'Knowledge Chunk Embedding'    
+    job_type = models.CharField(
+        max_length=30,
+        choices=JobType.choices,
+        default=JobType.SYMBOL_EMBEDDING, # Or make it required on creation
+        help_text="The type of content this batch job is for."
+    )
     class JobStatus(models.TextChoices):
         # Custom status before OpenAI Batch API is involved
         PENDING_SUBMISSION = 'pending_submission', 'Pending Submission to OpenAI' 
@@ -255,6 +265,8 @@ class EmbeddingBatchJob(models.Model):
     )
     
     # Timestamps
+    output_file_id = models.CharField(max_length=100, null=True, blank=True, help_text="The ID of the output file from a completed OpenAI job.")
+    completed_at = models.DateTimeField(null=True, blank=True, help_text="Timestamp when the job was confirmed as completed by our poller.")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True) # Tracks last status update or poll
     submitted_to_openai_at = models.DateTimeField(null=True, blank=True)
@@ -320,3 +332,58 @@ class Insight(models.Model):
 
     def __str__(self):
         return f"{self.get_insight_type_display()} for {self.repository.name} at {self.commit_hash[:7]}"
+    
+class KnowledgeChunk(models.Model):
+    """
+    Represents a searchable chunk of text content from a repository,
+    along with its vector embedding for semantic search.
+    """
+    class ChunkType(models.TextChoices):
+        # We will start with these two. More can be added later (e.g., CLASS_SUMMARY).
+        SYMBOL_DOCSTRING = 'SYMBOL_DOCSTRING', 'Symbol Docstring'
+        SYMBOL_SOURCE = 'SYMBOL_SOURCE', 'Symbol Source Code'
+
+    repository = models.ForeignKey(Repository, on_delete=models.CASCADE, related_name='knowledge_chunks')
+    chunk_type = models.CharField(max_length=20, choices=ChunkType.choices, db_index=True)
+    
+    # The actual text content that was embedded
+    content = models.TextField()
+    
+    # The vector embedding of the content
+    embedding = VectorField(
+        dimensions=1536,
+        null=True,  # 03c03c03c ADD THIS: Allow the field to be null in the database
+        blank=True  # 03c03c03c ADD THIS: Allow the field to be blank in Django forms/admin
+    ) # Using default for OpenAI's text-embedding-ada-002
+
+    # Links back to the source of the content for citation and context
+    related_file = models.ForeignKey(CodeFile, on_delete=models.CASCADE, null=True, blank=True)
+    related_class = models.ForeignKey(CodeClass, on_delete=models.CASCADE, null=True, blank=True)
+    related_symbol = models.ForeignKey(CodeSymbol, on_delete=models.CASCADE, null=True, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'knowledge_chunks'
+        ordering = ['-created_at']
+        indexes = [
+            # Add an HNSW index for fast, approximate nearest-neighbor search.
+            # This is crucial for performance on large datasets.
+            HnswIndex(
+                name='knowledge_embedding_hnsw_l2_idx',
+                fields=['embedding'],
+                m=16,              # Recommended starting point
+                ef_construction=64, # Recommended starting point
+                opclasses=['vector_l2_ops']
+            ),
+        ]
+
+    def __str__(self):
+        related_name = "N/A"
+        if self.related_symbol:
+            related_name = self.related_symbol.name
+        elif self.related_class:
+            related_name = self.related_class.name
+        elif self.related_file:
+            related_name = self.related_file.file_path
+        return f"{self.get_chunk_type_display()} for '{related_name}'"

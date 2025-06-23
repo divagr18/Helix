@@ -3,8 +3,8 @@ from typing import Generator
 from django.conf import settings
 from openai import OpenAI as OpenAIClient
 
-from .models import CodeClass, CodeSymbol, CodeDependency
-
+from .models import CodeClass, CodeSymbol, CodeDependency,KnowledgeChunk
+from pgvector.django import L2Distance
 def generate_class_summary_stream(
     code_class: CodeClass,
     openai_client: OpenAIClient
@@ -131,3 +131,167 @@ def generate_class_summary_stream(
         error_message = f"// Helix encountered an error while summarizing the class: {str(e)}"
         print(f"CLASS_SUMMARY_STREAM_ERROR: {error_message}")
         yield error_message
+
+def generate_refactor_stream(
+    symbol_obj: CodeSymbol,
+    openai_client: OpenAIClient
+) -> Generator[str, None, None]:
+    """
+    Assembles a high-signal prompt and streams refactoring suggestions for a CodeSymbol.
+    """
+    source_code = symbol_obj.source_code
+    if not source_code or source_code.strip().startswith("# Error:"):
+        yield f"// Helix could not retrieve valid source code to suggest refactors. Please try reprocessing the repository."
+        return
+
+    symbol_kind = "method" if symbol_obj.code_class else "function"
+    
+    # --- Context Injection ---
+    context_parts = [
+        f"The {symbol_kind} is named `{symbol_obj.name}`."
+    ]
+    if symbol_obj.loc is not None and symbol_obj.cyclomatic_complexity is not None:
+        context_parts.append(
+            f"**Code Metrics:** It has a Lines of Code (LOC) of `{symbol_obj.loc}` and a Cyclomatic Complexity of `{symbol_obj.cyclomatic_complexity}`."
+        )
+        if symbol_obj.cyclomatic_complexity > 10:
+            context_parts.append("The complexity is high, so pay special attention to simplifying conditional logic.")
+    
+    context_str = "\n".join(context_parts)
+
+    # --- Prompt Engineering ---
+    prompt = (
+        f"You are Helix, an expert Senior Python Developer. Your task is to refactor the provided code and explain your changes by strictly following the specified output format.\n\n"
+        f"--- Context ---\n"
+        f"{context_str}\n\n"
+        f"--- Original Source Code ---\n"
+        f"```python\n{source_code}\n```\n\n"
+        f"--- INSTRUCTIONS ---\n"
+        f"1. Analyze the original code for any opportunities to improve readability, maintainability, or efficiency.\n"
+        f"2. Synthesize ALL improvements into a single, final, refactored version of the code.\n"
+        f"3. Your entire response MUST be a single Markdown document. Do NOT include any conversational text or introductions before the first heading.\n"
+        f"4. The response MUST strictly follow this exact two-part format:\n\n"
+        f"### Summary of Changes\n"
+        f"A Markdown bulleted list. Each bullet point MUST start with a bolded title describing the change, followed by a colon, a description of the change, the word 'Reasoning', a colon, and the justification.\n"
+        f"Use this exact format for each bullet point:\n"
+        f"*   **[CHANGE TITLE]:** [Description of the change]. **Reasoning:** [Justification for the change].\n"
+        f"\n"
+        f"### Refactored Code\n"
+        f"A single Python code block containing the complete, final, refactored code. This block must include any new helper functions you created, followed by the updated original function.\n\n"
+        f"--- START RESPONSE ---"
+    )
+
+    print(f"DEBUG_SUGGEST_REFACTORS_PROMPT: For symbol {symbol_obj.id}\n{prompt}\n--------------------")
+
+    # --- LLM Call ---
+    try:
+        stream = openai_client.chat.completions.create(
+            model="gpt-4.1-mini", # "gpt-4-turbo-preview" is recommended
+            messages=[
+                {"role": "system", "content": "You are a helpful AI code quality analyst that provides specific refactoring suggestions in Markdown format."},
+                {"role": "user", "content": prompt}
+            ],
+            stream=True,
+            temperature=0.3, # Low temperature for factual, standard refactoring patterns
+            max_tokens=2048   # Allow for detailed suggestions with code
+        )
+        for chunk in stream:
+            content = chunk.choices[0].delta.content
+            if content:
+                yield content
+    except Exception as e:
+        error_message = f"// Helix encountered an error while suggesting refactors: {str(e)}"
+        print(f"SUGGEST_REFACTORS_STREAM_ERROR: {error_message}")
+        yield error_message
+
+def handle_chat_query_stream(
+    repo_id: int,
+    query: str,
+    openai_client: OpenAIClient
+) -> Generator[str, None, None]:
+    """
+    Handles a user's chat query by performing a multi-layered RAG search
+    and streaming a synthesized answer from an LLM.
+    """
+    print(f"CHAT_SERVICE: Handling query for repo {repo_id}: '{query}'")
+
+    # 1. Generate Query Embedding
+    try:
+        print("CHAT_SERVICE: Generating embedding for user query...")
+        query_embedding = openai_client.embeddings.create(
+            input=[query], 
+            model=settings.OPENAI_EMBEDDING_MODEL
+        ).data[0].embedding
+        print("CHAT_SERVICE: Query embedding generated successfully.")
+    except Exception as e:
+        print(f"CHAT_SERVICE: FATAL - Could not generate query embedding: {e}")
+        yield f"// Helix encountered an error processing your question. Could not generate embedding."
+        return
+
+    # 2. Perform Vector Search to find relevant context
+    # We search for the top 5 most relevant chunks, regardless of type, for simplicity.
+    # The context formatting will differentiate them for the LLM.
+    try:
+        print("CHAT_SERVICE: Performing vector search on KnowledgeChunks...")
+        retrieved_chunks = KnowledgeChunk.objects.filter(
+            repository_id=repo_id
+        ).order_by(
+            L2Distance('embedding', query_embedding)
+        )[:5] # Retrieve the top 5 most relevant chunks
+
+        if not retrieved_chunks:
+            print("CHAT_SERVICE: No relevant knowledge chunks found.")
+            yield "I could not find any relevant documentation or source code in this repository to answer your question. Please try rephrasing or asking something else."
+            return
+        
+        print(f"CHAT_SERVICE: Retrieved {len(retrieved_chunks)} relevant chunks.")
+    except Exception as e:
+        print(f"CHAT_SERVICE: FATAL - Vector search failed: {e}")
+        yield f"// Helix encountered an error searching the knowledge base."
+        return
+
+    # 3. Assemble Context for the Final Prompt
+    context_str = ""
+    for chunk in retrieved_chunks:
+        header = ""
+        # Create a descriptive header for each piece of context
+        if chunk.chunk_type == KnowledgeChunk.ChunkType.SYMBOL_DOCSTRING:
+            header = f"--- Context from Documentation for function '{chunk.related_symbol.name}' in file '{chunk.related_file.file_path}' ---"
+        elif chunk.chunk_type == KnowledgeChunk.ChunkType.SYMBOL_SOURCE:
+            header = f"--- Context from Source Code for function '{chunk.related_symbol.name}' in file '{chunk.related_file.file_path}' ---"
+        
+        context_str += f"{header}\n{chunk.content}\n\n"
+
+    # 4. Construct the Final Prompt
+    final_prompt = (
+        "You are Helix, a helpful AI assistant answering questions about a software repository. "
+        "Use ONLY the provided context below to answer the user's question. "
+        "The context is sourced directly from the repository's documentation and source code. "
+        "If the context does not contain the answer, you MUST state that you could not find an answer in the provided context. "
+        "Be concise and helpful. When possible, cite your sources by mentioning the function name or file path from the context headers.\n\n"
+        f"{context_str}"
+        f"User's Question: \"{query}\"\n\n"
+        "Answer:"
+    )
+
+    print(f"CHAT_SERVICE: Sending final prompt to LLM. Context length: {len(context_str)}, Total prompt length: {len(final_prompt)}")
+    # For debugging, you can print the full prompt:
+    # print(f"DEBUG_CHAT_PROMPT:\n{final_prompt}\n--------------------")
+
+    # 5. Stream the Response from the LLM
+    try:
+        stream = openai_client.chat.completions.create(
+            model="gpt-4.1-mini",
+            messages=[
+                {"role": "user", "content": final_prompt}
+            ],
+            stream=True,
+            temperature=0.2, # Low temperature for factual, grounded answers
+        )
+        for chunk in stream:
+            content = chunk.choices[0].delta.content
+            if content:
+                yield content
+    except Exception as e:
+        print(f"CHAT_SERVICE: FATAL - LLM streaming failed: {e}")
+        yield f"// Helix encountered an error while generating the final answer."

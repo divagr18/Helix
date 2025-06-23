@@ -207,6 +207,7 @@ export function DashboardPage() {
                                 repo={repo}
                                 onSyncStarted={fetchTrackedRepos}
                                 onReProcess={handleReProcessRepo}
+                                onRepoDeleted={fetchTrackedRepos}
                                 isProcessing={processingRepoId === repo.id}
                             />
                         ))}

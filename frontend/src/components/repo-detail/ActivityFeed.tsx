@@ -26,7 +26,6 @@ export const ActivityFeed: React.FC<{ repoId: number }> = ({ repoId }) => {
                 setIsLoadingInsights(false);
             });
     }, [repoId]);
-
     useEffect(() => {
         fetchAllInsights();
     }, [fetchAllInsights]);
@@ -46,7 +45,7 @@ export const ActivityFeed: React.FC<{ repoId: number }> = ({ repoId }) => {
         <ResizablePanelGroup direction="horizontal" className="h-full w-full">
             <ResizablePanel defaultSize={40} minSize={30}>
                 <div className="flex flex-col h-full">
-                    <div className="p-3 border-b border-border">
+                    <div className="p-3 border-b border-border flex-shrink-0">
                         <h3 className="font-semibold text-foreground">Commit History</h3>
                     </div>
                     <div className="flex-grow min-h-0">
@@ -54,20 +53,18 @@ export const ActivityFeed: React.FC<{ repoId: number }> = ({ repoId }) => {
                             repoId={repoId}
                             onCommitSelect={setSelectedCommit}
                             selectedCommit={selectedCommit}
-                        // Pass commitsWithInsights to the graph later for highlighting
+                            commitsWithInsights={commitsWithInsights}
                         />
                     </div>
                 </div>
             </ResizablePanel>
             <ResizableHandle withHandle />
             <ResizablePanel defaultSize={60} minSize={40}>
-                <div className="flex flex-col h-full">
-                    <InsightDetails
-                        commitHash={selectedCommit}
-                        insights={insightsForSelectedCommit}
-                        isLoading={isLoadingInsights}
-                    />
-                </div>
+                <InsightDetails
+                    commitHash={selectedCommit}
+                    insights={insightsForSelectedCommit}
+                    isLoading={isLoadingInsights}
+                />
             </ResizablePanel>
         </ResizablePanelGroup>
     );

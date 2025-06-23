@@ -81,6 +81,10 @@ export function SymbolDetailPage() {
     const [testSuggestion, setTestSuggestion] = useState<string | null>(null);
     const [testSuggestionError, setTestSuggestionError] = useState<string | null>(null);
 
+    const [isSuggestingRefactors, setIsSuggestingRefactors] = useState<boolean>(false);
+    const [refactorSuggestion, setRefactorSuggestion] = useState<string | null>(null);
+    const [refactorError, setRefactorError] = useState<string | null>(null);
+
     const handleNavigateBack = () => navigate(-1);
 
     const getLanguageFromUniqueId = useCallback((uniqueId: string | undefined): string => {
@@ -96,7 +100,48 @@ export function SymbolDetailPage() {
             default: return 'plaintext';
         }
     }, []);
+    const handleSuggestRefactors = useCallback(async () => {
+        if (!symbol) return;
 
+        setIsSuggestingRefactors(true);
+        setRefactorSuggestion(""); // Clear previous, set to empty for streaming
+        setRefactorError(null);
+        toast.info("Helix is analyzing code for refactoring opportunities...");
+
+        try {
+            const response = await fetch(
+                `http://localhost:8000/api/v1/symbols/${symbol.id}/suggest-refactors/`,
+                {
+                    method: 'POST',
+                    credentials: 'include',
+                    headers: { 'X-CSRFToken': getCookie('csrftoken') || '' },
+                }
+            );
+
+            if (!response.ok) throw new Error(await response.text());
+            if (!response.body) throw new Error("Response body is null.");
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let streamedText = "";
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                const chunk = decoder.decode(value, { stream: true });
+                if (chunk.includes("// Helix encountered an error")) {
+                    throw new Error(chunk.replace("// Helix encountered an error:", "").trim());
+                }
+                streamedText += chunk;
+                setRefactorSuggestion(streamedText);
+            }
+        } catch (err) {
+            const errorMessage = err instanceof Error ? err.message : String(err);
+            setRefactorError(errorMessage);
+            toast.error("Refactor Suggestion Failed", { description: errorMessage });
+        } finally {
+            setIsSuggestingRefactors(false);
+        }
+    }, [symbol]);
     const generateAIDocForSymbol = useCallback(async (): Promise<string | null> => {
         if (!symbol) return null;
         setIsGeneratingAIDoc(true);
@@ -394,14 +439,23 @@ export function SymbolDetailPage() {
                     </CardContent>
                 </Card>
                 <AiInsightsTab
+                    // Explanation props
                     onExplainCode={handleExplainCode}
                     isExplaining={isExplainingCode}
                     explanation={codeExplanation}
                     explanationError={explanationError}
+
+                    // Test Case props
                     onSuggestTests={handleSuggestTests}
                     isSuggestingTests={isSuggestingTests}
                     testSuggestion={testSuggestion}
                     testSuggestionError={testSuggestionError}
+
+                    // Refactor props
+                    onSuggestRefactors={handleSuggestRefactors}
+                    isSuggestingRefactors={isSuggestingRefactors}
+                    refactorSuggestion={refactorSuggestion}
+                    refactorError={refactorError}
                 />
 
                 {/* Local Architecture Diagram Card (col-span-1) */}

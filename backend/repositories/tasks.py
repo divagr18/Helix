@@ -18,7 +18,7 @@ from itertools import takewhile
 import tempfile
 from django.utils import timezone
 from django.db import transaction,models  # Import the transaction module
-from .models import CodeFile, CodeSymbol, CodeClass,CodeDependency,EmbeddingBatchJob,Insight
+from .models import CodeFile, CodeSymbol, CodeClass,CodeDependency,EmbeddingBatchJob,Insight,KnowledgeChunk
 from .models import Notification, AsyncTaskStatus # Ensure Notification is imported
 OPENAI_EMBEDDING_BATCH_SIZE = 50
 OPENAI_EMBEDDING_BATCH_FILE_MAX_REQUESTS = 49000
@@ -74,7 +74,7 @@ def process_repository(repo_id):
                 repo.status = Repository.Status.FAILED; repo.save(); return
         else:
             # Cloning new repo
-            subprocess.run(['git', 'clone', '--depth', '1', clone_url, repo_path], check=True, capture_output=True, timeout=300)
+            subprocess.run(['git', 'clone', clone_url, repo_path], check=True, capture_output=True, timeout=300)
 
         # Get commit hash AFTER pull
         try:
@@ -326,7 +326,8 @@ def process_repository(repo_id):
             commit_hash=latest_commit_hash,
             diff_report=diff_report
         )
-
+        print(f"PROCESS_REPO_TASK: Dispatching knowledge indexing for repo {repo.id}")
+        index_repository_knowledge_task.delay(repo_id=repo.id)
         print(f"PROCESS_REPO_TASK: Successfully processed and saved analysis for repository: {repo.full_name}")
         print(f"PROCESS_REPO_TASK: Dispatching orphan detection for repo {repo.id}")
         detect_orphan_symbols_task.delay(repo_id=repo.id, user_id=repo.user.id) # Pass user_id of repo owner
@@ -1681,3 +1682,387 @@ def generate_insights_on_change_task(repo_id: int, commit_hash: str, diff_report
         print(f"INSIGHTS_TASK: Created {len(insights_to_create)} new insights for repo {repo_id}.")
     else:
         print(f"INSIGHTS_TASK: No structural changes found to generate insights for repo {repo_id}.")
+
+@app.task(bind=True)
+def submit_knowledge_chunk_embedding_batch_task(self, repo_id: int):
+    """
+    Creates and submits a new batch job to OpenAI for embedding KnowledgeChunk records.
+
+    This task queries for KnowledgeChunk objects that do not yet have an embedding,
+    formats them into a .jsonl file, uploads the file, and creates the batch job.
+    It is designed to be triggered after `index_repository_knowledge_task` has
+    created the content chunks.
+    """
+    task_id = self.request.id
+    print(f"KNOWLEDGE_BATCH_SUBMIT_TASK: Started (ID: {task_id}) for repo_id {repo_id}")
+
+    # 1. Pre-flight check for OpenAI Client
+    if not OPENAI_CLIENT:
+        message = "OpenAI client not available (OPENAI_API_KEY not set or init failed). Cannot submit embedding batch."
+        print(f"KNOWLEDGE_BATCH_SUBMIT_TASK: FATAL - {message}")
+        # We cannot proceed, so we exit.
+        return {"status": "error", "message": message}
+
+    # 2. Fetch Repository
+    try:
+        repo = Repository.objects.get(id=repo_id)
+    except Repository.DoesNotExist:
+        message = f"Repository with ID {repo_id} not found."
+        print(f"KNOWLEDGE_BATCH_SUBMIT_TASK: FATAL - {message}")
+        return {"status": "error", "message": message}
+
+    # 3. Query for KnowledgeChunks that need embedding
+    chunks_to_embed = KnowledgeChunk.objects.filter(
+        repository=repo,
+        embedding__isnull=True  # The primary condition for selecting chunks
+    ).only('id', 'content')     # Fetch only the fields necessary for the batch file
+
+    if not chunks_to_embed.exists():
+        message = f"No new knowledge chunks requiring embedding found for repository {repo.full_name}."
+        print(f"KNOWLEDGE_BATCH_SUBMIT_TASK: {message}")
+        return {"status": "success", "message": message, "batch_id": None}
+
+    print(f"KNOWLEDGE_BATCH_SUBMIT_TASK: Preparing batch file for {chunks_to_embed.count()} knowledge chunks from repo '{repo.full_name}'.")
+
+    # 4. Prepare the requests for the JSONL file
+    batch_requests_for_jsonl = []
+    chunk_pks_in_batch = []
+
+    for chunk in chunks_to_embed:
+        # The custom_id must be unique within the batch file and max 64 chars.
+        # `chunk-{pk}` is a robust pattern.
+        custom_id = f"chunk-{chunk.id}"
+        chunk_pks_in_batch.append(chunk.id)
+
+        # The content from the chunk is already formatted with context.
+        text_to_embed = chunk.content
+
+        batch_requests_for_jsonl.append({
+            "custom_id": custom_id,
+            "method": "POST",
+            "url": "/v1/embeddings",
+            "body": {
+                "model": OPENAI_EMBEDDING_MODEL,
+                "input": text_to_embed
+            }
+        })
+        
+        # Adhere to OpenAI's documented limit per batch file.
+        if len(batch_requests_for_jsonl) >= OPENAI_EMBEDDING_BATCH_FILE_MAX_REQUESTS:
+            print(f"KNOWLEDGE_BATCH_SUBMIT_TASK: Reached max requests ({OPENAI_EMBEDDING_BATCH_FILE_MAX_REQUESTS}). "
+                  f"Submitting a partial batch. Another run will be needed for remaining chunks.")
+            break
+
+    if not batch_requests_for_jsonl:
+        message = f"No valid embedding requests were generated for repository {repo.full_name}."
+        print(f"KNOWLEDGE_BATCH_SUBMIT_TASK: {message}")
+        return {"status": "success", "message": message, "batch_id": None}
+
+    # 5. Create our internal job record to track this submission
+    job_record = EmbeddingBatchJob.objects.create(
+        repository=repo,
+        job_type=EmbeddingBatchJob.JobType.KNOWLEDGE_CHUNK_EMBEDDING,
+        status=EmbeddingBatchJob.JobStatus.PENDING_SUBMISSION,
+        custom_metadata={"celery_task_id": task_id, "chunk_count": len(batch_requests_for_jsonl)}
+    )
+
+    batch_input_file_path = None
+    try:
+        # 6. Create the temporary .jsonl file
+        with tempfile.NamedTemporaryFile(mode='w+', suffix=".jsonl", delete=False, encoding='utf-8') as tmp_file:
+            for request_data in batch_requests_for_jsonl:
+                tmp_file.write(json.dumps(request_data) + "\n")
+            batch_input_file_path = tmp_file.name
+        
+        print(f"KNOWLEDGE_BATCH_SUBMIT_TASK: Batch input file created at {batch_input_file_path} for Job ID {job_record.id}")
+
+        # 7. Upload the file to OpenAI
+        with open(batch_input_file_path, "rb") as f_for_upload:
+            uploaded_file = OPENAI_CLIENT.files.create(
+                file=f_for_upload,
+                purpose="batch"
+            )
+        
+        job_record.input_file_id = uploaded_file.id
+        print(f"KNOWLEDGE_BATCH_SUBMIT_TASK: Batch input file uploaded. OpenAI File ID: {uploaded_file.id}")
+
+        # 8. Create the batch job using the uploaded file
+        openai_batch = OPENAI_CLIENT.batches.create(
+            input_file_id=uploaded_file.id,
+            endpoint="/v1/embeddings",
+            completion_window="24h",
+            metadata={
+                "helix_cme_job_id": str(job_record.id),
+                "repository_id": str(repo.id),
+                "description": f"Helix CME: Knowledge Chunk embedding for {repo.full_name}"
+            }
+        )
+        
+        # 9. Update our internal record with the crucial IDs and status from OpenAI
+        job_record.batch_id = openai_batch.id
+        job_record.status = openai_batch.status # This will likely be 'validating'
+        job_record.submitted_to_openai_at = timezone.now()
+        job_record.openai_metadata = openai_batch.to_dict()
+        job_record.save()
+        
+        print(f"KNOWLEDGE_BATCH_SUBMIT_TASK: OpenAI Batch job created successfully. OpenAI Batch ID: {openai_batch.id}, "
+              f"Status: {openai_batch.status} for our Job ID {job_record.id}")
+        
+        return {
+            "status": "success", 
+            "message": "Knowledge chunk embedding batch job successfully submitted to OpenAI.",
+            "helix_job_id": job_record.id,
+            "openai_batch_id": openai_batch.id
+        }
+
+    except Exception as e:
+        error_message = f"Error during OpenAI batch submission for Job ID {job_record.id}: {str(e)}"
+        print(f"KNOWLEDGE_BATCH_SUBMIT_TASK: FATAL - {error_message}")
+        
+        # Update our job record to reflect the failure
+        job_record.status = EmbeddingBatchJob.JobStatus.FAILED_VALIDATION # Or a more generic FAILED
+        job_record.error_details = error_message
+        job_record.save()
+        
+        # Optionally re-raise to have Celery retry the task, though for submission errors,
+        # it might be better to fix the issue and re-trigger manually.
+        # self.retry(exc=e) 
+        return {"status": "error", "message": error_message, "helix_job_id": job_record.id}
+    
+    finally:
+        # 10. Clean up the temporary file from the local filesystem
+        if batch_input_file_path and os.path.exists(batch_input_file_path):
+            os.remove(batch_input_file_path)
+            print(f"KNOWLEDGE_BATCH_SUBMIT_TASK: Cleaned up temporary file {batch_input_file_path}")
+@app.task
+def index_repository_knowledge_task(repo_id: int):
+    """
+    Creates knowledge chunk records for a repository WITHOUT generating embeddings.
+    After creation, it dispatches a separate task to handle the embedding via the Batch API.
+    """
+    print(f"KNOWLEDGE_INDEX_TASK: Starting content chunking for repo_id: {repo_id}")
+    
+    try:
+        repo = Repository.objects.get(id=repo_id)
+    except Repository.DoesNotExist:
+        print(f"KNOWLEDGE_INDEX_TASK: ERROR - Repository {repo_id} not found.")
+        return
+
+    # Clear old chunks to ensure data is fresh
+    deleted_count, _ = KnowledgeChunk.objects.filter(repository=repo).delete()
+    print(f"KNOWLEDGE_INDEX_TASK: Cleared {deleted_count} old knowledge chunks for repo {repo.id}.")
+
+    symbols_to_index = CodeSymbol.objects.filter(
+        Q(code_file__repository=repo) | Q(code_class__code_file__repository=repo)
+    ).select_related('code_file', 'code_class__code_file').iterator(chunk_size=500)
+
+    chunks_to_create = []
+
+    for symbol in symbols_to_index:
+        # Chunk for Docstring
+        if symbol.documentation and len(symbol.documentation.strip()) > 20:
+            doc_content = f"Documentation for function '{symbol.name}':\n{symbol.documentation}"
+            chunks_to_create.append(KnowledgeChunk(
+                repository=repo,
+                chunk_type=KnowledgeChunk.ChunkType.SYMBOL_DOCSTRING,
+                content=doc_content,
+                embedding=None, # Explicitly null
+                related_symbol=symbol,
+                related_class=symbol.code_class,
+                related_file=symbol.code_file or (symbol.code_class and symbol.code_class.code_file)
+            ))
+
+        # Chunk for Source Code
+        source_code = symbol.source_code
+        if source_code and not source_code.strip().startswith("# Error:"):
+            source_content = f"Source code for function '{symbol.name}':\n```python\n{source_code}\n```"
+            chunks_to_create.append(KnowledgeChunk(
+                repository=repo,
+                chunk_type=KnowledgeChunk.ChunkType.SYMBOL_SOURCE,
+                content=source_content,
+                embedding=None, # Explicitly null
+                related_symbol=symbol,
+                related_class=symbol.code_class,
+                related_file=symbol.code_file or (symbol.code_class and symbol.code_class.code_file)
+            ))
+
+    if not chunks_to_create:
+        print(f"KNOWLEDGE_INDEX_TASK: No new content found to index for repo {repo.id}. Task complete.")
+        return
+
+    try:
+        KnowledgeChunk.objects.bulk_create(chunks_to_create, batch_size=500)
+        print(f"KNOWLEDGE_INDEX_TASK: Created {len(chunks_to_create)} knowledge chunks (without embeddings).")
+
+        # --- NEW: Dispatch the batch submission task ---
+        print(f"KNOWLEDGE_INDEX_TASK: Dispatching batch job submission task for repo {repo.id}.")
+        submit_knowledge_chunk_embedding_batch_task.delay(repo_id=repo.id)
+        # --- END NEW ---
+
+    except Exception as e:
+        print(f"KNOWLEDGE_INDEX_TASK: FATAL - DB error during bulk_create: {e}")
+
+
+@app.task(bind=True)
+def poll_and_process_completed_batches_task(self):
+    """
+    Periodically polls for EmbeddingBatchJob records that are in progress,
+    checks their status with OpenAI, and processes completed jobs by updating
+    the corresponding KnowledgeChunk records with their new embeddings.
+    """
+    task_id = self.request.id
+    print(f"BATCH_POLL_TASK: Started (ID: {task_id})")
+
+    if not OPENAI_CLIENT:
+        print("BATCH_POLL_TASK: Aborting, OpenAI client not available.")
+        return
+
+    # 1. Find our jobs that are currently in-flight with OpenAI.
+    # We query for any status that is not a final terminal state.
+    in_progress_jobs = EmbeddingBatchJob.objects.filter(
+        status__in=['validating', 'in_progress', 'finalizing']
+    ).select_related('repository')
+
+    if not in_progress_jobs.exists():
+        print("BATCH_POLL_TASK: No in-progress batch jobs found to poll.")
+        return
+
+    print(f"BATCH_POLL_TASK: Found {in_progress_jobs.count()} in-progress jobs to check.")
+
+    for job in in_progress_jobs:
+        try:
+            print(f"BATCH_POLL_TASK: Checking status for Job ID {job.id} (OpenAI Batch ID: {job.batch_id})")
+            
+            # 2. Retrieve the latest status of the batch job from OpenAI.
+            openai_batch = OPENAI_CLIENT.batches.retrieve(job.batch_id)
+            
+            # Update our local record with the latest status and metadata.
+            job.status = openai_batch.status
+            job.openai_metadata = openai_batch.to_dict()
+            job.save(update_fields=['status', 'openai_metadata'])
+
+            # 3. Check if the job is completed and ready for processing.
+            if openai_batch.status == 'completed':
+                print(f"BATCH_POLL_TASK: Job {job.id} is COMPLETED. Processing results...")
+                
+                output_file_id = openai_batch.output_file_id
+                error_file_id = openai_batch.error_file_id
+
+                if error_file_id:
+                    print(f"BATCH_POLL_TASK: Job {job.id} completed but with an error file ({error_file_id}).")
+                    # You could add logic here to download and inspect the error file if needed.
+
+                if not output_file_id:
+                    raise Exception("Batch job completed but no output_file_id was provided by OpenAI.")
+
+                # 4. Download the output file content from OpenAI.
+                output_file_content_response = OPENAI_CLIENT.files.content(output_file_id)
+                output_data = output_file_content_response.read().decode('utf-8')
+                
+                # 5. Parse the JSONL output file line by line.
+                output_lines = output_data.strip().split('\n')
+                print(f"BATCH_POLL_TASK: Downloaded output file for job {job.id} with {len(output_lines)} lines.")
+                
+                updates_to_perform = {} # Using a dict for efficient lookup: {chunk_pk: embedding_vector}
+
+                for i, line in enumerate(output_lines):
+                    if not line.strip():
+                        continue
+                    
+                    print(f"BATCH_POLL_TASK: [Job {job.id} Line {i+1}] Parsing line: {line[:150]}...")
+                    
+                    try:
+                        result_item = json.loads(line)
+                        custom_id = result_item.get('custom_id')
+
+                        if not custom_id:
+                            print(f"BATCH_POLL_TASK: [Job {job.id} Line {i+1}] SKIPPING - No custom_id found.")
+                            continue
+
+                        if result_item.get('error'):
+                            print(f"BATCH_POLL_TASK: [Job {job.id} Line {i+1}] SKIPPING - Item has an error in output file: {result_item['error']}")
+                            continue
+
+                        response_body = result_item.get('response', {}).get('body', {})
+                        if not response_body:
+                            print(f"BATCH_POLL_TASK: [Job {job.id} Line {i+1}] SKIPPING - 'response' or 'body' key missing for {custom_id}.")
+                            continue
+
+                        data_list = response_body.get('data')
+                        if not isinstance(data_list, list) or not data_list:
+                            print(f"BATCH_POLL_TASK: [Job {job.id} Line {i+1}] SKIPPING - 'data' array is missing or empty for {custom_id}.")
+                            continue
+
+                        embedding = data_list[0].get('embedding')
+                        if not isinstance(embedding, list):
+                            print(f"BATCH_POLL_TASK: [Job {job.id} Line {i+1}] SKIPPING - 'embedding' vector is missing or not a list for {custom_id}.")
+                            continue
+                        
+                        if custom_id.startswith('chunk-'):
+                            chunk_pk = int(custom_id.split('-')[1])
+                            updates_to_perform[chunk_pk] = embedding
+                            print(f"BATCH_POLL_TASK: [Job {job.id} Line {i+1}] SUCCESS - Staged update for KnowledgeChunk ID {chunk_pk}.")
+                        else:
+                            print(f"BATCH_POLL_TASK: [Job {job.id} Line {i+1}] SKIPPING - custom_id '{custom_id}' has invalid format.")
+
+                    except (json.JSONDecodeError, IndexError, KeyError, ValueError) as e:
+                        print(f"BATCH_POLL_TASK: [Job {job.id} Line {i+1}] FATAL PARSE ERROR - {e}\nLine: '{line}'")
+                        continue
+
+                # 6. Perform the database update.
+                if not updates_to_perform:
+                    error_msg = "Job completed but no successful updates could be parsed from the output file. Check parsing logic and file content."
+                    print(f"BATCH_POLL_TASK: [Job {job.id}] {error_msg}")
+                    job.status = EmbeddingBatchJob.JobStatus.FAILED 
+                    job.error_details = error_msg
+                    job.completed_at = timezone.now()
+                    job.save()
+                    continue
+
+                print(f"BATCH_POLL_TASK: [Job {job.id}] Preparing to update {len(updates_to_perform)} KnowledgeChunk records.")
+                
+                # Use a transaction to ensure all updates succeed or none do.
+                with transaction.atomic():
+                    chunks_to_update = list(KnowledgeChunk.objects.filter(id__in=updates_to_perform.keys()))
+                    
+                    if len(chunks_to_update) != len(updates_to_perform):
+                         print(f"BATCH_POLL_TASK: [Job {job.id}] WARNING - DB query found {len(chunks_to_update)} chunks, but expected {len(updates_to_perform)}. Some chunks may have been deleted.")
+
+                    for chunk in chunks_to_update:
+                        embedding_vector = updates_to_perform.get(chunk.id)
+                        if embedding_vector:
+                            chunk.embedding = embedding_vector
+                    
+                    KnowledgeChunk.objects.bulk_update(chunks_to_update, ['embedding'], batch_size=500)
+                
+                print(f"BATCH_POLL_TASK: [Job {job.id}] Successfully updated {len(chunks_to_update)} KnowledgeChunk records with new embeddings.")
+
+                # 7. Finalize our internal job record.
+                job.output_file_id = output_file_id
+                job.completed_at = timezone.now()
+                job.save(update_fields=['output_file_id', 'completed_at'])
+
+            elif openai_batch.status in ['failed', 'expired', 'cancelled']:
+                # Handle terminal failure states.
+                print(f"BATCH_POLL_TASK: Job {job.id} has failed or expired. Status: {openai_batch.status}")
+                job.error_details = json.dumps(openai_batch.errors) if openai_batch.errors else f"Job terminated with status: {openai_batch.status}"
+                job.completed_at = timezone.now()
+                job.save(update_fields=['error_details', 'completed_at'])
+            
+            else:
+                # Status is still 'validating', 'in_progress', or 'finalizing'.
+                print(f"BATCH_POLL_TASK: Job {job.id} is still in progress. Status: {openai_batch.status}")
+
+        except Exception as e:
+            error_message = f"An unexpected error occurred while processing job {job.id}: {str(e)}"
+            print(f"BATCH_POLL_TASK: ERROR - {error_message}")
+            # Mark the job as failed in our DB to prevent retries on a potentially permanent issue.
+            try:
+                job.status = EmbeddingBatchJob.JobStatus.FAILED
+                job.error_details = error_message
+                job.save()
+            except Exception as save_err:
+                print(f"BATCH_POLL_TASK: CRITICAL - Could not even save failure status for job {job.id}: {save_err}")
+            
+            # Continue to the next job in the loop
+            continue

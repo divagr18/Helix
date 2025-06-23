@@ -1,5 +1,5 @@
 # backend/repositories/views.py
-import os
+import os,shutil
 import subprocess
 from django.db.models import Q  # <--- ADD THIS IMPORT
 from rest_framework import generics, permissions
@@ -7,7 +7,7 @@ from .tasks import create_documentation_pr_task,batch_generate_docstrings_task #
 from django.utils.decorators import method_decorator
 from rest_framework import viewsets
 from .models import CodeFile, CodeSymbol as CodeFunction, Repository, CodeSymbol,CodeDependency,AsyncTaskStatus, Notification,CodeClass,Insight
-from .ai_services import generate_class_summary_stream # 03c03c03c NEW IMPORT
+from .ai_services import generate_class_summary_stream,generate_refactor_stream # 03c03c03c NEW IMPORT
 from .tasks import process_repository # Import the Celery task
 import json
 from .serializers import CodeSymbolSerializer, RepositorySerializer,RepositoryDetailSerializer,NotificationSerializer
@@ -96,6 +96,48 @@ class GithubReposView(APIView):
         ]
 
         return Response(simplified_repos)
+    def delete(self, request, repo_id, *args, **kwargs):
+        """
+        Deletes a repository, its database records, and its cached files.
+        """
+        print(f"VIEW_DELETE_REPO: Request to delete repo_id: {repo_id} by user: {request.user.name}")
+
+        try:
+            # Ensure the user owns the repository they are trying to delete
+            repo = Repository.objects.get(id=repo_id, user=request.user)
+        except Repository.DoesNotExist:
+            return Response(
+                {"error": "Repository not found or permission denied."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        repo_full_name = repo.full_name
+        repo_path = os.path.join(REPO_CACHE_BASE_PATH, str(repo.id))
+
+        # --- Perform Deletion ---
+        try:
+            # 1. Delete the database record.
+            #    Django's on_delete=models.CASCADE will automatically delete all related
+            #    CodeFile, CodeClass, CodeSymbol, Insight, Notification, KnowledgeChunk, etc.
+            repo.delete()
+            print(f"VIEW_DELETE_REPO: Successfully deleted repository record for '{repo_full_name}' from database.")
+
+            # 2. Delete the cached repository from the filesystem.
+            if os.path.exists(repo_path):
+                shutil.rmtree(repo_path)
+                print(f"VIEW_DELETE_REPO: Successfully deleted cached files at '{repo_path}'.")
+
+            return Response(
+                {"message": f"Repository '{repo_full_name}' and all its data have been successfully deleted."},
+                status=status.HTTP_204_NO_CONTENT # 204 is the standard for successful deletion
+            )
+
+        except Exception as e:
+            # This is a critical error state, as the DB record might be gone
+            # but the files might remain.
+            error_message = f"An error occurred during deletion of '{repo_full_name}': {str(e)}"
+            print(f"VIEW_DELETE_REPO: CRITICAL ERROR - {error_message}")
+            return Response({"error": error_message}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 @method_decorator(csrf_exempt, name='dispatch')
 class FileContentView(APIView):
@@ -1110,3 +1152,85 @@ class CommitHistoryView(APIView):
             error_message = f"An unexpected error occurred while fetching commit history: {str(e)}"
             print(f"VIEW_COMMIT_HISTORY: ERROR - {error_message}")
             return Response({"error": error_message}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+@method_decorator(csrf_exempt, name='dispatch')
+class SuggestRefactorsView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, symbol_id, *args, **kwargs):
+        print(f"VIEW_SUGGEST_REFACTORS: Request for symbol_id: {symbol_id} by user: {request.user.username}")
+
+        openai_client = OPENAI_CLIENT_INSTANCE
+
+        
+        if not openai_client:
+            return Response(
+                {"error": "Helix's AI service is currently unavailable."}, 
+                status=status.HTTP_503_SERVICE_UNAVAILABLE
+            )
+
+        try:
+            # Check ownership and fetch the symbol object
+            q_filter = Q(id=symbol_id) & (
+                Q(code_file__repository__user=request.user) |
+                Q(code_class__code_file__repository__user=request.user)
+            )
+            symbol_obj = CodeSymbol.objects.get(q_filter)
+        except CodeSymbol.DoesNotExist:
+            return Response(
+                {"error": "Symbol not found or permission denied."}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        # Call the new service function to get the streaming generator
+        response_stream = generate_refactor_stream(symbol_obj, openai_client)
+        
+        response = StreamingHttpResponse(response_stream, content_type='text/plain; charset=utf-8')
+        response['X-Accel-Buffering'] = 'no'
+        response['Cache-Control'] = 'no-cache'
+        return response
+    
+from .ai_services import handle_chat_query_stream
+
+
+@method_decorator(csrf_exempt, name='dispatch')
+class ChatView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, repo_id, *args, **kwargs):
+        query = request.data.get('query')
+
+        if not query or not isinstance(query, str) or len(query.strip()) < 5:
+            return Response(
+                {"error": "A meaningful query string is required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        print(f"CHAT_VIEW: Received query for repo {repo_id}: '{query}'")
+
+        if not OPENAI_CLIENT_INSTANCE:
+            return Response(
+                {"error": "Helix's AI service is currently unavailable."}, 
+                status=status.HTTP_503_SERVICE_UNAVAILABLE
+            )
+
+        # Check that the user has access to the repository
+        try:
+            Repository.objects.get(id=repo_id, user=request.user)
+        except Repository.DoesNotExist:
+            return Response(
+                {"error": "Repository not found or permission denied."}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        # Call the service function to get the streaming generator
+        response_stream = handle_chat_query_stream(
+            repo_id=repo_id,
+            query=query.strip(),
+            openai_client=OPENAI_CLIENT_INSTANCE
+        )
+        
+        response = StreamingHttpResponse(response_stream, content_type='text/plain; charset=utf-8')
+        response['X-Accel-Buffering'] = 'no'
+        response['Cache-Control'] = 'no-cache'
+        return response

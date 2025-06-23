@@ -19,3 +19,4 @@ pgvector
 PyGithub
 astor
 ruff
+django-celery-beat
