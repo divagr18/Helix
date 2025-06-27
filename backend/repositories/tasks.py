@@ -9,6 +9,7 @@ import json
 from django.db.models import Q ,F,Count # <--- ADD THIS IMPORT
 import ast # Python's Abstract Syntax Tree module
 import astor,hashlib
+import requests
 import subprocess # To call ruff CLI
 import time
 from github import Github, GithubException, UnknownObjectException
@@ -20,6 +21,7 @@ from django.utils import timezone
 from django.db import transaction,models  # Import the transaction module
 from .models import CodeFile, CodeSymbol, CodeClass,CodeDependency,EmbeddingBatchJob,Insight,KnowledgeChunk
 from .models import Notification, AsyncTaskStatus # Ensure Notification is imported
+from allauth.socialaccount.models import SocialAccount
 OPENAI_EMBEDDING_BATCH_SIZE = 50
 OPENAI_EMBEDDING_BATCH_FILE_MAX_REQUESTS = 49000
 # Define the path to our compiled Rust binary INSIDE the container
@@ -2066,3 +2068,120 @@ def poll_and_process_completed_batches_task(self):
             
             # Continue to the next job in the loop
             continue
+
+
+@app.task(bind=True)
+def create_pr_with_changes_task(
+    self,
+    user_id: int,
+    repo_id: int,
+    file_path: str,
+    new_content: str,
+    commit_message: str,
+    branch_name: str,
+    base_branch: str # The branch to open the PR against (e.g., 'main' or 'master')
+):
+    """
+    An asynchronous task to perform Git operations: create a new branch,
+    commit changes, push to GitHub, and open a Pull Request.
+    """
+    task_id = self.request.id
+    print(f"CREATE_PR_TASK: Started (ID: {task_id}) for repo {repo_id}, user {user_id}")
+    
+    # We use our existing AsyncTaskStatus model to report progress to the frontend
+    status_tracker, _ = AsyncTaskStatus.objects.update_or_create(
+        task_id=task_id,
+        defaults={'user_id': user_id, 'status': 'PENDING', 'name': 'Create Pull Request'}
+    )
+
+    def update_status(progress: int, message: str):
+        status_tracker.progress = progress
+        status_tracker.message = message
+        status_tracker.save(update_fields=['progress', 'message'])
+
+    try:
+        # 1. Fetch necessary objects from the database
+        update_status(10, "Authenticating and fetching repository details...")
+        repo = Repository.objects.get(id=repo_id, user_id=user_id)
+        user_social_account = SocialAccount.objects.get(user_id=user_id, provider='github')
+        social_token = SocialToken.objects.get(account=user_social_account)
+        
+        github_token = social_token.token
+        github_username = user_social_account.extra_data.get('login')
+        
+        if not all([github_token, github_username]):
+            raise Exception("Could not retrieve valid GitHub credentials for the user.")
+
+        repo_path = os.path.join(REPO_CACHE_BASE_PATH, str(repo.id))
+        full_file_path = os.path.join(repo_path, file_path)
+
+        # 2. Prepare the local Git repository
+        update_status(25, f"Syncing with remote branch '{base_branch}'...")
+        # Ensure we are on the base branch and it's up-to-date
+        subprocess.run(['git', '-C', repo_path, 'checkout', base_branch], check=True, capture_output=True)
+        subprocess.run(['git', '-C', repo_path, 'pull', 'origin', base_branch], check=True, capture_output=True)
+
+        # 3. Create the new branch
+        update_status(40, f"Creating new branch '{branch_name}'...")
+        subprocess.run(['git', '-C', repo_path, 'checkout', '-b', branch_name], check=True, capture_output=True)
+
+        # 4. Apply the file changes
+        update_status(50, f"Applying changes to '{file_path}'...")
+        with open(full_file_path, 'w', encoding='utf-8') as f:
+            f.write(new_content)
+
+        # 5. Commit the changes
+        update_status(60, "Committing changes...")
+        subprocess.run(['git', '-C', repo_path, 'add', file_path], check=True, capture_output=True)
+        subprocess.run(['git', '-C', repo_path, 'commit', '-m', commit_message], check=True, capture_output=True)
+
+        # 6. Push the new branch to GitHub
+        update_status(75, f"Pushing branch '{branch_name}' to GitHub...")
+        # We inject the token into the URL for authentication
+        push_url = f"https://{github_username}:{github_token}@github.com/{repo.full_name}.git"
+        subprocess.run(['git', '-C', repo_path, 'push', push_url, branch_name], check=True, capture_output=True)
+
+        # 7. Open the Pull Request using the GitHub API
+        update_status(90, "Creating Pull Request...")
+        # Use a GitHub API client library like PyGithub or make a direct requests call
+        # For simplicity, we'll use `requests` here.
+        pr_api_url = f"https://api.github.com/repos/{repo.full_name}/pulls"
+        headers = {
+            'Authorization': f'token {github_token}',
+            'Accept': 'application/vnd.github.v3+json',
+        }
+        pr_data = {
+            'title': commit_message,
+            'head': branch_name,
+            'base': base_branch,
+            'body': 'This Pull Request was generated by Helix CME.',
+        }
+        response = requests.post(pr_api_url, headers=headers, json=pr_data)
+        response.raise_for_status() # Raise an exception for bad status codes (4xx or 5xx)
+        
+        pr_response_data = response.json()
+        pr_url = pr_response_data.get('html_url')
+
+        # 8. Finalize the task status
+        status_tracker.status = 'SUCCESS'
+        status_tracker.progress = 100
+        status_tracker.message = f"Successfully created Pull Request!"
+        status_tracker.result = {'pull_request_url': pr_url}
+        status_tracker.save()
+
+        print(f"CREATE_PR_TASK: Success! PR created at {pr_url}")
+        return status_tracker.result
+
+    except Exception as e:
+        print(f"CREATE_PR_TASK: FAILED (ID: {task_id}). Error: {e}")
+        # Check if it's a subprocess error to provide more detail
+        if isinstance(e, subprocess.CalledProcessError):
+            error_details = e.stderr.decode('utf-8') if e.stderr else str(e)
+        else:
+            error_details = str(e)
+        
+        status_tracker.status = 'FAILURE'
+        status_tracker.message = "An error occurred while creating the Pull Request."
+        status_tracker.result = {'error': error_details}
+        status_tracker.save()
+        raise self.replace(e) # Re-raise to mark the task as failed in Celery monitoring

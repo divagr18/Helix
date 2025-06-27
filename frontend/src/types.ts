@@ -90,3 +90,37 @@ export interface Insight {
   is_resolved: boolean;
   created_at: string; // ISO 8601 date string
 }
+// src/types.ts
+
+// ... your existing types (Repository, CodeFile, CodeSymbol, Insight, etc.) ...
+
+/**
+ * Represents the status of a long-running asynchronous task tracked in the backend.
+ * This matches the structure of the AsyncTaskStatus model and its serializer.
+ */
+export interface AsyncTaskStatus {
+  task_id: string;
+  name: string;
+  status: 'PENDING' | 'IN_PROGRESS' | 'SUCCESS' | 'FAILURE';
+  progress: number; // A percentage from 0 to 100
+  message: string | null;
+  created_at: string; // ISO 8601 date string
+  updated_at: string; // ISO 8601 date string
+
+  // The result field can have different shapes depending on the task.
+  // We use a generic object type and can narrow it down in components if needed.
+  result: {
+    // For PR creation tasks
+    pull_request_url?: string;
+
+    // For batch doc generation tasks
+    files_processed?: number;
+    pr_url?: string; // If it also creates a PR
+
+    // For any failed task
+    error?: string;
+
+    // Allow for other potential properties
+    [key: string]: any;
+  } | null;
+}

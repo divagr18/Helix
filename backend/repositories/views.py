@@ -1232,3 +1232,52 @@ class ChatView(APIView):
         response['X-Accel-Buffering'] = 'no'
         response['Cache-Control'] = 'no-cache'
         return response
+    
+
+from .tasks import create_pr_with_changes_task # 03c03c03c NEW IMPORT
+import time
+@method_decorator(csrf_exempt, name='dispatch')
+class ProposeChangeView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, repo_id, *args, **kwargs):
+        # 1. Validate the incoming data
+        file_path = request.data.get('file_path')
+        new_content = request.data.get('new_content')
+        commit_message = request.data.get('commit_message')
+        
+        if not all([file_path, new_content, commit_message]):
+            return Response(
+                {"error": "Missing required fields: file_path, new_content, and commit_message are required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # 2. Check repository ownership
+        try:
+            repo = Repository.objects.get(id=repo_id, user=request.user)
+        except Repository.DoesNotExist:
+            return Response({"error": "Repository not found or permission denied."}, status=status.HTTP_404_NOT_FOUND)
+
+        # 3. Generate a unique branch name
+        # e.g., helix-refactor-1687554321
+        sanitized_commit_msg = "".join(filter(str.isalnum, commit_message.lower().replace(" ", "-")))[:30]
+        branch_name = f"helix/{sanitized_commit_msg}-{int(time.time())}"
+
+        # 4. Dispatch the Celery task
+        task = create_pr_with_changes_task.delay(
+            user_id=request.user.id,
+            repo_id=repo.id,
+            file_path=file_path,
+            new_content=new_content,
+            commit_message=commit_message,
+            branch_name=branch_name,
+            base_branch=repo.default_branch # Assuming you store the default branch on the repo model
+        )
+
+        print(f"PROPOSE_CHANGE_VIEW: Dispatched create_pr_with_changes_task {task.id} for repo {repo.id}")
+
+        # 5. Return the task ID to the frontend for polling
+        return Response(
+            {"message": "Pull Request creation process initiated.", "task_id": task.id},
+            status=status.HTTP_202_ACCEPTED
+        )

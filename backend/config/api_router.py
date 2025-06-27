@@ -17,7 +17,7 @@ from repositories.views import (
     GenerateArchitectureDiagramView,
     SemanticSearchView,
     CreateDocPRView,BatchGenerateDocsForFileView,
-    CreateBatchDocsPRView,
+    CreateBatchDocsPRView,ProposeChangeView,
     
     # --- IMPORT THE NEW VIEWS (we will create these next) ---
     BatchGenerateDocsForSelectedFilesView,
@@ -58,6 +58,8 @@ urlpatterns += [
     path('repositories/<int:repo_id>/commit-history/', CommitHistoryView.as_view(), name='repository-commit-history'),
     path('symbols/<int:symbol_id>/suggest-refactors/', SuggestRefactorsView.as_view(), name='symbol-suggest-refactors'), # 03c03c03c NEW PATH
     path('repositories/<int:repo_id>/chat/', ChatView.as_view(), name='repository-chat'),
+    path('repositories/<int:repo_id>/propose-change/', ProposeChangeView.as_view(), name='repository-propose-change'), # 03c03c03c NEW
+
 
 
 
