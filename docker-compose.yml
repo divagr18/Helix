@@ -37,7 +37,7 @@ services:
     # We don't need a Dockerfile for the dev server
     image: node:18
     working_dir: /app
-    command: sh -c "npm install && npm run dev -- --host"
+    command: sh -c "npm install --force && npm install -D @vitejs/plugin-react-swc && npm run dev -- --host"
     volumes:
       - ./frontend:/app
       - /app/node_modules

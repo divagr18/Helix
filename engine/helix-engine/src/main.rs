@@ -4,6 +4,8 @@ use sha2::{Digest, Sha256};
 use std::fs;
 use walkdir::WalkDir;
 
+use tree_sitter::Node;
+
 #[derive(Serialize, Debug, Clone)]
 struct MethodInfo {
     name: String,
@@ -12,7 +14,7 @@ struct MethodInfo {
     end_line: usize,
     content_hash: String,
     calls: Vec<String>,
-    loc: usize, // Lines of Code
+    loc: usize, 
     cyclomatic_complexity: usize,
 }
 
@@ -30,6 +32,7 @@ struct FileAnalysis {
     path: String,
     functions: Vec<MethodInfo>,
     classes: Vec<ClassInfo>,
+    imports: Vec<String>, 
     structure_hash: String,
 }
 
@@ -45,7 +48,36 @@ struct Args {
     #[arg(short, long)]
     dir_path: String,
 }
+
+fn parse_import_statement(node: &Node, code: &str) -> Vec<String> {
+    let mut modules = Vec::new();
+    let mut cursor = node.walk();
+    
+    for child in node.children(&mut cursor) {
+        if child.kind() == "dotted_name" || child.kind() == "aliased_import" {
+            
+            let name_node = child.child_by_field_name("name").unwrap_or(child);
+            if let Ok(module_name) = name_node.utf8_text(code.as_bytes()) {
+                modules.push(module_name.to_string());
+            }
+        }
+    }
+    modules
+}
+
+fn parse_import_from_statement(node: &Node, code: &str) -> Vec<String> {
+    let mut modules = Vec::new();
+    
+    if let Some(module_node) = node.child_by_field_name("module_name") {
+        if let Ok(module_name) = module_node.utf8_text(code.as_bytes()) {
+            modules.push(module_name.to_string());
+        }
+    }
+    modules
+}
+
 fn calculate_loc(node_text: &str) -> usize {
+    
     let mut count = 0;
     for line in node_text.lines() {
         let trimmed_line = line.trim();
@@ -56,37 +88,29 @@ fn calculate_loc(node_text: &str) -> usize {
     count
 }
 fn calculate_cyclomatic_complexity_recursive(node: &tree_sitter::Node, complexity: &mut usize) {
+    
     match node.kind() {
         "if_statement" | "while_statement" | "for_statement" | 
-        "elif_clause" | // Elif is a decision point
-        "except_clause" | // Each except block is a path
-        "assert_statement" | // Assert can be considered a decision point
-        "raise_statement" | // Raise alters control flow
-        "boolean_operator" | // 'and', 'or' in conditions add complexity
-        "comparison_operator" | // Each comparison is part of a decision
-        "conditional_expression" | // ternary operator (x if C else y)
-        "list_comprehension" | // if it contains an 'if' clause
-        "generator_expression" | // if it contains an 'if' clause
-        "dictionary_comprehension" // if it contains an 'if' clause
+        "elif_clause" | 
+        "except_clause" | 
+        "assert_statement" | 
+        "raise_statement" | 
+        "boolean_operator" | 
+        "comparison_operator" | 
+        "conditional_expression" | 
+        "list_comprehension" | 
+        "generator_expression" | 
+        "dictionary_comprehension" 
          => {
             *complexity += 1;
-            // For boolean_operator like 'and'/'or', each one adds to complexity.
-            // If a node has multiple 'and' or 'or' children, this simple match might undercount.
-            // A more robust way for 'and'/'or' is to count them if they are children of a condition.
-            // For list comprehensions with 'if', we need to check for the 'if_clause' child.
+            
             if node.kind() == "list_comprehension" || node.kind() == "generator_expression" || node.kind() == "dictionary_comprehension" {
                 if node.child_by_field_name("if_clauses").is_some() || node.children(&mut node.walk()).any(|c| c.kind() == "if_clause") {
-                    // Already counted the comprehension itself, the 'if' adds another path.
-                    // This might double count if the 'if_clause' itself is a decision point.
-                    // A simpler approach is to count specific boolean keywords.
+                    
                 }
             }
         }
-        // Handle 'else' carefully: it's part of an 'if' structure.
-        // The initial 'if' counts as 1. An 'else' doesn't add another *decision point* by itself,
-        // but it does define an alternative path. Standard CC often counts the 'if' and assumes 'else' is covered.
-        // Some tools count 'else' if it's not just a pass-through.
-        // For simplicity, we are counting constructs that introduce branching.
+        
         _ => {}
     }
 
@@ -98,12 +122,14 @@ fn calculate_cyclomatic_complexity_recursive(node: &tree_sitter::Node, complexit
 }
 
 fn calculate_cyclomatic_complexity(function_body_node: &tree_sitter::Node) -> usize {
-    let mut complexity = 1; // Start with 1 for the single path through the function if no decisions
+    
+    let mut complexity = 1; 
     calculate_cyclomatic_complexity_recursive(function_body_node, &mut complexity);
     complexity
 }
-/// Recursively traverses a node to find all 'call' expressions.
+
 fn find_calls_recursive(node: &tree_sitter::Node, code: &str, calls: &mut Vec<String>) {
+    
     if node.kind() == "call" {
         if let Some(func_node) = node.child_by_field_name("function") {
             let callee_name = func_node
@@ -122,46 +148,42 @@ fn find_calls_recursive(node: &tree_sitter::Node, code: &str, calls: &mut Vec<St
     }
 }
 
-/// Helper to parse a function node, requiring file and optional class context.
 fn parse_function_node(
     node: &tree_sitter::Node,
     code: &str,
     file_path: &str,
     containing_class_name: Option<&str>,
 ) -> Option<MethodInfo> {
+    
     let actual_function_node = if node.kind() == "decorated_definition" {
-        // This is the outer cursor for the first `find` attempt.
+        
         let mut cursor = node.walk();
 
-        // Perform the first find in its own scope to manage iterator lifetime.
         let primary_find_result: Option<tree_sitter::Node> = {
             let mut children_iter = node.children(&mut cursor);
             children_iter.find(|child| {
                 child.kind() == "function_definition" || child.kind() == "async_function_definition"
             })
-            // children_iter is dropped here. cursor is still alive.
+            
         };
 
-        // Now, use or_else. The closure for or_else will manage its own cursor.
         let option_node = primary_find_result.or_else(|| {
-            // fallback_cursor is local to this closure.
-            let mut fallback_cursor = node.walk(); // Use a new cursor for the fallback
+            
+            let mut fallback_cursor = node.walk(); 
             let fallback_find_result: Option<tree_sitter::Node> = {
                 let mut fallback_children_iter = node.children(&mut fallback_cursor);
                 fallback_children_iter.find(|child| child.kind().ends_with("definition"))
-                // fallback_children_iter is dropped here. fallback_cursor is still alive.
+                
             };
-            // fallback_cursor is dropped when this closure ends.
+            
             fallback_find_result
         });
-        // cursor (the outer one) is dropped when this `if` block's scope ends.
-
-        option_node.unwrap_or(*node) // Fallback to the original node if nothing found
+        
+        option_node.unwrap_or(*node) 
     } else {
-        *node // If not a decorated_definition, use the node itself.
+        *node 
     };
 
-    // ... (rest of parse_function_node remains the same)
     if let Some(name_node) = actual_function_node.child_by_field_name("name") {
         let name = name_node
             .utf8_text(code.as_bytes())
@@ -213,7 +235,7 @@ fn parse_function_node(
                 start_line: node.start_position().row + 1,
                 end_line: node.end_position().row + 1,
                 content_hash,
-                calls, // Will be empty
+                calls, 
                 loc,
                 cyclomatic_complexity: 1,
             });
@@ -221,13 +243,14 @@ fn parse_function_node(
     }
     None
 }
-/// Helper to handle decorated definitions, passing context through.
+
 fn extract_function_from_decorated(
     node: &tree_sitter::Node,
     code: &str,
     file_path: &str,
     class_name: Option<&str>,
 ) -> Option<MethodInfo> {
+    
     if let Some(definition_node) = node.child_by_field_name("definition") {
         if definition_node.kind() == "function_definition" {
             return parse_function_node(&definition_node, code, file_path, class_name);
@@ -236,8 +259,8 @@ fn extract_function_from_decorated(
     None
 }
 
-/// Helper to parse a class node, including its methods.
 fn parse_class_node(node: &tree_sitter::Node, code: &str, file_path: &str) -> Option<ClassInfo> {
+    
     if let Some(name_node) = node.child_by_field_name("name") {
         let name = name_node
             .utf8_text(code.as_bytes())
@@ -248,22 +271,20 @@ fn parse_class_node(node: &tree_sitter::Node, code: &str, file_path: &str) -> Op
         if let Some(body_node) = node.child_by_field_name("body") {
             let mut cursor = body_node.walk();
             for child_node in body_node.children(&mut cursor) {
-                // Handle direct function definitions and async function definitions
+                
                 if child_node.kind() == "function_definition"
                     || child_node.kind() == "async_function_definition"
                 {
-                    // The fix for E0061 (changing parse_function_node's signature) will make this call valid.
+                    
                     if let Some(method_info) =
                         parse_function_node(&child_node, code, file_path, Some(&name))
                     {
                         methods_in_class.push(method_info);
                     }
                 }
-                // Handle decorated definitions (which could be methods)
+                
                 if child_node.kind() == "decorated_definition" {
-                    // extract_function_from_decorated expects the decorated_definition node.
-                    // It will then call parse_function_node with the inner function_definition.
-                    // The fix for E0061 (changing parse_function_node's signature) makes the inner call in extract_function_from_decorated valid.
+                    
                     if let Some(method_info) =
                         extract_function_from_decorated(&child_node, code, file_path, Some(&name))
                     {
@@ -316,25 +337,31 @@ fn main() {
                 let root_node = tree.root_node();
                 let mut top_level_functions: Vec<MethodInfo> = Vec::new();
                 let mut classes_in_file: Vec<ClassInfo> = Vec::new();
+                let mut imports_in_file: Vec<String> = Vec::new(); 
                 let relative_path = path.strip_prefix(&args.dir_path).unwrap_or(path);
                 let relative_path_str = relative_path.to_str().unwrap_or("");
 
                 let mut cursor = root_node.walk();
                 for node in root_node.children(&mut cursor) {
-                    // Handle direct function definitions and async function definitions
+                    
+                    if node.kind() == "import_statement" {
+                        imports_in_file.extend(parse_import_statement(&node, &code_string));
+                    }
+                    if node.kind() == "import_from_statement" {
+                        imports_in_file.extend(parse_import_from_statement(&node, &code_string));
+                    }
+                    
                     if node.kind() == "function_definition"
                         || node.kind() == "async_function_definition"
                     {
-                        // The fix for E0061 (changing parse_function_node's signature) will make this call valid.
                         if let Some(func_info) =
                             parse_function_node(&node, &code_string, relative_path_str, None)
                         {
                             top_level_functions.push(func_info);
                         }
                     }
-                    // Handle decorated definitions (which could be top-level functions or classes)
+                    
                     if node.kind() == "decorated_definition" {
-                        // Check if it's a decorated function
                         if let Some(definition_child) = node.child_by_field_name("definition") {
                             if definition_child.kind() == "function_definition"
                                 || definition_child.kind() == "async_function_definition"
@@ -348,7 +375,6 @@ fn main() {
                                     top_level_functions.push(func_info);
                                 }
                             } else if definition_child.kind() == "class_definition" {
-                                // If it's a decorated class, parse it using parse_class_node with the inner class_definition node
                                 if let Some(class_info) = parse_class_node(
                                     &definition_child,
                                     &code_string,
@@ -359,7 +385,7 @@ fn main() {
                             }
                         }
                     }
-                    // Handle non-decorated class definitions
+                    
                     if node.kind() == "class_definition" {
                         if let Some(class_info) =
                             parse_class_node(&node, &code_string, relative_path_str)
@@ -369,7 +395,6 @@ fn main() {
                     }
                 }
 
-                // ... (rest of main remains the same)
                 let mut combined_child_hashes = String::new();
                 top_level_functions.sort_by(|a, b| a.name.cmp(&b.name));
                 for func in &top_level_functions {
@@ -379,6 +404,12 @@ fn main() {
                 for class in &classes_in_file {
                     combined_child_hashes.push_str(&class.structure_hash);
                 }
+                
+                imports_in_file.sort(); 
+                for import_str in &imports_in_file {
+                    combined_child_hashes.push_str(import_str);
+                }
+                
                 let mut file_hasher = Sha256::new();
                 file_hasher.update(combined_child_hashes);
                 let file_structure_hash = format!("{:x}", file_hasher.finalize());
@@ -387,6 +418,7 @@ fn main() {
                     path: relative_path_str.to_string(),
                     functions: top_level_functions,
                     classes: classes_in_file,
+                    imports: imports_in_file, 
                     structure_hash: file_structure_hash,
                 });
             }

@@ -88,7 +88,7 @@ def process_repository(repo_id):
         if previous_commit_hash and previous_commit_hash == latest_commit_hash:
             print(f"PROCESS_REPO_TASK: No new commits for repo {repo.id}. Processing complete.")
             repo.status = Repository.Status.COMPLETED
-            repo.last_processed = datetime.datetime.now(datetime.timezone.utc)
+            repo.last_processed = timezone.now()
             repo.save(update_fields=['status', 'last_processed'])
             return # Stop here
         
@@ -126,10 +126,15 @@ def process_repository(repo_id):
             call_map_for_deps = {}
 
             for file_data in repo_analysis_data.get('files', []):
+                file_defaults = {
+                    'structure_hash': file_data['structure_hash'],
+                    'imports': file_data.get('imports', None) # Get the new 'imports' array
+                }
+                print(f"DEBUG_TASK: Preparing to save file '{file_data['path']}'. Imports found in JSON: {file_data.get('imports')}")
                 code_file_obj, _ = CodeFile.objects.update_or_create(
                     repository=repo,
                     file_path=file_data.get('path'),
-                    defaults={'structure_hash': file_data.get('structure_hash')}
+                    defaults=file_defaults
                 )
                 
                 # Process top-level functions

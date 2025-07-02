@@ -1,4 +1,5 @@
 # backend/repositories/ai_services.py
+import re
 from typing import Generator,Optional
 from django.conf import settings
 from openai import OpenAI as OpenAIClient
@@ -100,7 +101,7 @@ def generate_class_summary_stream(
         "```",
         # --- END TEMPLATE ---
 
-        "\nGenerate the complete Markdown summary now, filling in the template with the correct information for the `UserManager` class:"
+        f"\nGenerate the complete Markdown summary now, filling in the template with the correct information for the `{class_name}` class:"
     ])
     
     prompt = "\n".join(prompt_parts)
@@ -118,14 +119,55 @@ def generate_class_summary_stream(
             temperature=0.4,
             max_tokens=1000
         )
-        full_content = []
+        full_response_text = ""
         for chunk in stream:
             content = chunk.choices[0].delta.content
             if content:
-                full_content += content
+                full_response_text += content
                 yield content  # If you're streaming to client
 
         # After streaming is done, print the full content
+        if full_response_text:
+            # We can do some basic cleaning here if needed, e.g., stripping whitespace
+            cleaned_summary = full_response_text.strip()
+            
+            # For the one-line summary field, let's just take the first meaningful line.
+            # The "Purpose" section is what we want.
+            # … after cleaned_summary = full_response_text.strip() …
+
+            # Split into lines
+            lines = cleaned_summary.splitlines()
+
+            one_line_summary = ""
+
+# This pattern looks for:
+#  - "###" + optional spaces + "Purpose"
+#  - then any whitespace/newlines
+#  - then an optional backtick, then capture everything up to the next backtick or end-of-line
+            pattern = re.compile(
+                r"###\s*Purpose\s*\n+`?(?P<sentence>.+?)(?:`?\n|$)",
+                re.IGNORECASE,
+            )
+
+            m = pattern.search(cleaned_summary)
+            if m:
+                one_line_summary = m.group("sentence").strip()
+            else:
+                # As a last resort, try pulling the very next non-blank line after the first line
+                lines = cleaned_summary.splitlines()
+                for line in lines[1:]:
+                    if line.strip():
+                        one_line_summary = line.strip("` ").rstrip(".")
+                        break
+
+            # Save it
+            if one_line_summary:
+                code_class.summary = one_line_summary
+            else:
+                # If somehow *still* empty, at least store the raw first line
+                code_class.summary = cleaned_summary.splitlines()[0]
+            code_class.save(update_fields=["summary"])
+            print(f"CLASS_SUMMARY_SERVICE: Saved summary for class {code_class.id!r}: {code_class.summary!r}")
 
     except Exception as e:
         error_message = f"// Helix encountered an error while summarizing the class: {str(e)}"

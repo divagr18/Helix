@@ -30,7 +30,7 @@ const AuthenticatedLayout = () => {
   return (
     // This div provides the overall flex-column structure for the entire authenticated app.
     // Your page components will replace the <Outlet /> and become the flex-grow element.
-    <div className="flex flex-col h-screen bg-background text-foreground">
+    <div className="flex flex-col h-full bg-background text-foreground">
       <Header />
       <GlobalKeyboardShortcuts />
       <main className="flex-grow min-h-0"> {/* The main content area will grow to fill space */}

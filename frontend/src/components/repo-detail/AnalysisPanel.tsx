@@ -1,18 +1,17 @@
-// src/components/repo-detail/AnalysisPanel.tsx
 import React from 'react';
-import { Link } from 'react-router-dom';
-import { SymbolListItem, type SymbolForListItem } from './SymbolListItem'; // Import updated types/component
-import type { CodeFile, CodeClass } from '@/types'; // Assuming central types
-import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
-
+import { Card, CardHeader, CardTitle } from '@/components/ui/card';
+import { SymbolListItem, type SymbolForListItem } from './SymbolListItem';
 import { ClassSummarySection } from './ClassSummarySection';
+import type { CodeFile, CodeSymbol, GeneratedDoc } from '@/types';
+
 interface AnalysisPanelProps {
   selectedFile: CodeFile | null;
-  generatedDocs: Record<number, string>; // Maps symbol.id to its AI generated doc string
+  generatedDocs: Record<number, GeneratedDoc>;
   onGenerateDoc: (symbolId: number) => void;
-  generatingDocId: number | null; // ID of the symbol whose doc is currently being generated (global for panel)
-  onSaveDoc: (symbolId: number, docToSave: string) => void; // Expects doc string to save
-  savingDocId: number | null; // ID of the symbol whose doc is currently being saved (global for panel)
+  generatingDocId: number | null;
+  onSaveDoc: (symbolId: number, doc: string) => void;
+  savingDocId: number | null;
+  onAnalysisChange: () => void; // Callback to refetch data after a summary is generated/saved
 }
 
 export const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
@@ -22,28 +21,34 @@ export const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
   generatingDocId,
   onSaveDoc,
   savingDocId,
+  onAnalysisChange,
 }) => {
-
+  // Derived state to simplify passing props down
   const isAnyDocGenerating = generatingDocId !== null;
   const isAnyDocSaving = savingDocId !== null;
 
   return (
-    <div className="h-full flex flex-col bg-background"> {/* Use bg-background for the panel itself to contrast with Cards */}
+    <div className="h-full flex flex-col bg-background">
+      {/* Panel Header */}
       <div className="p-3 md:p-4 border-b border-border sticky top-0 bg-card z-10">
         <h3 className="text-base md:text-lg font-semibold text-foreground">
-          Analysis for: {selectedFile ?
+          Analysis for: 
+          {selectedFile ? (
             <span className="font-normal text-muted-foreground ml-1 truncate" title={selectedFile.file_path}>
               {selectedFile.file_path.split('/').pop()}
             </span>
-            : <span className="font-normal text-muted-foreground ml-1">No file selected</span>
-          }
+          ) : (
+            <span className="font-normal text-muted-foreground ml-1">No file selected</span>
+          )}
         </h3>
       </div>
 
-      <div className="flex-grow overflow-y-auto p-2 md:p-3 space-y-1"> {/* Reduced space-y to allow cards to manage their margin */}
+      {/* Main Content Area */}
+      <div className="flex-grow overflow-y-auto p-2 md:p-3 space-y-1">
         {selectedFile ? (
           (selectedFile.symbols.length > 0 || selectedFile.classes.length > 0) ? (
             <>
+              {/* Render top-level functions */}
               {selectedFile.symbols.map(func => (
                 <SymbolListItem
                   key={`func-${func.id}`}
@@ -58,20 +63,30 @@ export const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
                 />
               ))}
 
+              {/* Render classes and their methods */}
               {selectedFile.classes.map(cls => (
-                <Card key={`class-${cls.id}`} className="mb-3 bg-card border-border shadow-sm">
-                  <CardHeader className="p-3 md:p-4 !pb-3"> {/* Adjusted padding */}
-                    <div className="flex justify-between items-center gap-2">
-                      <CardTitle className="text-md md:text-lg font-semibold text-primary">
-                        Class: {cls.name}
-                      </CardTitle>
-                    </div>
+                <Card key={`class-${cls.id}`} className="mb-3 bg-card/50 border-border shadow-sm">
+                  
+                  {/* CardHeader now only contains the title */}
+                  <CardHeader className="p-3 md:p-4 !pb-2">
+                    <CardTitle className="text-md md:text-lg font-semibold text-primary">
+                      Class: {cls.name}
+                    </CardTitle>
                   </CardHeader>
-                  <div className="px-3 md:px-4 pb-3 border-b border-border">
-                    <ClassSummarySection classId={cls.id} />
+                  
+                  {/* A new div below the header holds the summary section */}
+                  <div className="px-3 md:px-4 pb-3">
+                    <ClassSummarySection 
+                      codeClass={cls} 
+                      onSummaryGenerated={onAnalysisChange} 
+                    />
                   </div>
-                  {/* No CardContent needed if SymbolListItems are direct children visually */}
-                  <div className="space-y-1 px-1 pb-1 md:px-2 md:pb-2"> {/* Add padding around methods */}
+
+                  {/* Optional: A visual separator */}
+                  <div className="border-t border-border/50 mx-4"></div>
+
+                  {/* The list of methods for the class */}
+                  <div className="space-y-1 p-2">
                     {cls.methods.map(method => (
                       <SymbolListItem
                         key={`method-${method.id}`}
@@ -90,10 +105,14 @@ export const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
               ))}
             </>
           ) : (
-            <p className="text-muted-foreground text-center py-10">No functions or classes found in this file.</p>
+            <div className="flex items-center justify-center h-full">
+              <p className="text-muted-foreground text-center py-10">No functions or classes found in this file.</p>
+            </div>
           )
         ) : (
-          <p className="text-muted-foreground text-center py-10">Select a file to see its analysis.</p>
+          <div className="flex items-center justify-center h-full">
+            <p className="text-muted-foreground text-center py-10">Select a file to see its analysis.</p>
+          </div>
         )}
       </div>
     </div>

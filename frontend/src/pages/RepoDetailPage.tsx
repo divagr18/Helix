@@ -1,9 +1,12 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import axios from 'axios';
+import { toast } from 'sonner'; // <-- Import toast
+
 // Added FaSpinner for loading state
+import { Button } from '@/components/ui/button'; 
 import { getCookie } from '../utils';
-import { CodeViewerPanel } from '../components/repo-detail/CodeViewerPanel';
+import { CodeEditorPanel } from '../components/repo-detail/CodeViewerPanel';
 import { AnalysisPanel } from '../components/repo-detail/AnalysisPanel';
 import { FileTreePanel } from '../components/repo-detail/FileTreePanel';
 import { BatchActionsPanel } from '../components/repo-detail/BatchActionsPanel';
@@ -88,6 +91,8 @@ export function RepoDetailPage() {
   const isAnyGlobalBatchActionInProgress = activeDocGenTaskId !== null || activePRCreationTaskId !== null;
   const isAnyOperationInProgressForFileTree = isAnyFileSpecificActionInProgress || isAnyGlobalBatchActionInProgress;
 
+  const [modifiedFileContent, setModifiedFileContent] = useState<string | null>(null);
+
   // --- YOUR CORRECT API CALL LOGIC ---
   const orphanSymbolsList = useMemo(() => {
     if (!repo) return [];
@@ -115,6 +120,39 @@ export function RepoDetailPage() {
     });
     return orphans;
   }, [repo]);
+  
+
+    // This function will be passed to the editor to update our state
+  const handleContentChange = (newContent: string | undefined) => {
+      // The editor's value can be undefined. We handle it here.
+      // We can store `undefined` or default to an empty string. Storing `null` is also an option.
+      setModifiedFileContent(newContent ?? ''); 
+  };
+    
+    // A new function to handle saving the changes
+    const handleSaveChanges = () => {
+        if (!selectedFile || modifiedFileContent === null) return;
+
+        toast.info("Saving changes...");
+        // This requires a new backend endpoint: PUT or POST /api/v1/files/<id>/content/
+        axios.put(`http://localhost:8000/api/v1/files/${selectedFile.id}/content/`, { content: modifiedFileContent },{ // The configuration object
+            withCredentials: true,
+            headers: {
+                'X-CSRFToken': getCookie('csrftoken'), // Get the token from cookies
+            },
+        })
+            .then(() => {
+                toast.success("File saved successfully!");
+                // Update the "original" content state to match the new saved state
+                setFileContent(modifiedFileContent);
+            })
+            .catch(err => {
+                toast.error("Failed to save file.", { description: err.message });
+            });
+    };
+
+    // Determine if there are unsaved changes
+    const hasUnsavedChanges = fileContent !== null && modifiedFileContent !== null && fileContent !== modifiedFileContent;
   const handleCreateBatchPRForRepo = () => {
     // Guard conditions: ensure repo is loaded, files are selected, and no other batch task is active
     if (!repo || selectedFilesForBatch.size === 0 || activePRCreationTaskId !== null || activeDocGenTaskId !== null) {
@@ -212,6 +250,13 @@ export function RepoDetailPage() {
   // Re-run if activeDocGenTaskId changes
 
   // --- useEffect for Polling Batch PR Creation Task ---
+  const getLanguage = (filePath: string) => {
+    const extension = filePath.split('.').pop() || '';
+    if (extension === 'py') return 'python';
+    if (extension === 'js') return 'javascript';
+    if (extension === 'ts') return 'typescript';
+    return 'plaintext';
+  };
   useEffect(() => {
     let intervalId: NodeJS.Timeout | undefined;
     if (activePRCreationTaskId) {
@@ -343,7 +388,6 @@ export function RepoDetailPage() {
       axios.get(`http://localhost:8000/api/v1/repositories/${repoId}/`, { withCredentials: true })
         .then(response => {
           const repoData = response.data;
-          console.log("REPO_DETAIL_PAGE: Fetched repoData:", JSON.parse(JSON.stringify(repoData)));
           const targetFilePath = "ImageEditor.py"; // Change to your file
           const targetClassName = "ImageOps";    // Change to your class
           const targetMethodName = "Capture"; // Change to your method
@@ -464,24 +508,48 @@ export function RepoDetailPage() {
     setLoading(true); // Set loading true only on initial mount
     fetchRepoDetails();
   }, [repoId]);
-
+  
   const handleFileSelect = (file: CodeFile) => {
+    // 1. Immediately update the selected file object.
     setSelectedFile(file);
-    setFileContent('');
+    
+    // 2. Immediately reset all content-related states to show a loading view.
+    //    Using `null` is a clear signal that there is no content yet.
+    setFileContent(null);
+    setModifiedFileContent(null); 
     setContentLoading(true);
 
+    // 3. Fetch the new content.
     axios.get(`http://localhost:8000/api/v1/files/${file.id}/content/`, { withCredentials: true })
       .then(response => {
-        setFileContent(response.data);
-        setContentLoading(false);
+        console.log("API Response:", response);
+        // Assuming the API returns { "content": "..." }
+        const fetchedContent = response.data;
+
+        // 4. Update BOTH the original content and the editor's content state.
+        //    This is the crucial step to sync the editor with the new file.
+        setFileContent(fetchedContent);
+        setModifiedFileContent(fetchedContent);
       })
       .catch(err => {
         console.error("Error fetching file content:", err);
-        setFileContent(`// Failed to load content for ${file.file_path}`);
+        const errorContent = `// Failed to load content for ${file.file_path}\n// ${err.message}`;
+        // Also update both states on error to display the error message in the editor.
+        setFileContent(errorContent);
+        setModifiedFileContent(errorContent);
+      })
+      .finally(() => {
+        // 5. Always turn off the loading indicator.
         setContentLoading(false);
       });
   };
-
+  
+  const editorLanguage = useMemo(() => {
+        if (selectedFile) {
+            return getLanguage(selectedFile.file_path); // Use your existing getLanguage helper
+        }
+        return 'plaintext';
+    }, [selectedFile]);  
   const handleGenerateDoc = async (funcId: number) => {
     setGeneratingDocId(funcId);
     setGeneratedDocs(prev => ({ ...prev, [funcId]: '' }));
@@ -543,13 +611,7 @@ export function RepoDetailPage() {
         setCreatingPRFileId(null);
       });
   };
-  const getLanguage = (filePath: string) => {
-    const extension = filePath.split('.').pop() || '';
-    if (extension === 'py') return 'python';
-    if (extension === 'js') return 'javascript';
-    if (extension === 'ts') return 'typescript';
-    return 'plaintext';
-  };
+  
 
   if (loading && !repo) return <p className="p-6 text-center text-foreground">Loading repository...</p>;
   if (error) return <p className="p-6 text-center text-destructive">{error}</p>;
@@ -645,13 +707,43 @@ export function RepoDetailPage() {
                 {/* Center Panel (Code Viewer)                  */}
                 {/* ============================================= */}
                 <main className="flex-grow flex flex-col overflow-hidden bg-background min-w-0">
-                    <CodeViewerPanel
-                        selectedFile={selectedFile}
-                        fileContent={fileContent}
-                        isLoading={contentLoading}
-                        language={selectedFile ? getLanguage(selectedFile.file_path) : 'plaintext'}
+                    {/* --- NEW: Header for the editor with a Save button --- */}
+                    <div className="flex items-center justify-between p-2 border-b border-border bg-card flex-shrink-0">
+                        <span className="text-sm font-mono text-muted-foreground">
+                            {selectedFile ? selectedFile.file_path : 'No file selected'}
+                        </span>
+                        {hasUnsavedChanges && (
+                            <div className="flex items-center gap-2">
+                                <span className="text-xs text-yellow-400">Unsaved Changes</span>
+                                <Button size="sm" onClick={handleSaveChanges}>Save</Button>
+                            </div>
+                        )}
+                    </div>
+                    {/* --- END NEW HEADER --- */}
+
+                    {/* --- REPLACE CodeViewerPanel with CodeEditorPanel --- */}
+                    <div className="flex-grow min-h-0">
+                        {console.log("Rendering CodeEditorPanel with props:", {
+        content: modifiedFileContent,
+        isLoading: contentLoading,
+        language: editorLanguage,
+    })}
+                      
+                        <CodeEditorPanel
+                          key={selectedFile ? selectedFile.id : 'no-file-selected'}
+                            
+                            // Pass the state that is bound to the editor's changes.
+                          content={modifiedFileContent}
+                            
+                          isLoading={contentLoading}
+                            
+                          onContentChange={handleContentChange}
+                            
+                            // Pass the correctly derived language.
+                          language={editorLanguage}
                     />
-                </main>
+                    </div>
+                  </main>
 
                 {/* ============================================= */}
                 {/* Right Panel (Analysis)                      */}

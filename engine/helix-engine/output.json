@@ -1,74 +1,14 @@
 {
   "files": [
     {
-      "path": "my_file.py",
-      "functions": [
-        {
-          "name": "complex_func",
-          "unique_id": "my_file.py:complex_func",
-          "start_line": 12,
-          "end_line": 22,
-          "content_hash": "a2477b893e60d45a112b9cc75851ab28ec95b8a0a59b97e88077b8793435efc1",
-          "calls": [
-            "range",
-            "print"
-          ],
-          "loc": 10,
-          "cyclomatic_complexity": 8
-        },
-        {
-          "name": "func_with_if",
-          "unique_id": "my_file.py:func_with_if",
-          "start_line": 7,
-          "end_line": 10,
-          "content_hash": "18ca70e540d571a71c36cfe74b0bc3791e28e24e809ace9671c9d92ba4528180",
-          "calls": [],
-          "loc": 4,
-          "cyclomatic_complexity": 3
-        },
-        {
-          "name": "simple_func",
-          "unique_id": "my_file.py:simple_func",
-          "start_line": 4,
-          "end_line": 5,
-          "content_hash": "0fe1c73f43801057c8953c7c870c4d884e50005d218d9a6737a7c7d823aca7e8",
-          "calls": [],
-          "loc": 2,
-          "cyclomatic_complexity": 1
-        }
+      "path": "test.py",
+      "functions": [],
+      "classes": [],
+      "imports": [
+        "datetime"
       ],
-      "classes": [
-        {
-          "name": "MyClass",
-          "start_line": 24,
-          "end_line": 34,
-          "methods": [
-            {
-              "name": "__init__",
-              "unique_id": "my_file.py:MyClass::__init__",
-              "start_line": 25,
-              "end_line": 26,
-              "content_hash": "fc83ff991054f246cff3d6aad608feb0c60f90b89d13828514f9fbadceba0a4f",
-              "calls": [],
-              "loc": 2,
-              "cyclomatic_complexity": 1
-            },
-            {
-              "name": "method_with_while",
-              "unique_id": "my_file.py:MyClass::method_with_while",
-              "start_line": 28,
-              "end_line": 34,
-              "content_hash": "05d1b7363c26781062db898e575eafc17c21e4c4da4e30fe23d346e4c0196971",
-              "calls": [],
-              "loc": 6,
-              "cyclomatic_complexity": 3
-            }
-          ],
-          "structure_hash": "b2c67877480ef13f2d6d536a628db684344902be5f79f10a73c1178873523744"
-        }
-      ],
-      "structure_hash": "a679fe0840ded018d92c8b75e9e93c32c191e0bd3a849a05082d48456477d1d8"
+      "structure_hash": "2763d133c5e59ca4ad13b9314864224f3fe33b759a4c3e72fcc03b85ce71384d"
     }
   ],
-  "root_merkle_hash": "5d21add57edf87264d1af82590b8d8b683c78d8b5a45d936ce81b99b14bf6087"
+  "root_merkle_hash": "1ac111370492425306a216b9f5105b80615288f8fd3c058ec69cf40a2be3ff05"
 }

@@ -47,6 +47,8 @@ export interface CodeClass {
   end_line: number;
   structure_hash: string | null;
   methods: CodeSymbol[];
+  summary: string | null; // <--- ADD THIS
+
 }
 
 export interface CodeFile {

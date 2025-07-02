@@ -100,7 +100,7 @@ class ClassSerializer(serializers.ModelSerializer):
         model = CodeClass
         fields = [
             'id', 'name', 'start_line', 'end_line',
-            'structure_hash', 'methods',
+            'structure_hash', 'methods','summary'
         ]
 
 # A serializer for a file, which nests its top-level functions AND its classes.
@@ -118,7 +118,7 @@ class CodeFileSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'file_path', 'structure_hash',
             'symbols',  # This is the crucial key for top-level functions
-            'classes'
+            'classes','imports'
         ]
 
 # A serializer for the full repository detail view.
@@ -138,7 +138,7 @@ class RepositoryDetailSerializer(serializers.ModelSerializer):
 class RepositorySerializer(serializers.ModelSerializer):
     class Meta:
         model = Repository
-        fields = ['id', 'name', 'full_name', 'github_id', 'status', 'updated_at']
+        fields = ['id', 'name', 'full_name', 'github_id', 'status','last_processed', 'updated_at',]
         read_only_fields = ['status', 'updated_at']
 
 
