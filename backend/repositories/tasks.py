@@ -10,6 +10,8 @@ from django.db.models import Q ,F,Count # <--- ADD THIS IMPORT
 import ast # Python's Abstract Syntax Tree module
 import astor,hashlib
 import requests
+from .ai_services import generate_module_readme_stream 
+from celery import chain
 import subprocess # To call ruff CLI
 import time
 from github import Github, GithubException, UnknownObjectException
@@ -19,7 +21,7 @@ from itertools import takewhile
 import tempfile
 from django.utils import timezone
 from django.db import transaction,models  # Import the transaction module
-from .models import CodeFile, CodeSymbol, CodeClass,CodeDependency,EmbeddingBatchJob,Insight,KnowledgeChunk
+from .models import CodeFile, CodeSymbol, CodeClass,CodeDependency,EmbeddingBatchJob,Insight,KnowledgeChunk,ModuleDocumentation
 from .models import Notification, AsyncTaskStatus # Ensure Notification is imported
 from allauth.socialaccount.models import SocialAccount
 OPENAI_EMBEDDING_BATCH_SIZE = 50
@@ -151,7 +153,8 @@ def process_repository(repo_id):
                         'name': func_data.get('name'), 'start_line': func_data.get('start_line'),
                         'end_line': func_data.get('end_line'), 'content_hash': func_data.get('content_hash'),
                         'is_orphan': False,'loc': func_data.get('loc'),
-                            'cyclomatic_complexity': func_data.get('cyclomatic_complexity')
+                            'cyclomatic_complexity': func_data.get('cyclomatic_complexity'),'existing_docstring': func_data.get('docstring'), # from the JSON
+        'signature_end_location': func_data.get('signature_end_location'), # from the JSON
                     }
                     
                     symbol_obj, created = CodeSymbol.objects.update_or_create(
@@ -159,6 +162,14 @@ def process_repository(repo_id):
                         code_file=code_file_obj,
                         defaults=func_defaults
                     )
+                    if created and symbol_obj.existing_docstring:
+                        # If we're seeing this symbol for the first time and it already has a docstring
+                        symbol_obj.documentation_status = CodeSymbol.DocStatus.DOCUMENTED
+                        symbol_obj.save(update_fields=['documentation_status'])
+                    elif created and not symbol_obj.existing_docstring:
+                        # New symbol with no docstring
+                        symbol_obj.documentation_status = CodeSymbol.DocStatus.NONE
+                        symbol_obj.save(update_fields=['documentation_status'])
 
                     if created:
                         added_symbols_data.append({'id': symbol_obj.id, 'name': symbol_obj.name, 'file_path': file_data.get('path')})
@@ -192,7 +203,8 @@ def process_repository(repo_id):
                             'name': method_data.get('name'), 'start_line': method_data.get('start_line'),
                             'end_line': method_data.get('end_line'), 'content_hash': method_data.get('content_hash'),
                             'is_orphan': False,'loc': method_data.get('loc'),
-                                'cyclomatic_complexity': method_data.get('cyclomatic_complexity')
+                                'cyclomatic_complexity': method_data.get('cyclomatic_complexity'),'existing_docstring': func_data.get('docstring'), # from the JSON
+        'signature_end_location': func_data.get('signature_end_location'),
                         }
 
                         symbol_obj, created = CodeSymbol.objects.update_or_create(
@@ -200,6 +212,14 @@ def process_repository(repo_id):
                             code_class=class_obj,
                             defaults=method_defaults
                         )
+                        if created and symbol_obj.existing_docstring:
+        # If we're seeing this symbol for the first time and it already has a docstring
+                            symbol_obj.documentation_status = CodeSymbol.DocStatus.DOCUMENTED
+                            symbol_obj.save(update_fields=['documentation_status'])
+                        elif created and not symbol_obj.existing_docstring:
+                            # New symbol with no docstring
+                            symbol_obj.documentation_status = CodeSymbol.DocStatus.NONE
+                            symbol_obj.save(update_fields=['documentation_status'])
 
                         if created:
                             added_symbols_data.append({'id': symbol_obj.id, 'name': symbol_obj.name, 'file_path': file_data.get('path'), 'class_name': class_data.get('name')})
@@ -898,6 +918,10 @@ def create_docs_pr_for_file_task(self, code_file_id: int, user_id: int):
                 print(f"Failed to cleanup branch {new_branch_name}: {branch_delete_e}")
         raise # Re-raise for Celery to handle as a task failure
     
+
+
+
+
 @app.task(bind=True, max_retries=1, default_retry_delay=300)
 def batch_generate_docstrings_for_files_task(self, repo_id: int, user_id: int, file_ids: list[int]):
     task_id = self.request.id
@@ -2184,3 +2208,193 @@ def create_pr_with_changes_task(
         status_tracker.result = {'error': error_details}
         status_tracker.save()
         raise self.replace(e) # Re-raise to mark the task as failed in Celery monitoring
+    
+
+@app.task
+def sync_knowledge_index_task(repo_id: int):
+    """
+    Synchronizes all sources of knowledge (Module READMEs, Class Summaries,
+    Symbol Docs/Code) into the KnowledgeChunk table for a repository.
+    This is the single task responsible for building the RAG index.
+    """
+    print(f"KNOWLEDGE_SYNC_TASK: Starting for repo_id: {repo_id}")
+    
+    try:
+        repo = Repository.objects.get(id=repo_id)
+    except Repository.DoesNotExist:
+        print(f"KNOWLEDGE_SYNC_TASK: ERROR - Repository {repo_id} not found.")
+        return
+
+    # For idempotency, we can clear all chunks and rebuild.
+    # A more advanced version could use hashes to only update changed items.
+    KnowledgeChunk.objects.filter(repository=repo).delete()
+    print(f"KNOWLEDGE_SYNC_TASK: Cleared old knowledge chunks for repo {repo.id}.")
+
+    chunks_to_create = []
+
+    # 1. Index ModuleDocumentation
+    module_docs = ModuleDocumentation.objects.filter(repository=repo)
+    for doc in module_docs:
+        chunks_to_create.append(KnowledgeChunk(
+            repository=repo,
+            chunk_type=KnowledgeChunk.ChunkType.MODULE_README,
+            content=f"README for module '{doc.module_path}':\n{doc.content_md}",
+            # We can't link to a specific file/symbol, which is fine.
+        ))
+
+    # 2. Index CodeClass summaries
+    classes_with_summaries = CodeClass.objects.filter(
+        code_file__repository=repo,
+        generated_summary_md__isnull=False
+    ).exclude(generated_summary_md__exact='')
+    
+    for code_class in classes_with_summaries:
+        chunks_to_create.append(KnowledgeChunk(
+            repository=repo,
+            chunk_type=KnowledgeChunk.ChunkType.CLASS_SUMMARY,
+            content=f"Summary for class '{code_class.name}':\n{code_class.generated_summary_md}",
+            related_class=code_class,
+            related_file=code_class.code_file
+        ))
+
+    # 3. Index CodeSymbol docstrings and source
+    symbols = CodeSymbol.objects.filter(
+        Q(code_file__repository=repo) | Q(code_class__code_file__repository=repo)
+    ).select_related('code_file', 'code_class__code_file')
+
+    for symbol in symbols:
+        # Docstring
+        if symbol.documentation and len(symbol.documentation.strip()) > 20:
+            chunks_to_create.append(KnowledgeChunk(
+                repository=repo, chunk_type=KnowledgeChunk.ChunkType.SYMBOL_DOCSTRING,
+                content=f"Documentation for function '{symbol.name}':\n{symbol.documentation}",
+                related_symbol=symbol, related_class=symbol.code_class,
+                related_file=symbol.code_file or (symbol.code_class and symbol.code_class.code_file)
+            ))
+        # Source Code
+        source_code = symbol.source_code
+        if source_code and not source_code.strip().startswith("# Error:"):
+             chunks_to_create.append(KnowledgeChunk(
+                repository=repo, chunk_type=KnowledgeChunk.ChunkType.SYMBOL_SOURCE,
+                content=f"Source code for function '{symbol.name}':\n```python\n{source_code}\n```",
+                related_symbol=symbol, related_class=symbol.code_class,
+                related_file=symbol.code_file or (symbol.code_class and symbol.code_class.code_file)
+            ))
+
+    if not chunks_to_create:
+        print(f"KNOWLEDGE_SYNC_TASK: No content found to index for repo {repo.id}.")
+        return
+
+    # Save all chunks without embeddings first
+    KnowledgeChunk.objects.bulk_create(chunks_to_create, batch_size=500)
+    print(f"KNOWLEDGE_SYNC_TASK: Created {len(chunks_to_create)} knowledge chunk records.")
+
+    # Dispatch the existing batch embedding task to finish the job
+    submit_knowledge_chunk_embedding_batch_task.delay(repo_id=repo.id)
+    print(f"KNOWLEDGE_SYNC_TASK: Dispatched embedding task for repo {repo.id}.")
+
+@app.task
+def generate_and_save_module_readme_task(previous_task_result, repo_id: int, module_path: str):
+    """
+    A Celery task wrapper for the generate_module_readme_stream service.
+    It generates, saves, and then triggers the final knowledge sync.
+    """
+    print(f"README_GENERATION_TASK: Starting for repo {repo_id}, path '{module_path}'.")
+    
+    # The previous_task_result from the batch doc generation isn't strictly needed,
+    # but Celery chains require the function to accept it.
+    
+    # We need to re-initialize the client inside the task
+    client = OPENAI_CLIENT
+    if not client:
+        raise Exception("OpenAI client not available in README generation task.")
+
+    # Call the existing stream generator
+    readme_stream = generate_module_readme_stream(
+        repo_id=repo_id,
+        module_path=module_path,
+        openai_client=client
+    )
+    
+    # Consume the stream to get the full content
+    full_readme_content = "".join([chunk for chunk in readme_stream])
+
+    if full_readme_content and not full_readme_content.strip().startswith("//"):
+        # Save the generated README to our ModuleDocumentation model
+        module_doc, created = ModuleDocumentation.objects.update_or_create(
+            repository_id=repo_id,
+            module_path=module_path,
+            defaults={'content_md': full_readme_content.strip()}
+        )
+        print(f"README_GENERATION_TASK: {'Created' if created else 'Updated'} README for '{module_path}'.")
+
+        # Final step: trigger the knowledge index sync
+        sync_knowledge_index_task.delay(repo_id=repo_id)
+        print(f"README_GENERATION_TASK: Dispatched knowledge sync for repo {repo_id}.")
+        
+        return {"status": "success", "module_doc_id": module_doc.id}
+    else:
+        raise Exception("Failed to generate valid README content from AI.")
+
+
+# This is the new "master" task that the view will call
+@app.task(bind=True)
+def generate_module_documentation_workflow_task(self, user_id: int, repo_id: int, module_path: str):
+    """
+    Orchestrates the full workflow:
+    1. Find and document all undocumented symbols in a module.
+    2. Generate a README for that module.
+    3. Update the knowledge index.
+    """
+    task_id = self.request.id
+    print(f"MODULE_WORKFLOW_TASK: Started (ID: {task_id}) for repo {repo_id}, path '{module_path}'")
+    
+    status_tracker, _ = AsyncTaskStatus.objects.update_or_create(
+        task_id=task_id,
+        defaults = {
+            'user_id': user_id,
+            'repository_id': repo_id,
+            'task_name': AsyncTaskStatus.TaskName.MODULE_WORKFLOW,
+            'status': AsyncTaskStatus.TaskStatus.PENDING,
+            'message': f"Workflow initiated for module: '{module_path or 'root'}'"
+        }
+    )
+
+    # Find all file IDs that need processing
+    files_in_module = CodeFile.objects.filter(
+        repository_id=repo_id,
+        file_path__startswith=module_path.strip()
+    )
+    file_ids = list(files_in_module.values_list('id', flat=True))
+
+    if not file_ids:
+        status_tracker.status = 'SUCCESS'
+        status_tracker.message = "No files found in module; nothing to do."
+        status_tracker.save()
+        return
+
+    # Create the Celery chain
+    # The first task generates docstrings. Its result will be passed to the next task.
+    # The second task generates the README.
+    # The final knowledge sync is triggered inside the second task.
+    workflow_chain = chain(
+        batch_generate_docstrings_for_files_task.s(
+            repo_id=repo_id,
+            user_id=user_id,
+            file_ids=file_ids
+        ),
+        generate_and_save_module_readme_task.s(
+            repo_id=repo_id,
+            module_path=module_path
+        )
+    )
+
+    # Execute the chain
+    workflow_chain.apply_async()
+
+    # We can't easily track the sub-tasks' progress on the main task tracker.
+    # The frontend will need to poll the sub-tasks if detailed progress is needed.
+    # For now, we just mark that the workflow has started.
+    status_tracker.status = 'IN_PROGRESS'
+    status_tracker.message = "Step 1: Generating documentation for individual files..."
+    status_tracker.save()

@@ -1,35 +1,24 @@
 // src/components/repo-detail/FileTreePanel.tsx
-import React from 'react';
-import { Link } from 'react-router-dom'; // For Dashboard link
+import React, { useMemo } from 'react';
 import { FileTreeHeader } from './FileTreeHeader';
-import { FileListItem } from './FileListItem';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Label } from '@/components/ui/label';
-import { ScrollArea } from '@/components/ui/scroll-area'; // For better scrollbar styling
-import { type Repository, type CodeFile } from '@/types'; // Assuming central types
+import { ScrollArea } from '@/components/ui/scroll-area';
+import { type Repository, type CodeFile } from '@/types';
+import { buildFileTreeFromCodeFiles } from '@/utils/tree';
+import { FileTreeItem } from './FileTreeItem';
 
-// Props this panel will need from RepoDetailPage
 interface FileTreePanelProps {
   repo: Repository | null;
   selectedFile: CodeFile | null;
   onFileSelect: (file: CodeFile) => void;
-  
   selectedFilesForBatch: Set<number>;
-  onSelectedFilesForBatchChange: (newSelected: Set<number>) => void; // To update the parent's state
-  
-  // Per-file action states and handlers
-  onGenerateDocsForFile: (fileId: number, fileName: string) => void;
-  batchProcessingFileId: number | null; // ID of file currently having docs generated
+  onSelectedFilesForBatchChange: (newSelected: Set<number>) => void;
+  batchProcessingFileId: number | null;
   batchMessages: Record<number, string>;
-  
-  onCreatePRForFile: (fileId: number, fileName: string) => void;
-  creatingPRFileId: number | null; // ID of file currently having PR created
+  creatingPRFileId: number | null;
   prMessages: Record<number, string>;
-
-  // Global batch operation status (to disable individual file actions if a global batch is running)
-  activeGlobalDocGenTaskId: string | null; 
-  activeGlobalPRCreationTaskId: string | null;
-  isAnyOperationInProgress: boolean; 
+  isAnyOperationInProgress: boolean;
 }
 
 export const FileTreePanel: React.FC<FileTreePanelProps> = ({
@@ -38,18 +27,19 @@ export const FileTreePanel: React.FC<FileTreePanelProps> = ({
   onFileSelect,
   selectedFilesForBatch,
   onSelectedFilesForBatchChange,
-  onGenerateDocsForFile,
   batchProcessingFileId,
   batchMessages,
-  onCreatePRForFile,
   creatingPRFileId,
   prMessages,
   isAnyOperationInProgress,
 }) => {
-  if (!repo) return null; // Or a loading/empty state for the panel
+  if (!repo) return null;
+
+  const fileTree = useMemo(() => {
+    return buildFileTreeFromCodeFiles(repo.files);
+  }, [repo.files]);
 
   const allFilesSelected = repo.files.length > 0 && selectedFilesForBatch.size === repo.files.length;
-  const noFilesSelected = selectedFilesForBatch.size === 0;
 
   const handleSelectAllChange = (checked: boolean | 'indeterminate') => {
     if (checked === true) {
@@ -61,26 +51,16 @@ export const FileTreePanel: React.FC<FileTreePanelProps> = ({
 
   const handleFileBatchSelectionChange = (fileId: number, isSelected: boolean) => {
     const newSelected = new Set(selectedFilesForBatch);
-    if (isSelected) {
-      newSelected.add(fileId);
-    } else {
-      newSelected.delete(fileId);
-    }
+    isSelected ? newSelected.add(fileId) : newSelected.delete(fileId);
     onSelectedFilesForBatchChange(newSelected);
   };
 
-  // True if any global batch operation (from BatchActionsPanel) is running OR
-  // if any individual file's doc/PR action is running.
-
   return (
-    // The parent <aside> in RepoDetailPage already handles width, flex-shrink, border, bg-card, and main overflow
-    // This component focuses on the internal structure and scrolling of its content.
-    <> {/* Use Fragment as the parent <aside> provides the main panel container */}
+    <div className="flex flex-col h-full">
       <FileTreeHeader repoFullName={repo.full_name} />
 
-      {/* Select All Checkbox Area */}
       {repo.files.length > 0 && (
-        <div className="p-2.5 md:p-3 border-b border-border flex items-center space-x-2">
+        <div className="p-2.5 md:p-3 border-b border-border flex items-center space-x-3">
           <Checkbox
             id="selectAllFilesCheckbox"
             checked={allFilesSelected || (selectedFilesForBatch.size > 0 && !allFilesSelected ? "indeterminate" : false)}
@@ -89,7 +69,7 @@ export const FileTreePanel: React.FC<FileTreePanelProps> = ({
             aria-label="Select all files for batch processing"
           />
           <Label htmlFor="selectAllFilesCheckbox" className="text-sm font-medium cursor-pointer select-none">
-            {allFilesSelected ? 'Deselect All' : 'Select All'} 
+            {allFilesSelected ? 'Deselect All' : 'Select All'}
             <span className="text-xs text-muted-foreground ml-1">
               ({selectedFilesForBatch.size}/{repo.files.length})
             </span>
@@ -97,32 +77,30 @@ export const FileTreePanel: React.FC<FileTreePanelProps> = ({
         </div>
       )}
 
-      {/* File List - Use shadcn/ui ScrollArea for styled scrollbars */}
-      <ScrollArea className="p-1.5 md:p-2"> {/* flex-grow to take remaining space, padding for items */}
-        {repo.files.length > 0 ? (
-          <ul className="space-y-0.5"> {/* Small space between items */}
-            {repo.files.map(file => (
-              <FileListItem
-                key={file.id}
-                file={file}
-                isSelectedForBatch={selectedFilesForBatch.has(file.id)}
-                onBatchSelectionChange={handleFileBatchSelectionChange}
-                isSelectedFile={selectedFile?.id === file.id}
+      <ScrollArea className="flex-grow p-2 md:p-3">
+        {fileTree.length > 0 ? (
+          <div className="space-y-1">
+            {fileTree.map(node => (
+              <FileTreeItem
+                key={node.path}
+                node={node}
+                selectedFilePath={selectedFile?.file_path || null}
                 onFileSelect={onFileSelect}
-                onGenerateDocsForFile={onGenerateDocsForFile}
-                isProcessingDocsThisFile={batchProcessingFileId === file.id}
-                onCreatePRForFile={onCreatePRForFile}
-                isCreatingPRThisFile={creatingPRFileId === file.id}
-                isAnyGlobalBatchProcessing={isAnyOperationInProgress} // Pass the comprehensive flag
-                batchMessageForThisFile={batchMessages[file.id] || null}
-                prMessageForThisFile={prMessages[file.id] || null}
+                selectedFilesForBatch={selectedFilesForBatch}
+                onBatchSelectionChange={handleFileBatchSelectionChange}
+                onMultipleBatchSelectionChange={onSelectedFilesForBatchChange}
+                batchProcessingFileId={batchProcessingFileId}
+                creatingPRFileId={creatingPRFileId}
+                batchMessages={batchMessages}
+                prMessages={prMessages}
+                isAnyGlobalProcessing={isAnyOperationInProgress}
               />
             ))}
-          </ul>
+          </div>
         ) : (
           <p className="p-4 text-sm text-muted-foreground text-center">No files found in this repository.</p>
         )}
       </ScrollArea>
-    </>
+    </div>
   );
 };

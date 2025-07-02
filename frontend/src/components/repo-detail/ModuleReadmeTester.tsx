@@ -5,7 +5,7 @@ import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { toast } from 'sonner';
 import { getCookie } from '@/utils';
-import { Sparkles, Loader2, FileText, CheckCircle, AlertTriangle, History,Search } from 'lucide-react';
+import { Sparkles, Loader2, FileText, CheckCircle, AlertTriangle, History, Search } from 'lucide-react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import axios from 'axios';
@@ -72,39 +72,39 @@ export const ModuleReadmeTester: React.FC<ModuleReadmeTesterProps> = ({ repoId }
     setWorkflowStep('documenting');
     toast.loading("Starting batch documentation job...", { id: 'batch-doc-start' });
     try {
-    const response = await axios.post(
+      const response = await axios.post(
         `http://localhost:8000/api/v1/repositories/${repoId}/batch-document-module/`,
         { path: modulePath.trim() }, // This is the request body
         {
-        withCredentials: true,
-        headers: { 'X-CSRFToken': getCookie('csrftoken') } // This is part of the config
+          withCredentials: true,
+          headers: { 'X-CSRFToken': getCookie('csrftoken') } // This is part of the config
         }
-    );
-    toast.dismiss('batch-doc-start');
-    setActiveTaskId(response.data.task_id);
+      );
+      toast.dismiss('batch-doc-start');
+      setActiveTaskId(response.data.task_id);
     } catch (error) {
       toast.dismiss('batch-doc-start');
       toast.error("Failed to start batch documentation job.");
       setWorkflowStep('needs_documentation');
     }
   }, [repoId, modulePath]);
-  
+
   // --- Step 2.5: Trigger a re-scan after documentation is generated ---
   const handleRescanRepository = useCallback(async () => {
     setWorkflowStep('rescanning');
     toast.loading("Re-scanning repository to detect new docstrings...", { id: 'rescan-start' });
     try {
-  // We use the existing re-process endpoint
-    const response = await axios.post(
+      // We use the existing re-process endpoint
+      const response = await axios.post(
         `http://localhost:8000/api/v1/repositories/${repoId}/reprocess/`,
         {}, // Empty request body
         {
-        withCredentials: true,
-        headers: { 'X-CSRFToken': getCookie('csrftoken') }, // Assuming getCookie is defined
+          withCredentials: true,
+          headers: { 'X-CSRFToken': getCookie('csrftoken') }, // Assuming getCookie is defined
         }
-    );
-    toast.dismiss('rescan-start');
-    setActiveTaskId(response.data.task_id); // This task is for the `process_repository` job
+      );
+      toast.dismiss('rescan-start');
+      setActiveTaskId(response.data.task_id); // This task is for the `process_repository` job
     } catch (error) {
       toast.dismiss('rescan-start');
       toast.error("Failed to start repository re-scan.");
@@ -122,14 +122,14 @@ export const ModuleReadmeTester: React.FC<ModuleReadmeTesterProps> = ({ repoId }
     let generationSuccess = false;
     // This logic is from our previous implementation and remains the same
     try {
-      const response = await fetch(`http://localhost:8000/api/v1/repositories/${repoId}/summarize-module/`, {
+      const response = await fetch(`http://localhost:8000/api/v1/repositories/${repoId}/generate-module-workflow/`, {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json', 'X-CSRFToken': getCookie('csrftoken') || '' },
         body: JSON.stringify({ path: modulePath.trim() }),
       });
       if (!response.ok || !response.body) throw new Error("Failed to fetch stream");
-      
+
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let streamedText = "";
@@ -175,7 +175,7 @@ export const ModuleReadmeTester: React.FC<ModuleReadmeTesterProps> = ({ repoId }
           if (statusData.status === 'SUCCESS' || statusData.status === 'FAILURE') {
             clearInterval(intervalId);
             toast.dismiss(activeTaskId);
-            
+
             if (statusData.status === 'SUCCESS') {
               toast.success("Task completed successfully!");
               // Determine what to do next based on the current workflow step
@@ -204,7 +204,7 @@ export const ModuleReadmeTester: React.FC<ModuleReadmeTesterProps> = ({ repoId }
 
   const renderCurrentStep = () => {
     const isLoading = ['checking_coverage', 'documenting', 'rescanning', 'generating_readme'].includes(workflowStep);
-    
+
     switch (workflowStep) {
       case 'initial':
         return <Button onClick={handleCheckCoverage} disabled={isLoading}><FileText className="mr-2 h-4 w-4" />1. Analyze Module</Button>;
@@ -221,10 +221,10 @@ export const ModuleReadmeTester: React.FC<ModuleReadmeTesterProps> = ({ repoId }
         return <p className="text-sm text-muted-foreground flex items-center"><Loader2 className="mr-2 h-4 w-4 animate-spin" />Generating docstrings... {taskStatus?.progress || 0}%</p>;
       case 'needs_rescan':
         return (
-            <div className="text-center p-2 bg-blue-900/50 border border-blue-700 rounded-md">
-                <p className="flex items-center justify-center"><CheckCircle className="mr-2 h-4 w-4 text-blue-400" />Docstrings generated. Re-scan needed.</p>
-                <Button onClick={handleRescanRepository} className="mt-2" size="sm"><History className="mr-2 h-4 w-4" />2.5. Re-scan Repository</Button>
-            </div>
+          <div className="text-center p-2 bg-blue-900/50 border border-blue-700 rounded-md">
+            <p className="flex items-center justify-center"><CheckCircle className="mr-2 h-4 w-4 text-blue-400" />Docstrings generated. Re-scan needed.</p>
+            <Button onClick={handleRescanRepository} className="mt-2" size="sm"><History className="mr-2 h-4 w-4" />2.5. Re-scan Repository</Button>
+          </div>
         );
       case 'rescanning':
         return <p className="text-sm text-muted-foreground flex items-center"><Loader2 className="mr-2 h-4 w-4 animate-spin" />Re-scanning repository... {taskStatus?.progress || 0}%</p>;
@@ -237,7 +237,7 @@ export const ModuleReadmeTester: React.FC<ModuleReadmeTesterProps> = ({ repoId }
     }
   };
   const isBusy = componentState === 'fetching_existing' || isLoading;
-   return (
+  return (
     <Card className="m-4">
       <CardHeader>
         <CardTitle>Module/Repository README</CardTitle>
@@ -262,7 +262,7 @@ export const ModuleReadmeTester: React.FC<ModuleReadmeTesterProps> = ({ repoId }
             {readmeContent ? 'Regenerate' : 'Generate'}
           </Button>
         </div>
-        
+
         {/* The display area logic remains the same */}
         {(componentState === 'displaying' || componentState === 'generating' || componentState === 'fetching_existing') && readmeContent !== null && (
           <div className="prose prose-sm dark:prose-invert max-w-none rounded-md border border-border bg-background/50 p-4 mt-4">

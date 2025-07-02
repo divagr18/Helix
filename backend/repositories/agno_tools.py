@@ -11,37 +11,85 @@ from typing import Optional
 from django.db.models import Q ,F,Count # <--- ADD THIS IMPORT
 
 @tool
-def helix_knowledge_search(query: str, repo_id: int, file_path: Optional[str] = None) -> str:
+def helix_knowledge_search(query: str, repo_id: int) -> str:
     """
-    Searches the repository's knowledge base (documentation and source code)
-    to answer questions about how code works, its purpose, or for implementation examples.
-    This is the primary tool for understanding code.
+    Searches the repository's knowledge base across multiple levels (from high-level
+    READMEs down to source code) to answer questions about how code works, its purpose,
+    or for implementation examples. This is the primary tool for understanding code.
     """
-    print(f"AGNO_TOOL: Executing HelixKnowledgeSearchTool for repo {repo_id} with query: '{query}'")
+    print(f"AGNO_TOOL: Executing Multi-Layered Knowledge Search for repo {repo_id} with query: '{query}'")
     
     try:
-        # 1. Generate an embedding for the user's query
+        # 1. Generate an embedding for the user's query (this is done once)
         query_embedding = OPENAI_CLIENT.embeddings.create(
             input=[query], 
             model="text-embedding-3-small" # Or from settings
         ).data[0].embedding
 
-        # 2. Perform a vector search combined with a metadata filter
-        # This is where the power of our hybrid model comes in.
-        # We are already filtering by repo_id before doing the vector search.
-        retrieved_chunks = KnowledgeChunk.objects.filter(
-            repository_id=repo_id
-        ).order_by(
-            L2Distance('embedding', query_embedding)
-        )[:4] # Get the top 4 most relevant chunks
+        # --- NEW: Multi-Layered Search Logic ---
+        
+        # We will gather context from different layers and give priority to higher-level docs.
+        # We use a dictionary to avoid adding the same chunk multiple times.
+        context_chunks = {}
 
-        if not retrieved_chunks:
-            return "No relevant information found in the knowledge base for that query."
+        # Layer 1: Search for Module READMEs (Highest Priority)
+        readme_chunks = KnowledgeChunk.objects.filter(
+            repository_id=repo_id,
+            chunk_type=KnowledgeChunk.ChunkType.MODULE_README
+        ).order_by(L2Distance('embedding', query_embedding))[:2] # Get top 2 READMEs
+        for chunk in readme_chunks:
+            context_chunks[chunk.id] = chunk
 
-        # 3. Format the results into a string for the agent's context
-        context_str = "--- Retrieved Context ---\n"
-        for chunk in retrieved_chunks:
-            context_str += f"Source: {chunk.get_chunk_type_display()} for '{chunk.related_symbol.name}' in '{chunk.related_file.file_path}'\n"
+        # Layer 2: Search for Class Summaries
+        class_summary_chunks = KnowledgeChunk.objects.filter(
+            repository_id=repo_id,
+            chunk_type=KnowledgeChunk.ChunkType.CLASS_SUMMARY
+        ).order_by(L2Distance('embedding', query_embedding))[:3] # Get top 3 class summaries
+        for chunk in class_summary_chunks:
+            context_chunks[chunk.id] = chunk
+
+        # Layer 3: Search for Symbol Docstrings (if we still need more context)
+        if len(context_chunks) < 5:
+            needed = 5 - len(context_chunks)
+            docstring_chunks = KnowledgeChunk.objects.filter(
+                repository_id=repo_id,
+                chunk_type=KnowledgeChunk.ChunkType.SYMBOL_DOCSTRING
+            ).order_by(L2Distance('embedding', query_embedding))[:needed]
+            for chunk in docstring_chunks:
+                context_chunks[chunk.id] = chunk
+
+        # Layer 4: Search for Source Code (as a last resort)
+        if len(context_chunks) < 5:
+            needed = 5 - len(context_chunks)
+            source_chunks = KnowledgeChunk.objects.filter(
+                repository_id=repo_id,
+                chunk_type=KnowledgeChunk.ChunkType.SYMBOL_SOURCE
+            ).order_by(L2Distance('embedding', query_embedding))[:needed]
+            for chunk in source_chunks:
+                context_chunks[chunk.id] = chunk
+
+        if not context_chunks:
+            return "No relevant information was found in the knowledge base for this query."
+
+        # 3. Format the combined results into a structured string for the agent's context
+        # We sort by chunk type to present the context logically to the agent.
+        sorted_chunks = sorted(list(context_chunks.values()), key=lambda c: c.chunk_type)
+
+        context_str = "--- Retrieved Context (Prioritized from High-Level to Low-Level) ---\n\n"
+        for chunk in sorted_chunks:
+            # Build a descriptive source string for each chunk
+            source_description = ""
+            if chunk.chunk_type == 'MODULE_README':
+                path = getattr(chunk, 'module_path', 'repository root') # Assuming ModuleDoc has this
+                source_description = f"Source: README for module '{path}'"
+            elif chunk.chunk_type == 'CLASS_SUMMARY' and chunk.related_class:
+                source_description = f"Source: Summary for class '{chunk.related_class.name}' in '{chunk.related_file.file_path}'"
+            elif chunk.chunk_type == 'SYMBOL_DOCSTRING' and chunk.related_symbol:
+                source_description = f"Source: Documentation for function '{chunk.related_symbol.name}' in '{chunk.related_file.file_path}'"
+            elif chunk.chunk_type == 'SYMBOL_SOURCE' and chunk.related_symbol:
+                source_description = f"Source: Source Code for function '{chunk.related_symbol.name}' in '{chunk.related_file.file_path}'"
+            
+            context_str += f"{source_description}\n"
             context_str += f"Content:\n{chunk.content}\n\n"
         
         return context_str

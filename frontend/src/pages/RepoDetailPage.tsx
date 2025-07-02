@@ -92,7 +92,7 @@ export function RepoDetailPage() {
   const isAnyOperationInProgressForFileTree = isAnyFileSpecificActionInProgress || isAnyGlobalBatchActionInProgress;
 
   const [modifiedFileContent, setModifiedFileContent] = useState<string | null>(null);
-  
+
   // --- YOUR CORRECT API CALL LOGIC ---
   const orphanSymbolsList = useMemo(() => {
     if (!repo) return [];
@@ -472,8 +472,8 @@ export function RepoDetailPage() {
     return () => clearInterval(intervalId); // Cleanup on unmount or if taskId changes
   }, [activeDocGenTaskId, fetchRepoDetails]);
   const handleAnalysisChange = useCallback(() => {
-  fetchRepoDetails();
-}, [fetchRepoDetails]);
+    fetchRepoDetails();
+  }, [fetchRepoDetails]);
   const handleSaveDoc = async (funcId: number) => { // Made async for await
     const docText = generatedDocs[funcId];
     if (!docText) return;
@@ -661,7 +661,7 @@ export function RepoDetailPage() {
           {/* ============================================= */}
           {/* Left Panel (File Tree, Batch Actions, Orphans)*/}
           {/* ============================================= */}
-          <aside className="w-[300px] md:w-[380px] flex-shrink-0 border-r border-border flex flex-col bg-card overflow-y-auto min-h-0">
+          <aside className="w-[300px] md:w-[380px] flex-shrink-0 border-r border-border flex flex-col bg-card overflow-y-hidden min-h-0">
             {/* This wrapper ensures the panels inside don't overflow the aside */}
             <div className="flex-grow flex flex-col min-h-0">
               <div className="flex-grow overflow-y-auto min-h-0">

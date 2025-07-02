@@ -27,7 +27,7 @@ from repositories.views import (
     BatchGenerateDocsForSelectedFilesView,
     CreateBatchPRForSelectedFilesView,
     TaskStatusView,ApproveDocstringView,ExplainCodeView, SuggestTestsView,RepositoryInsightsView,CommitHistoryView,
-    ClassSummaryView,ReprocessRepositoryView, SuggestRefactorsView
+    ClassSummaryView,ReprocessRepositoryView, SuggestRefactorsView,GenerateModuleWorkflowView
 )
 # The variable name 'urlpatterns' is what Django expects to find.
 urlpatterns = router.urls
@@ -67,5 +67,6 @@ urlpatterns += [
     path('repositories/<int:repo_id>/batch-document-module/', BatchDocumentModuleView.as_view(), name='repository-batch-document-module'),
     path('repositories/<int:repo_id>/module-coverage/', ModuleCoverageView.as_view(), name='repository-module-coverage'),
     path('repositories/<int:repo_id>/module-documentation/', ModuleDocumentationView.as_view(), name='module-documentation'),
+    path('repositories/<int:repo_id>/generate-module-workflow/', GenerateModuleWorkflowView.as_view(), name='repository-generate-module-workflow')
 ]
 

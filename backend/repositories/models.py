@@ -112,6 +112,17 @@ class CodeSymbol(models.Model):
         default=DocStatus.NONE,
         help_text="The review and approval status of the documentation."
     )
+    existing_docstring = models.TextField(
+        null=True, 
+        blank=True, 
+        help_text="The docstring that existed in the source code during the last scan."
+    )
+    
+    signature_end_location = models.JSONField(
+        null=True, 
+        blank=True, 
+        help_text="A JSON object with {'line': y, 'column': z} indicating where the function signature ends."
+    )
     is_orphan = models.BooleanField(
         default=False, 
         db_index=True, # Index for faster querying of orphans
@@ -158,6 +169,7 @@ class AsyncTaskStatus(models.Model):
         BATCH_GENERATE_DOCS = 'BATCH_GENERATE_DOCS', 'Batch Generate Docstrings'
         CREATE_BATCH_PR = 'CREATE_BATCH_PR', 'Create Batch Pull Request'
         PROCESS_REPOSITORY = 'PROCESS_REPOSITORY', 'Process Repository' # If you want to track initial processing
+        MODULE_WORKFLOW = 'MODULE_WORKFLOW', 'Generate Module Documentation'
         # Add more as needed
 
     task_id = models.CharField(max_length=255, unique=True, primary_key=True, help_text="Celery task ID")
@@ -355,6 +367,8 @@ class KnowledgeChunk(models.Model):
     """
     class ChunkType(models.TextChoices):
         # We will start with these two. More can be added later (e.g., CLASS_SUMMARY).
+        MODULE_README = 'MODULE_README', 'Module README'       # <--- NEW
+        CLASS_SUMMARY = 'CLASS_SUMMARY', 'Class Summary'  
         SYMBOL_DOCSTRING = 'SYMBOL_DOCSTRING', 'Symbol Docstring'
         SYMBOL_SOURCE = 'SYMBOL_SOURCE', 'Symbol Source Code'
 

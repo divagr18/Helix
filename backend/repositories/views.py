@@ -1419,3 +1419,27 @@ class ModuleDocumentationView(APIView):
             return Response({"error": "Repository not found or permission denied."}, status=status.HTTP_404_NOT_FOUND)
         except ModuleDocumentation.DoesNotExist:
             return Response({"error": "No saved README found for this module path."}, status=status.HTTP_404_NOT_FOUND)
+        
+from .tasks import generate_module_documentation_workflow_task
+
+@method_decorator(csrf_exempt, name='dispatch')
+class GenerateModuleWorkflowView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, repo_id, *args, **kwargs):
+        module_path = request.data.get('path', '')
+
+        if not Repository.objects.filter(id=repo_id, user=request.user).exists():
+            return Response({"error": "Repository not found or permission denied."}, status=status.HTTP_404_NOT_FOUND)
+
+        # Dispatch the single "master" workflow task
+        task = generate_module_documentation_workflow_task.delay(
+            user_id=request.user.id,
+            repo_id=repo_id,
+            module_path=module_path.strip()
+        )
+
+        return Response(
+            {"message": "Module documentation workflow initiated.", "task_id": task.id},
+            status=status.HTTP_202_ACCEPTED
+        )

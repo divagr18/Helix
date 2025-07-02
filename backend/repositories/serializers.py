@@ -36,7 +36,8 @@ class CodeSymbolSerializer(serializers.ModelSerializer):
         model = CodeSymbol
         fields = [
             'id', 'unique_id', 'name', 'start_line', 'end_line',
-            'documentation', 'content_hash', 'documentation_hash', 'documentation_status', 
+            'documentation','existing_docstring',      # The one from the source code
+            'signature_end_location', 'content_hash', 'documentation_hash', 'documentation_status', 
             'incoming_calls', 'outgoing_calls','source_code','is_orphan','get_documentation_status_display','loc',
             'cyclomatic_complexity', # Add to fields list
         ]
