@@ -3,6 +3,7 @@ import { Card, CardHeader, CardTitle } from '@/components/ui/card';
 import { SymbolListItem, type SymbolForListItem } from './SymbolListItem';
 import { ClassSummarySection } from './ClassSummarySection';
 import type { CodeFile, CodeSymbol, GeneratedDoc } from '@/types';
+import { ModuleReadmeTester } from './ModuleReadmeTester'; // Import the new component
 
 interface AnalysisPanelProps {
   selectedFile: CodeFile | null;
@@ -12,6 +13,7 @@ interface AnalysisPanelProps {
   onSaveDoc: (symbolId: number, doc: string) => void;
   savingDocId: number | null;
   onAnalysisChange: () => void; // Callback to refetch data after a summary is generated/saved
+  repoId: number;
 }
 
 export const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
@@ -22,6 +24,7 @@ export const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
   onSaveDoc,
   savingDocId,
   onAnalysisChange,
+  repoId
 }) => {
   // Derived state to simplify passing props down
   const isAnyDocGenerating = generatingDocId !== null;
@@ -30,6 +33,9 @@ export const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
   return (
     <div className="h-full flex flex-col bg-background">
       {/* Panel Header */}
+      <div className="flex-shrink-0 border-b border-border">
+        <ModuleReadmeTester repoId={repoId} />
+      </div>
       <div className="p-3 md:p-4 border-b border-border sticky top-0 bg-card z-10">
         <h3 className="text-base md:text-lg font-semibold text-foreground">
           Analysis for: 

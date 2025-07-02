@@ -652,13 +652,7 @@ def batch_generate_docstrings_task(self, code_file_id: int, user_id: int):
     except CodeFile.DoesNotExist:
         print(f"Error: CodeFile {code_file_id} not found for batch generation.")
         return {"status": "error", "message": "File not found."}
-    # except User.DoesNotExist: # If user object was fetched
-    #     print(f"Error: User {user_id} not found.")
-    #     return {"status": "error", "message": "User not found."}
 
-
-    # Identify symbols in this file that need documentation
-    # (undocumented OR (has documentation AND documentation_hash != content_hash AND content_hash is not NULL))
     symbols_to_document_query = CodeSymbol.objects.filter(
         Q(code_file=code_file) | Q(code_class__code_file=code_file) # Symbols in this file
     ).exclude(

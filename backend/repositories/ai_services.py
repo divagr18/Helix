@@ -4,7 +4,7 @@ from typing import Generator,Optional
 from django.conf import settings
 from openai import OpenAI as OpenAIClient
 
-from .models import CodeClass, CodeSymbol, CodeDependency,KnowledgeChunk
+from .models import CodeClass, CodeSymbol, CodeDependency,KnowledgeChunk,CodeClass,CodeFile,ModuleDocumentation 
 from pgvector.django import L2Distance
 def generate_class_summary_stream(
     code_class: CodeClass,
@@ -140,10 +140,6 @@ def generate_class_summary_stream(
 
             one_line_summary = ""
 
-# This pattern looks for:
-#  - "###" + optional spaces + "Purpose"
-#  - then any whitespace/newlines
-#  - then an optional backtick, then capture everything up to the next backtick or end-of-line
             pattern = re.compile(
                 r"###\s*Purpose\s*\n+`?(?P<sentence>.+?)(?:`?\n|$)",
                 re.IGNORECASE,
@@ -161,13 +157,16 @@ def generate_class_summary_stream(
                         break
 
             # Save it
-            if one_line_summary:
-                code_class.summary = one_line_summary
-            else:
-                # If somehow *still* empty, at least store the raw first line
-                code_class.summary = cleaned_summary.splitlines()[0]
-            code_class.save(update_fields=["summary"])
-            print(f"CLASS_SUMMARY_SERVICE: Saved summary for class {code_class.id!r}: {code_class.summary!r}")
+            if not one_line_summary:
+                one_line_summary = lines[0].strip().replace("**", "")
+
+            # Update both fields on the model instance
+            code_class.summary = one_line_summary
+            code_class.generated_summary_md = cleaned_summary
+            
+            # Save both fields in a single database call
+            code_class.save(update_fields=['summary', 'generated_summary_md'])
+            print(f"CLASS_SUMMARY_SERVICE: Successfully saved both summaries for class {code_class.id}.")
 
     except Exception as e:
         error_message = f"// Helix encountered an error while summarizing the class: {str(e)}"
@@ -352,3 +351,118 @@ def handle_chat_query_stream(user_id: int,repo_id: int, query: str, file_path: s
         import traceback
         traceback.print_exc()
         yield f"// Helix encountered a critical error while processing your request."   
+        
+def generate_module_readme_stream(
+    repo_id: int,
+    module_path: str,
+    openai_client: OpenAIClient
+) -> Generator[str, None, None]:
+    """
+    Generates a README.md for a given module/directory by creating a "summary of summaries"
+    from its contained classes, functions, and dependencies.
+    """
+    print(f"MODULE_README_SERVICE: Generating README for repo {repo_id}, path '{module_path}'")
+
+    # 1. Gather all relevant files and their contents from the database
+    # We use `startswith` to get all files within the specified directory path
+    files_in_module = CodeFile.objects.filter(
+        repository_id=repo_id,
+        file_path__startswith=module_path
+    ).prefetch_related(
+        'classes', 
+        'symbols'
+    )
+
+    if not files_in_module.exists():
+        yield "Could not find any files in the specified module path to generate a README."
+        return
+
+    # 2. Assemble the "Smart Context" from the gathered data
+    class_summaries = []
+    public_functions = []
+    all_imports = set()
+
+    for file in files_in_module:
+        # Collect class summaries (using the short 'summary' field for the prompt)
+        for code_class in file.classes.all():
+            if code_class.summary:
+                class_summaries.append(f"- **{code_class.name}**: {code_class.summary}")
+
+        # Collect public function summaries from their docstrings
+        for symbol in file.symbols.filter(code_class__isnull=True): # Top-level functions only
+            if not symbol.name.startswith('_') and symbol.documentation:
+                # Get the first line of the docstring as a summary
+                docstring_summary = symbol.documentation.strip().split('\n')[0]
+                public_functions.append(f"- `def {symbol.name}(...)`: {docstring_summary}")
+        
+        # Collect imports
+        if file.imports:
+            # Assuming file.imports is a list of strings
+            all_imports.update(file.imports)
+
+    # 3. Construct the Final Prompt
+    prompt_parts = [
+        "You are an expert software architect tasked with writing a clear and concise `README.md` file for a software module.",
+        "Based *only* on the provided summary of its contents and dependencies, generate a helpful README.",
+        f"\n--- Module Context ---",
+        f"**Module Path:** `{module_path}`"
+    ]
+
+    if class_summaries:
+        prompt_parts.append("\n**Contained Classes:**")
+        prompt_parts.extend(class_summaries)
+    
+    if public_functions:
+        prompt_parts.append("\n**Exported Public Functions:**")
+        prompt_parts.extend(public_functions)
+        
+    if all_imports:
+        # Show a reasonable number of key dependencies
+        key_imports = sorted(list(all_imports))[:15]
+        prompt_parts.append("\n**Key Dependencies (Imports):**")
+        prompt_parts.append(f"`{', '.join(key_imports)}`")
+
+    prompt_parts.extend([
+        "\n--- Task ---",
+        "Generate the `README.md` now. The README should be well-structured and include the following sections:",
+        "1.  **## Purpose**: A high-level, one or two-sentence explanation of the module's primary role and responsibility in the broader application.",
+        "2.  **## Key Components**: A brief, bulleted list describing the most important classes and functions and what they do.",
+        "3.  **## Usage**: (Optional but encouraged) If possible, infer a brief conceptual code snippet showing how this module might be imported and used.",
+        "\nYour response should be only the raw Markdown content of the README file, starting with a level-1 heading for the module name (e.g., `# My Module`)."
+    ])
+    
+    final_prompt = "\n".join(prompt_parts)
+    
+    print(f"MODULE_README_SERVICE: Sending final prompt to LLM. Prompt length: {len(final_prompt)}")
+
+    # 4. Stream the LLM Response
+    full_response_text = ""
+    try:
+        stream = openai_client.chat.completions.create(
+            model="gpt-4.1-mini",  # Use a model suitable for text generation       
+            messages=[{"role": "user", "content": final_prompt}],
+            stream=True,
+            temperature=0.4,
+        )
+        for chunk in stream:
+            content = chunk.choices[0].delta.content
+            if content:
+                full_response_text += content
+                yield content
+                
+        if full_response_text:
+            cleaned_readme = full_response_text.strip()
+            
+            # Use update_or_create to either create a new README or update an existing one
+            # for the same module path.
+            module_doc, created = ModuleDocumentation.objects.update_or_create(
+                repository_id=repo_id,
+                module_path=module_path,
+                defaults={'content_md': cleaned_readme}
+            )
+            
+            action = "created" if created else "updated"
+            print(f"MODULE_README_SERVICE: Successfully {action} ModuleDocumentation for repo {repo_id}, path '{module_path}'.")
+    except Exception as e:
+        print(f"MODULE_README_SERVICE: FATAL - LLM streaming failed: {e}")
+        yield f"// Helix encountered an error while generating the README."

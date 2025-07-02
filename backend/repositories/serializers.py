@@ -6,6 +6,7 @@ import os # Ensure os is imported
 REPO_CACHE_BASE_PATH = "/var/repos" # Use the same constant
 # A serializer for our most granular item: a function or method.
 from .models import Notification
+from .models import ModuleDocumentation # Import new model
 
 class DependencyLinkSerializer(serializers.ModelSerializer):
     # We'll represent the other end of the link by its unique_id and name
@@ -95,12 +96,12 @@ class ClassSerializer(serializers.ModelSerializer):
     # This line tells DRF to find all CodeSymbols linked to this class
     # via the 'methods' related_name and serialize them.
     methods = CodeSymbolSerializer(many=True, read_only=True)
-
+    #test
     class Meta:
         model = CodeClass
         fields = [
             'id', 'name', 'start_line', 'end_line',
-            'structure_hash', 'methods','summary'
+            'structure_hash', 'methods','summary','generated_summary_md',
         ]
 
 # A serializer for a file, which nests its top-level functions AND its classes.
@@ -199,3 +200,9 @@ class InsightSerializer(serializers.ModelSerializer):
             'is_resolved',
             'created_at',
         ]
+        
+
+class ModuleDocumentationSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ModuleDocumentation
+        fields = ['id', 'repository', 'module_path', 'content_md', 'last_generated_at']

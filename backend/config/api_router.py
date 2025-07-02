@@ -1,7 +1,8 @@
 # backend/config/api_router.py
 
 from rest_framework.routers import DefaultRouter
-from repositories.views import ChatView, RepositoryViewSet,GithubReposView,FileContentView,GenerateDocstringView, CodeSymbolDetailView
+from repositories.views import BatchDocumentModuleView, ChatView, RepositoryViewSet,GithubReposView,FileContentView,GenerateDocstringView, CodeSymbolDetailView
+
 router = DefaultRouter()
 from django.urls import path # Make sure path is imported
 from users.views import AuthCheckView
@@ -18,6 +19,9 @@ from repositories.views import (
     SemanticSearchView,
     CreateDocPRView,BatchGenerateDocsForFileView,
     CreateBatchDocsPRView,ProposeChangeView,
+    SummarizeModuleView,
+    ModuleCoverageView ,
+    ModuleDocumentationView,
     
     # --- IMPORT THE NEW VIEWS (we will create these next) ---
     BatchGenerateDocsForSelectedFilesView,
@@ -59,9 +63,9 @@ urlpatterns += [
     path('symbols/<int:symbol_id>/suggest-refactors/', SuggestRefactorsView.as_view(), name='symbol-suggest-refactors'), # 03c03c03c NEW PATH
     path('repositories/<int:repo_id>/chat/', ChatView.as_view(), name='repository-chat'),
     path('repositories/<int:repo_id>/propose-change/', ProposeChangeView.as_view(), name='repository-propose-change'), # 03c03c03c NEW
-
-
-
-
+    path('repositories/<int:repo_id>/summarize-module/', SummarizeModuleView.as_view(), name='repository-summarize-module'),
+    path('repositories/<int:repo_id>/batch-document-module/', BatchDocumentModuleView.as_view(), name='repository-batch-document-module'),
+    path('repositories/<int:repo_id>/module-coverage/', ModuleCoverageView.as_view(), name='repository-module-coverage'),
+    path('repositories/<int:repo_id>/module-documentation/', ModuleDocumentationView.as_view(), name='module-documentation'),
 ]
 

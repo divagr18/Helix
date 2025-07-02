@@ -21,5 +21,6 @@ export default defineConfig({
       usePolling: true,
       interval: 1000, // or 500 for faster dev
     },
+    
   },
 });

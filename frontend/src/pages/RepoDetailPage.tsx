@@ -92,7 +92,7 @@ export function RepoDetailPage() {
   const isAnyOperationInProgressForFileTree = isAnyFileSpecificActionInProgress || isAnyGlobalBatchActionInProgress;
 
   const [modifiedFileContent, setModifiedFileContent] = useState<string | null>(null);
-
+  
   // --- YOUR CORRECT API CALL LOGIC ---
   const orphanSymbolsList = useMemo(() => {
     if (!repo) return [];
@@ -471,6 +471,9 @@ export function RepoDetailPage() {
     }
     return () => clearInterval(intervalId); // Cleanup on unmount or if taskId changes
   }, [activeDocGenTaskId, fetchRepoDetails]);
+  const handleAnalysisChange = useCallback(() => {
+  fetchRepoDetails();
+}, [fetchRepoDetails]);
   const handleSaveDoc = async (funcId: number) => { // Made async for await
     const docText = generatedDocs[funcId];
     if (!docText) return;
@@ -748,6 +751,7 @@ export function RepoDetailPage() {
           {/* ============================================= */}
           <aside className="w-[350px] md:w-[400px] flex-shrink-0 border-l border-border flex flex-col bg-background overflow-hidden min-w-0">
             <AnalysisPanel
+              repoId={repo.id}
               selectedFile={selectedFile}
               generatedDocs={generatedDocs}
               onGenerateDoc={handleGenerateDoc}

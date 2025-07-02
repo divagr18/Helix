@@ -1,13 +1,13 @@
 # backend/repositories/views.py
 import os,shutil
 import subprocess
-from django.db.models import Q  # <--- ADD THIS IMPORT
+from django.db.models import Q,F  # <--- ADD THIS IMPORT
 from rest_framework import generics, permissions
 from .tasks import create_documentation_pr_task,batch_generate_docstrings_task # We will create this task soon
 from django.utils.decorators import method_decorator
 from rest_framework import viewsets
 from .models import CodeFile, CodeSymbol as CodeFunction, Repository, CodeSymbol,CodeDependency,AsyncTaskStatus, Notification,CodeClass,Insight
-from .ai_services import generate_class_summary_stream,generate_refactor_stream # 03c03c03c NEW IMPORT
+from .ai_services import generate_class_summary_stream, generate_module_readme_stream,generate_refactor_stream # 03c03c03c NEW IMPORT
 from .tasks import process_repository # Import the Celery task
 import json
 from .serializers import CodeSymbolSerializer, RepositorySerializer,RepositoryDetailSerializer,NotificationSerializer
@@ -1281,3 +1281,141 @@ class ProposeChangeView(APIView):
             {"message": "Pull Request creation process initiated.", "task_id": task.id},
             status=status.HTTP_202_ACCEPTED
         )
+        
+@method_decorator(csrf_exempt, name='dispatch')
+class SummarizeModuleView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, repo_id, *args, **kwargs):
+        module_path = request.data.get('path')
+
+        if module_path is None or not isinstance(module_path, str):
+            return Response(
+                {"error": "A 'path' string for the module/directory is required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        print(f"SUMMARIZE_MODULE_VIEW: Request for repo {repo_id}, path '{module_path}'")
+
+        if not OPENAI_CLIENT_INSTANCE:
+            return Response({"error": "Helix's AI service is currently unavailable."}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+        if not Repository.objects.filter(id=repo_id, user=request.user).exists():
+            return Response({"error": "Repository not found or permission denied."}, status=status.HTTP_404_NOT_FOUND)
+
+        response_stream = generate_module_readme_stream(
+            repo_id=repo_id,
+            module_path=module_path.strip(),
+            openai_client=OPENAI_CLIENT_INSTANCE
+        )
+        
+        response = StreamingHttpResponse(response_stream, content_type='text/plain; charset=utf-8')
+        response['X-Accel-Buffering'] = 'no'
+        response['Cache-Control'] = 'no-cache'
+        return response
+    
+@method_decorator(csrf_exempt, name='dispatch')
+class BatchDocumentModuleView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, repo_id, *args, **kwargs):
+        """
+        Triggers a batch documentation task for all files within a specific
+        module path in a repository.
+        """
+        # The path can be an empty string for the root directory
+        module_path = request.data.get('path', '')
+
+        print(f"BATCH_DOC_MODULE_VIEW: Request for repo {repo_id}, path '{module_path}'")
+
+        # 1. Check repository ownership
+        if not Repository.objects.filter(id=repo_id, user=request.user).exists():
+            return Response({"error": "Repository not found or permission denied."}, status=status.HTTP_404_NOT_FOUND)
+
+        # 2. Find all file IDs within the given module path
+        # This query efficiently gets the primary keys of all files in the directory.
+        file_ids_in_module = list(CodeFile.objects.filter(
+            repository_id=repo_id,
+            file_path__startswith=module_path.strip()
+        ).values_list('id', flat=True))
+
+        if not file_ids_in_module:
+            # This is not an error; it just means there's nothing to do.
+            return Response({"message": "No files found in the specified module path."}, status=status.HTTP_200_OK)
+        
+        print(f"BATCH_DOC_MODULE_VIEW: Found {len(file_ids_in_module)} files. Dispatching task.")
+
+        # 3. Dispatch your existing Celery task with the filtered list of file IDs
+        task = batch_generate_docstrings_for_files_task.delay(
+            repo_id=repo_id,
+            user_id=request.user.id,
+            file_ids=file_ids_in_module
+        )
+
+        # 4. Return the task ID for frontend polling
+        return Response(
+            {"message": "Module documentation batch job initiated.", "task_id": task.id},
+            status=status.HTTP_202_ACCEPTED
+        )
+        
+class ModuleCoverageView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, repo_id, *args, **kwargs):
+        module_path = request.query_params.get('path', '').strip()
+        print("Hello")
+        base_query = CodeSymbol.objects.filter(
+            Q(code_file__repository_id=repo_id) | Q(code_class__code_file__repository_id=repo_id)
+        )
+
+
+        if module_path:
+            base_query = base_query.filter(
+                Q(code_file__file_path__startswith=module_path) |
+                Q(code_class__code_file__file_path__startswith=module_path)
+            )
+
+        # 3. Now, apply the documentation status conditions to the filtered set.
+        condition_no_docs = Q(documentation_status=CodeSymbol.DocStatus.NONE)
+        condition_stale = Q(documentation_status=CodeSymbol.DocStatus.STALE)
+        
+        # For robustness, we can still include the fallback, but the main issue is likely the query structure.
+        condition_logic_fallback = (
+            Q(documentation__isnull=True) | Q(documentation__exact='') |
+            (Q(documentation_hash__isnull=False) & ~Q(documentation_hash=F('content_hash')))
+        )
+
+        final_query = base_query.filter(
+            content_hash__isnull=False
+        ).filter(
+            condition_no_docs | condition_stale | condition_logic_fallback
+        ).distinct()
+        
+        undocumented_count = final_query.count()
+        # --- END CORRECTION ---
+
+        print(f"MODULE_COVERAGE_VIEW: [Corrected Query] Found {undocumented_count} undocumented/stale symbols in repo {repo_id}, path '{module_path}'")
+        # For debugging, you can print the raw SQL query Django generates:
+        #print(f"DEBUG SQL: {final_query.query}")
+
+        return Response({"undocumented_count": undocumented_count})
+    
+from .models import ModuleDocumentation
+from .serializers import ModuleDocumentationSerializer # We'll create this next
+
+class ModuleDocumentationView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, repo_id, *args, **kwargs):
+        module_path = request.query_params.get('path', '')
+        
+        try:
+            # Check ownership via the repository relationship
+            repo = Repository.objects.get(id=repo_id, user=request.user)
+            module_doc = ModuleDocumentation.objects.get(repository=repo, module_path=module_path)
+            serializer = ModuleDocumentationSerializer(module_doc)
+            return Response(serializer.data)
+        except Repository.DoesNotExist:
+            return Response({"error": "Repository not found or permission denied."}, status=status.HTTP_404_NOT_FOUND)
+        except ModuleDocumentation.DoesNotExist:
+            return Response({"error": "No saved README found for this module path."}, status=status.HTTP_404_NOT_FOUND)
