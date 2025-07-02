@@ -25,9 +25,10 @@ class Repository(models.Model):
     )
     status = models.CharField(max_length=10, choices=Status.choices, default=Status.PENDING)
     root_merkle_hash = models.CharField(max_length=64, blank=True, null=True)
-
+    default_branch = models.CharField(max_length=100, default='main')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
     class Meta:
         db_table = 'repositories'
         verbose_name_plural = "Repositories"

@@ -14,6 +14,11 @@ import { OrphanSymbolsPanel, type OrphanSymbolDisplayItem } from '../components/
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { LayoutGrid, History } from 'lucide-react';
 import { ActivityFeed } from '@/components/repo-detail/ActivityFeed';
+import { CodeEditorPanel } from '@/components/repo-detail/CodeEditorPanel'; // Import new editor
+import { ProposeChangeModal } from '@/components/repo-detail/ProposeChangeModal'; // Import new modal
+import { type AsyncTaskStatus } from '@/types'; // <-- Import the new type
+import { toast } from 'sonner';
+
 // --- Type Definitions ---
 interface CodeSymbol {
   id: number;
@@ -90,9 +95,15 @@ export function RepoDetailPage() {
   const isAnyFileSpecificActionInProgress = batchProcessingFileId !== null || creatingPRFileId !== null;
   const isAnyGlobalBatchActionInProgress = activeDocGenTaskId !== null || activePRCreationTaskId !== null;
   const isAnyOperationInProgressForFileTree = isAnyFileSpecificActionInProgress || isAnyGlobalBatchActionInProgress;
+  const [modifiedCode, setModifiedCode] = useState<string | null>(null);
 
-  const [modifiedFileContent, setModifiedFileContent] = useState<string | null>(null);
+  const [modifiedContent, setModifiedContent] = useState<string | null>(null);
+  const [isDirty, setIsDirty] = useState(false);
+  const [isPrModalOpen, setIsPrModalOpen] = useState(false);
+  const [activePrTaskId, setActivePrTaskId] = useState<string | null>(null);
 
+  // This state will hold the status object fetched from the polling endpoint
+  const [prTaskStatus, setPrTaskStatus] = useState<AsyncTaskStatus | null>(null);
   // --- YOUR CORRECT API CALL LOGIC ---
   const orphanSymbolsList = useMemo(() => {
     if (!repo) return [];
@@ -198,7 +209,106 @@ export function RepoDetailPage() {
         setActivePRCreationTaskId(null); // Clear active task ID on immediate failure
       });
   };
+  useEffect(() => {
+    setModifiedContent(null);
+    setIsDirty(false);
+    setActivePrTaskId(null); // Also reset any active PR task
+    setPrTaskStatus(null);
+  }, [selectedFile]);
 
+  const handleContentChange = (newContent: string | undefined) => {
+    const contentStr = newContent ?? '';
+    setModifiedContent(contentStr);
+    // Only set dirty if the content has actually changed from the original
+    setIsDirty(contentStr !== fileContent);
+  };
+
+  const handleSubmitPr = async (commitMessage: string) => {
+    if (!repo || !selectedFile || modifiedContent === null) return;
+
+    // We can reset the previous task status here before starting a new one
+    setPrTaskStatus(null);
+    toast.info("Submitting your changes to create a Pull Request...");
+
+    try {
+      const response = await axios.post(
+        `http://localhost:8000/api/v1/repositories/${repo.id}/propose-change/`,
+        {
+          file_path: selectedFile.file_path,
+          new_content: modifiedContent,
+          commit_message: commitMessage,
+        }
+      );
+
+      const { task_id } = response.data;
+      setActivePrTaskId(task_id); // This will trigger the polling useEffect below
+      setIsPrModalOpen(false); // Close the modal
+      toast.success("PR creation process started. We'll notify you when it's ready.");
+
+    } catch (error) {
+      toast.error("Failed to submit changes.", { description: String(error) });
+    }
+  };
+
+  // --- NEW: POLLING LOGIC using useEffect ---
+  useEffect(() => {
+    // If there's no active task ID, do nothing.
+    if (!activePrTaskId) {
+      return;
+    }
+
+    // Start polling
+    const intervalId = setInterval(() => {
+      axios.get(`/api/v1/task-status/${activePrTaskId}/`)
+        .then(response => {
+          const statusData: AsyncTaskStatus = response.data;
+          setPrTaskStatus(statusData);
+
+          // Show in-progress toast notifications
+          if (statusData.status === 'PENDING' || statusData.status === 'IN_PROGRESS') {
+            toast.loading(statusData.message || 'Processing...', { id: activePrTaskId });
+          }
+
+          // If the task is finished, stop polling
+          if (statusData.status === 'SUCCESS' || statusData.status === 'FAILURE') {
+            clearInterval(intervalId);
+            toast.dismiss(activePrTaskId); // Dismiss the loading toast
+
+            if (statusData.status === 'SUCCESS') {
+              const prUrl = statusData.result?.pull_request_url;
+              toast.success("Pull Request created successfully!", {
+                action: prUrl ? {
+                  label: "View on GitHub",
+                  onClick: () => window.open(prUrl, '_blank'),
+                } : undefined,
+              });
+              // Reset state after success
+              setActivePrTaskId(null);
+              setModifiedContent(null);
+              setIsDirty(false);
+            } else { // Handle FAILURE
+              toast.error("Failed to create Pull Request.", {
+                description: statusData.result?.error || "An unknown error occurred."
+              });
+              setActivePrTaskId(null);
+            }
+          }
+        })
+        .catch(err => {
+          console.error("Polling error:", err);
+          toast.error("Could not get task status.");
+          clearInterval(intervalId); // Stop polling on error
+          setActivePrTaskId(null);
+        });
+    }, 2000); // Poll every 2 seconds
+
+    // Cleanup function to stop polling if the component unmounts or the task ID changes
+    return () => clearInterval(intervalId);
+
+  }, [activePrTaskId]); // This effect re-runs ONLY when activePrTaskId changes
+
+  // The `isSubmittingPr` state can now be derived from the polling status
+  const isSubmittingPr = prTaskStatus?.status === 'PENDING' || prTaskStatus?.status === 'IN_PROGRESS';
   const pollTaskStatus = async (
     taskId: string,
     setMessage: React.Dispatch<React.SetStateAction<string | null>>,
@@ -618,90 +728,91 @@ export function RepoDetailPage() {
   if (!repo) return <p className="p-6 text-center text-muted-foreground">Repository not found or not yet loaded.</p>;
 
   return (
+    <>
     // The main container is now a flex column to hold the header and the tabs
-    <div className="flex flex-col h-full bg-background text-foreground overflow-y-hidden">
+      <div className="flex flex-col h-full bg-background text-foreground overflow-y-hidden">
 
         {/* ============================================= */}
         {/* Header (FileTreeHeader) - Stays at the top    */}
         {/* ============================================= */}
         {repo && (
-            <FileTreePanel
-                repoId={repo.id}
-                repoFullName={repo.full_name}
-                repoStatus={repo.status}
-                onSyncStart={fetchRepoDetails} // Assuming you have this handler
-            />
+          <FileTreePanel
+            repoId={repo.id}
+            repoFullName={repo.full_name}
+            repoStatus={repo.status}
+            onSyncStart={fetchRepoDetails} // Assuming you have this handler
+          />
         )}
 
         {/* ============================================= */}
         {/* Tabs for switching between views            */}
         {/* ============================================= */}
         <Tabs defaultValue="files" className="flex-grow flex flex-col min-h-0">
-            
-            {/* --- 2. Tab Triggers (The navigation bar for the tabs) --- */}
-            <div className="px-4 border-b border-border flex-shrink-0">
-                <TabsList className="bg-transparent p-0">
-                    <TabsTrigger value="files" className="text-sm h-full py-2.5">
-                        <LayoutGrid className="mr-2 h-4 w-4" />
-                        Browser
-                    </TabsTrigger>
-                    <TabsTrigger value="activity" className="text-sm h-full py-2.5">
-                        <History className="mr-2 h-4 w-4" />
-                        Activity & Insights
-                    </TabsTrigger>
-                </TabsList>
-            </div>
 
-            {/* --- 3. Tab Content for "File Browser" --- */}
-            <TabsContent value="files" className="flex-grow flex flex-row overflow-y-hidden mt-0">
-                {/* Your existing three-panel layout is now wrapped in this TabsContent */}
-                {/* It remains a flex row to keep the side-by-side panel structure */}
+          {/* --- 2. Tab Triggers (The navigation bar for the tabs) --- */}
+          <div className="px-4 border-b border-border flex-shrink-0">
+            <TabsList className="bg-transparent p-0">
+              <TabsTrigger value="files" className="text-sm h-full py-2.5">
+                <LayoutGrid className="mr-2 h-4 w-4" />
+                Browser
+              </TabsTrigger>
+              <TabsTrigger value="activity" className="text-sm h-full py-2.5">
+                <History className="mr-2 h-4 w-4" />
+                Activity & Insights
+              </TabsTrigger>
+            </TabsList>
+          </div>
 
-                {/* ============================================= */}
-                {/* Left Panel (File Tree, Batch Actions, Orphans)*/}
-                {/* ============================================= */}
-                <aside className="w-[300px] md:w-[380px] flex-shrink-0 border-r border-border flex flex-col bg-card overflow-y-auto min-h-0">
-                    {/* This wrapper ensures the panels inside don't overflow the aside */}
-                    <div className="flex-grow flex flex-col min-h-0">
-                        <div className="flex-grow overflow-y-auto min-h-0">
-                            <FileTreePanel
-                                repo={repo}
-                                selectedFile={selectedFile}
-                                onFileSelect={handleFileSelect}
-                                selectedFilesForBatch={selectedFilesForBatch}
-                                onSelectedFilesForBatchChange={setSelectedFilesForBatch}
-                                onGenerateDocsForFile={handleBatchGenerateDocsForFile}
-                                batchProcessingFileId={batchProcessingFileId}
-                                batchMessages={batchMessages}
-                                onCreatePRForFile={handleCreatePRForFile}
-                                creatingPRFileId={creatingPRFileId}
-                                prMessages={prMessages}
-                                isAnyOperationInProgress={isAnyOperationInProgressForFileTree}
-                            />
-                        </div>
-                        
-                        {repo.files.length > 0 && (
-                            <div className="p-3 md:p-4 border-t border-border bg-background shadow-inner mt-auto flex-shrink-0">
-                                <BatchActionsPanel
-                                    selectedFileCount={selectedFilesForBatch.size}
-                                    onBatchGenerateDocs={handleBatchGenerateDocsForRepo}
-                                    activeDocGenTaskId={activeDocGenTaskId}
-                                    docGenTaskMessage={docGenTaskMessage}
-                                    docGenTaskProgress={docGenTaskProgress}
-                                    onBatchCreatePR={handleCreateBatchPRForRepo}
-                                    activePRCreationTaskId={activePRCreationTaskId}
-                                    prCreationTaskMessage={prCreationTaskMessage}
-                                    prCreationTaskProgress={prCreationTaskProgress}
-                                    isAnyFileSpecificActionInProgress={isAnyFileSpecificActionInProgress}
-                                />
-                            </div>
-                        )}
+          {/* --- 3. Tab Content for "File Browser" --- */}
+          <TabsContent value="files" className="flex-grow flex flex-row overflow-y-hidden mt-0">
+            {/* Your existing three-panel layout is now wrapped in this TabsContent */}
+            {/* It remains a flex row to keep the side-by-side panel structure */}
 
-                        <div className="p-3 md:p-4 border-t border-border bg-background shadow-inner">
-                            <OrphanSymbolsPanel orphanSymbols={orphanSymbolsList as OrphanSymbolDisplayItem[]} />
-                        </div>
-                    </div>
-                </aside>
+            {/* ============================================= */}
+            {/* Left Panel (File Tree, Batch Actions, Orphans)*/}
+            {/* ============================================= */}
+            <aside className="w-[300px] md:w-[380px] flex-shrink-0 border-r border-border flex flex-col bg-card overflow-y-auto min-h-0">
+              {/* This wrapper ensures the panels inside don't overflow the aside */}
+              <div className="flex-grow flex flex-col min-h-0">
+                <div className="flex-grow overflow-y-auto min-h-0">
+                  <FileTreePanel
+                    repo={repo}
+                    selectedFile={selectedFile}
+                    onFileSelect={handleFileSelect}
+                    selectedFilesForBatch={selectedFilesForBatch}
+                    onSelectedFilesForBatchChange={setSelectedFilesForBatch}
+                    onGenerateDocsForFile={handleBatchGenerateDocsForFile}
+                    batchProcessingFileId={batchProcessingFileId}
+                    batchMessages={batchMessages}
+                    onCreatePRForFile={handleCreatePRForFile}
+                    creatingPRFileId={creatingPRFileId}
+                    prMessages={prMessages}
+                    isAnyOperationInProgress={isAnyOperationInProgressForFileTree}
+                  />
+                </div>
+
+                {repo.files.length > 0 && (
+                  <div className="p-3 md:p-4 border-t border-border bg-background shadow-inner mt-auto flex-shrink-0">
+                    <BatchActionsPanel
+                      selectedFileCount={selectedFilesForBatch.size}
+                      onBatchGenerateDocs={handleBatchGenerateDocsForRepo}
+                      activeDocGenTaskId={activeDocGenTaskId}
+                      docGenTaskMessage={docGenTaskMessage}
+                      docGenTaskProgress={docGenTaskProgress}
+                      onBatchCreatePR={handleCreateBatchPRForRepo}
+                      activePRCreationTaskId={activePRCreationTaskId}
+                      prCreationTaskMessage={prCreationTaskMessage}
+                      prCreationTaskProgress={prCreationTaskProgress}
+                      isAnyFileSpecificActionInProgress={isAnyFileSpecificActionInProgress}
+                    />
+                  </div>
+                )}
+
+                <div className="p-3 md:p-4 border-t border-border bg-background shadow-inner">
+                  <OrphanSymbolsPanel orphanSymbols={orphanSymbolsList as OrphanSymbolDisplayItem[]} />
+                </div>
+              </div>
+            </aside>
 
                 {/* ============================================= */}
                 {/* Center Panel (Code Viewer)                  */}
@@ -745,29 +856,42 @@ export function RepoDetailPage() {
                     </div>
                   </main>
 
-                {/* ============================================= */}
-                {/* Right Panel (Analysis)                      */}
-                {/* ============================================= */}
-                <aside className="w-[350px] md:w-[400px] flex-shrink-0 border-l border-border flex flex-col bg-background overflow-hidden min-w-0">
-                    <AnalysisPanel
-                        selectedFile={selectedFile}
-                        generatedDocs={generatedDocs}
-                        onGenerateDoc={handleGenerateDoc}
-                        generatingDocId={generatingDocId}
-                        onSaveDoc={handleSaveDoc}
-                        savingDocId={savingDocId}
-                    />
-                </aside>
-            </TabsContent>
+            {/* ============================================= */}
+            {/* Right Panel (Analysis)                      */}
+            {/* ============================================= */}
+            <aside className="w-[350px] md:w-[400px] flex-shrink-0 border-l border-border flex flex-col bg-background overflow-hidden min-w-0">
+              <AnalysisPanel
+                selectedFile={selectedFile}
+                generatedDocs={generatedDocs}
+                onGenerateDoc={handleGenerateDoc}
+                generatingDocId={generatingDocId}
+                onSaveDoc={handleSaveDoc}
+                savingDocId={savingDocId}
+              />
+            </aside>
+          </TabsContent>
 
-            {/* --- 4. Tab Content for "Activity & Insights" --- */}
-            <TabsContent value="activity" className="flex-grow overflow-y-auto mt-0">
-                {/* The new ActivityFeed component will live here. */}
-                {/* It will manage its own layout (e.g., the two-pane commit graph + details). */}
-                {repo && <ActivityFeed repoId={repo.id} />}
-            </TabsContent>
+          {/* --- 4. Tab Content for "Activity & Insights" --- */}
+          <TabsContent value="activity" className="flex-grow overflow-y-auto mt-0">
+            {/* The new ActivityFeed component will live here. */}
+            {/* It will manage its own layout (e.g., the two-pane commit graph + details). */}
+            {repo && <ActivityFeed repoId={repo.id} />}
+          </TabsContent>
 
         </Tabs>
-    </div>
-);
+      </div>
+      {selectedFile && (
+        <ProposeChangeModal
+          isOpen={isPrModalOpen}
+          onOpenChange={setIsPrModalOpen}
+          originalCode={fileContent ?? ''}
+          modifiedCode={modifiedContent ?? ''}
+          language={getLanguage(selectedFile.file_path)}
+          onSubmit={handleSubmitPr}
+          isSubmitting={isSubmittingPr} // Pass the derived submitting state
+        />
+      )}
+    </>
+
+  );
 }
