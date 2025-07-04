@@ -49,11 +49,13 @@
 
   /* any other theme values you need (fonts, keyframes, etc.) */
 }
+
 html,
 body,
 #root {
   height: 100%;
 }
+
 html {
   font-size: 14px;
   /* Try 14px or 15px as a base */
@@ -192,7 +194,7 @@ html {
     --card-foreground: oklch(0.984 0.003 247.858);
     /* Light text */
 
-    --popover: oklch(0.208 0.042 265.755);
+    --popover: oklch(0.1344 0 0);
     /* Slightly lighter dark blue/gray */
     --popover-foreground: oklch(0.984 0.003 247.858);
     /* Light text */
@@ -211,12 +213,12 @@ html {
     --secondary-foreground: oklch(0.984 0.003 247.858);
     /* Light text */
 
-    --muted: oklch(0.279 0.041 260.031);
+    --muted: oklch(0.1344 0 0);
     /* Darker gray */
     --muted-foreground: oklch(0.704 0.04 256.788);
     /* Medium-light gray text */
 
-    --accent: oklch(0.279 0.041 260.031);
+    --accent: oklch(0.1344 0 0);
     /* Darker gray */
     --accent-foreground: oklch(0.984 0.003 247.858);
     /* Light text */
@@ -236,7 +238,7 @@ html {
     /* Consider aligning with primary: var(--primary) */
 
     /* Chart Colors (Dark Mode) */
-    --chart-1: oklch(0.488 0.243 264.376);
+    --chart-1: #272727;
     --chart-2: oklch(0.696 0.17 162.48);
     --chart-3: oklch(0.769 0.188 70.08);
     --chart-4: oklch(0.627 0.265 303.9);
@@ -245,7 +247,7 @@ html {
     /* Sidebar Colors (Dark Mode) */
     --sidebar: oklch(0.208 0.042 265.755);
     --sidebar-foreground: oklch(0.984 0.003 247.858);
-    --sidebar-primary: oklch(0.488 0.243 264.376);
+    --sidebar-primary: #272727;
     --sidebar-primary-foreground: oklch(0.984 0.003 247.858);
     --sidebar-accent: oklch(0.279 0.041 260.031);
     --sidebar-accent-foreground: oklch(0.984 0.003 247.858);

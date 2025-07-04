@@ -35,36 +35,51 @@ const ChatMessageBubble: React.FC<{ message: ChatMessage }> = ({ message }) => {
 };
 
 export const ChatModal = () => {
-    const { 
-        isOpen, 
-        closeChat, 
-        messages, 
-        addMessage, 
+    const {
+        isOpen,
+        closeChat,
+        messages,
+        addMessage,
         updateLastMessage,
         replaceLastMessage,
-        isLoading, 
+        isLoading,
         setIsLoading,
-        activeRepoId 
+        activeRepoId,
+        activeFilePath, // Assuming this is in your store
     } = useChatStore();
 
     const [query, setQuery] = useState('');
     const listRef = useRef<HTMLDivElement | null>(null);
 
-    // Automatically scroll to the bottom when new messages are added
-    useEffect(() => {
-        if (listRef.current) {
-            listRef.current.scrollTop = listRef.current.scrollHeight;
-        }
-    }, [messages]);
+    // useEffect for scrolling remains the same
 
     const handleSubmit = async (e?: React.FormEvent) => {
-    // stop the browser
         e?.preventDefault();
-
         if (!query.trim() || isLoading || !activeRepoId) return;
 
-        addMessage({ role: 'user',    content: query });
+        // --- 1. CONSTRUCT THE CONTEXT-AWARE PROMPT ---
+        // This is the key change. We build a single string that represents the whole conversation.
+        let promptContext = "Previous conversation for context:\n";
+
+        // Include previous messages, but not the very last one if it was an error.
+        const historyToInclude = messages.filter(msg => msg.role !== 'error');
+
+        if (historyToInclude.length > 0) {
+            historyToInclude.forEach(msg => {
+                promptContext += `${msg.role === 'user' ? 'User' : 'Assistant'}: ${msg.content}\n`;
+            });
+        } else {
+            promptContext = ""; // No previous conversation
+        }
+
+        // The final query sent to the backend includes the history and the new question.
+        const finalQuery = `${promptContext}\n---\nNew user question: "${query}"`;
+        // --- END OF PROMPT CONSTRUCTION ---
+
+        // Add the user's message to the UI immediately
+        addMessage({ role: 'user', content: query });
         addMessage({ role: 'assistant', content: '' });
+
         setIsLoading(true);
         setQuery(''); // Clear the input
 
@@ -74,11 +89,16 @@ export const ChatModal = () => {
                 {
                     method: 'POST',
                     credentials: 'include',
-                    headers: { 
+                    headers: {
                         'Content-Type': 'application/json',
-                        'X-CSRFToken': getCookie('csrftoken') || '' 
+                        'X-CSRFToken': getCookie('csrftoken') || ''
                     },
-                    body: JSON.stringify({ query }),
+                    // --- 2. SEND THE COMBINED QUERY IN THE 'query' FIELD ---
+                    // The backend API does not need to change. It just receives a longer, more detailed query.
+                    body: JSON.stringify({
+                        query: finalQuery,
+                        file_path: activeFilePath || null
+                    }),
                 }
             );
 
@@ -105,15 +125,15 @@ export const ChatModal = () => {
     };
     const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
         if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
-        // directly call submit logic
-        handleSubmit();
+            // directly call submit logic
+            handleSubmit();
         }
     };
     return (
         <CommandDialog open={isOpen} onOpenChange={(open) => !open && closeChat()}>
             <form onSubmit={(e) => { e.preventDefault(); handleSubmit(); }}>
-                <CommandInput 
-                    placeholder="Ask anything about this repository..." 
+                <CommandInput
+                    placeholder="Ask anything about this repository..."
                     value={query}
                     onValueChange={setQuery}
                     disabled={isLoading}

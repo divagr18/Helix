@@ -1,6 +1,6 @@
 # backend/repositories/serializers.py
 from rest_framework import serializers
-from .models import Repository, CodeFile, CodeClass, CodeSymbol, CodeDependency,AsyncTaskStatus,Insight
+from .models import Repository, CodeFile, CodeClass, CodeSymbol, CodeDependency,AsyncTaskStatus,Insight, User,Organization,OrganizationMember
 from rest_framework import generics, permissions
 import os # Ensure os is imported
 REPO_CACHE_BASE_PATH = "/var/repos" # Use the same constant
@@ -208,3 +208,31 @@ class ModuleDocumentationSerializer(serializers.ModelSerializer):
     class Meta:
         model = ModuleDocumentation
         fields = ['id', 'repository', 'module_path', 'content_md', 'last_generated_at']
+
+
+class SimpleUserSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = User
+        fields = ['id', 'username', 'email']
+
+class OrganizationMemberSerializer(serializers.ModelSerializer):
+    user = SimpleUserSerializer(read_only=True)
+    
+    class Meta:
+        model = OrganizationMember
+        fields = ['id', 'user', 'role']
+
+class OrganizationSerializer(serializers.ModelSerializer):
+    # We can choose to nest the members directly if we want
+    memberships = OrganizationMemberSerializer(many=True, read_only=True)
+    owner = SimpleUserSerializer(read_only=True)
+    
+    class Meta:
+        model = Organization
+        fields = ['id', 'name', 'owner', 'created_at', 'memberships']
+
+# A serializer for creating an organization
+class CreateOrganizationSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Organization
+        fields = ['name'] # Only the name is needed for creation

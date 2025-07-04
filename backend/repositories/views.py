@@ -17,7 +17,7 @@ from rest_framework.response import Response
 from allauth.socialaccount.models import SocialToken
 from .diagram_utils import generate_mermaid_for_symbol_dependencies
 import requests,re
-from django.http import HttpResponse
+from django.http import Http404, HttpResponse
 from django.http import StreamingHttpResponse # Import Django's native streaming class
 from openai import OpenAI
 import tempfile,hashlib
@@ -36,23 +36,93 @@ OPENAI_EMBEDDING_MODEL_FOR_SEARCH = "text-embedding-3-small"
 @method_decorator(csrf_exempt, name="dispatch")
 class RepositoryViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
+    # The serializer class will be determined by the get_serializer_class method
+    serializer_class = RepositoryDetailSerializer 
 
     def get_queryset(self):
-        # This logic is now correct from our last fix.
-        if self.action == 'list':
-            return Repository.objects.filter(user=self.request.user)
-        return Repository.objects.all()
+        """
+        This queryset is now filtered based on the user's organization memberships.
+        It finds all organizations the user is a member of, then returns all
+        repositories belonging to those organizations.
+        """
+        user = self.request.user
+        # Get all organization IDs the user is a member of
+        organization_ids = OrganizationMember.objects.filter(user=user).values_list('organization_id', flat=True)
+        # Return all repositories that belong to any of those organizations
+        return Repository.objects.filter(organization_id__in=organization_ids)
 
     def get_serializer_class(self):
-        # If we are just listing repos, use the simple summary serializer.
         if self.action == 'list':
             return RepositorySerializer
-        # For ALL other actions (retrieve, create, update), use the detailed one.
         return RepositoryDetailSerializer
 
-    def perform_create(self, serializer):
-        # This is fine, it just associates the user.
-        serializer.save(user=self.request.user)
+    def create(self, request, *args, **kwargs):
+        """
+        Overrides the default create action to handle organization logic.
+        """
+        # 1. Get the organization_id from the request data sent by the frontend.
+        organization_id = request.data.get('organization_id')
+        if not organization_id:
+            return Response({"error": "organization_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # 2. Validate that the current user is a member of the target organization.
+        try:
+            membership = OrganizationMember.objects.get(organization_id=organization_id, user=request.user)
+        except OrganizationMember.DoesNotExist:
+            return Response({"error": "You are not a member of this organization or it does not exist."}, status=status.HTTP_403_FORBIDDEN)
+
+        # 3. Proceed with creating the repository, but pass our validated data.
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        
+        # Use our custom perform_create to save with the correct context
+        self.perform_create(serializer, organization=membership.organization, added_by=request.user)
+        
+        headers = self.get_success_headers(serializer.data)
+        return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
+
+    def perform_create(self, serializer, organization, added_by):
+        """
+        Saves the new repository instance with the validated organization
+        and the user who added it.
+        """
+        # The serializer now saves the instance with the organization and added_by user.
+        repo = serializer.save(organization=organization, added_by=added_by)
+        
+        # Dispatch the Celery task after the repo is successfully created
+        process_repository.delay(repo.id)
+
+    # --- ALSO, UPDATE THE DELETION LOGIC ---
+    # The default destroy action needs to be overridden to check org membership.
+    def destroy(self, request, *args, **kwargs):
+        """
+        Deletes a repository after checking for organization ownership/membership.
+        """
+        repo = self.get_object() # Gets the repository instance based on the URL's pk
+        
+        # Check if the user is a member of the organization that owns this repo.
+        # For extra safety, you could restrict deletion to only 'OWNER' or 'ADMIN' roles.
+        is_member = OrganizationMember.objects.filter(
+            organization=repo.organization, 
+            user=request.user
+            # role__in=[OrganizationMember.Role.OWNER, OrganizationMember.Role.ADMIN]
+        ).exists()
+
+        if not is_member:
+            return Response({"error": "You do not have permission to delete this repository."}, status=status.HTTP_403_FORBIDDEN)
+
+        repo_full_name = repo.full_name
+        repo_path = os.path.join(REPO_CACHE_BASE_PATH, str(repo.id))
+
+        # Perform the deletion
+        self.perform_destroy(repo)
+        
+        # Delete the cached files from the filesystem
+        if os.path.exists(repo_path):
+            shutil.rmtree(repo_path)
+            print(f"Successfully deleted cached files for '{repo_full_name}'.")
+
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 @method_decorator(csrf_exempt, name="dispatch")
 class GithubReposView(APIView):
@@ -1536,3 +1606,77 @@ class DependencyGraphView(APIView):
             })
 
         return Response({"nodes": nodes, "edges": edges})
+    
+from .models import Organization, OrganizationMember
+from .serializers import OrganizationSerializer, CreateOrganizationSerializer, OrganizationMemberSerializer
+
+# --- NEW: Organization List and Create View ---
+class OrganizationListView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        """
+        List all organizations the current user is a member of.
+        """
+        memberships = OrganizationMember.objects.filter(user=request.user).select_related('organization', 'organization__owner')
+        organizations = [m.organization for m in memberships]
+        serializer = OrganizationSerializer(organizations, many=True)
+        return Response(serializer.data)
+
+    def post(self, request, *args, **kwargs):
+        """
+        Create a new organization. The creator becomes the owner.
+        """
+        serializer = CreateOrganizationSerializer(data=request.data)
+        if serializer.is_valid():
+            # Create the organization with the current user as the owner
+            org = Organization.objects.create(
+                name=serializer.validated_data['name'],
+                owner=request.user
+            )
+            # Automatically add the owner as a member with the 'OWNER' role
+            OrganizationMember.objects.create(
+                organization=org,
+                user=request.user,
+                role=OrganizationMember.Role.OWNER
+            )
+            # Return the data for the newly created organization
+            return Response(OrganizationSerializer(org).data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+# --- NEW: Organization Detail and Member Management View ---
+class OrganizationDetailView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_object(self, org_id, user):
+        """Helper to get an org if the user is a member."""
+        try:
+            # Check if a membership exists for this user and org
+            membership = OrganizationMember.objects.get(organization_id=org_id, user=user)
+            return membership.organization
+        except OrganizationMember.DoesNotExist:
+            raise Http404
+
+    def get(self, request, org_id, *args, **kwargs):
+        """
+        Get details for a single organization.
+        """
+        org = self.get_object(org_id, request.user)
+        serializer = OrganizationSerializer(org)
+        return Response(serializer.data)
+
+    def patch(self, request, org_id, *args, **kwargs):
+        """
+        Update an organization's details (e.g., rename).
+        """
+        org = self.get_object(org_id, request.user)
+        # Add permission check: only owner or admin can update
+        membership = OrganizationMember.objects.get(organization=org, user=request.user)
+        if membership.role not in [OrganizationMember.Role.OWNER, OrganizationMember.Role.ADMIN]:
+            return Response({"error": "You do not have permission to edit this organization."}, status=status.HTTP_403_FORBIDDEN)
+
+        serializer = CreateOrganizationSerializer(org, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(OrganizationSerializer(org).data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)

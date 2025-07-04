@@ -1,14 +1,50 @@
 # backend/repositories/admin.py
 
 from django.contrib import admin
-from .models import Repository, AsyncTaskStatus,KnowledgeChunk
+from .models import Repository, AsyncTaskStatus,KnowledgeChunk,Organization, OrganizationMember
 from django.utils.html import format_html
 from django.urls import reverse
 
 @admin.register(Repository)
 class RepositoryAdmin(admin.ModelAdmin):
-    list_display = ('full_name', 'user', 'status', 'updated_at')
-    list_filter = ('status', 'user')
+    # --- THIS IS THE FIX ---
+    # Replace 'user' with 'organization' and 'added_by'
+    list_display = (
+        'full_name', 
+        'organization', # Display the organization it belongs to
+        'added_by',     # Display the user who added it
+        'status', 
+        'last_processed'
+    )
+    list_filter = (
+        'status', 
+        'organization', # Filter by organization
+        'last_processed'
+    )
+    search_fields = (
+        'full_name', 
+        'organization__name', # Allow searching by the organization's name
+        'added_by__username'  # Allow searching by the username of the person who added it
+    )
+    # --- END FIX ---
+    
+    readonly_fields = ('last_processed', 'status', 'root_merkle_hash')
+    # You can add more fields to raw_id_fields if you have many organizations or users
+    raw_id_fields = ('organization', 'added_by')
+
+@admin.register(Organization)
+class OrganizationAdmin(admin.ModelAdmin):
+    list_display = ('name', 'owner', 'created_at')
+    search_fields = ('name', 'owner__username')
+    raw_id_fields = ('owner',)
+
+@admin.register(OrganizationMember)
+class OrganizationMemberAdmin(admin.ModelAdmin):
+    list_display = ('user', 'organization', 'role', 'created_at')
+    list_filter = ('organization', 'role')
+    search_fields = ('user__username', 'organization__name')
+    raw_id_fields = ('user', 'organization')
+
 from .models import CodeFile, CodeSymbol,CodeClass,CodeDependency,Notification,EmbeddingBatchJob,Insight
 
 admin.site.register(CodeFile)

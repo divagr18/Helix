@@ -1,7 +1,7 @@
 # backend/config/api_router.py
 
 from rest_framework.routers import DefaultRouter
-from repositories.views import BatchDocumentModuleView, ChatView, RepositoryViewSet,GithubReposView,FileContentView,GenerateDocstringView, CodeSymbolDetailView
+from repositories.views import BatchDocumentModuleView, ChatView, OrganizationDetailView, OrganizationListView, RepositoryViewSet,GithubReposView,FileContentView,GenerateDocstringView, CodeSymbolDetailView
 
 router = DefaultRouter()
 from django.urls import path # Make sure path is imported
@@ -69,5 +69,7 @@ urlpatterns += [
     path('repositories/<int:repo_id>/module-documentation/', ModuleDocumentationView.as_view(), name='module-documentation'),
     path('repositories/<int:repo_id>/generate-module-workflow/', GenerateModuleWorkflowView.as_view(), name='repository-generate-module-workflow'),
     path('repositories/<int:repo_id>/dependency-graph/', DependencyGraphView.as_view(), name='repository-dependency-graph'),
+    path('organizations/', OrganizationListView.as_view(), name='organization-list'),
+    path('organizations/<int:org_id>/', OrganizationDetailView.as_view(), name='organization-detail'),
 ]
 

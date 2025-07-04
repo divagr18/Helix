@@ -6,8 +6,60 @@ from pgvector.django import HnswIndex
 from django.contrib.auth import get_user_model
 from .utils import get_source_for_symbol
 User = get_user_model()
+class Organization(models.Model):
+    """
+    Represents a team or workspace that owns repositories.
+    This is the primary tenant model.
+    """
+    name = models.CharField(max_length=200, help_text="The name of the organization or workspace.")
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT, # Prevent deleting a user that owns an organization
+        related_name="owned_organizations",
+        help_text="The user who created and owns the organization."
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'organizations'
+        ordering = ['name']
+
+    def __str__(self):
+        return self.name
+
+# --- NEW MODEL: OrganizationMember (The "through" table) ---
+class OrganizationMember(models.Model):
+    """
+    Links a User to an Organization, defining their role within that team.
+    """
+    class Role(models.TextChoices):
+        OWNER = 'OWNER', 'Owner'
+        ADMIN = 'ADMIN', 'Admin'
+        MEMBER = 'MEMBER', 'Member'
+
+    organization = models.ForeignKey(Organization, on_delete=models.CASCADE, related_name="memberships")
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="organization_memberships")
+    role = models.CharField(max_length=10, choices=Role.choices, default=Role.MEMBER)
+    
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'organization_members'
+        # A user can only have one role within a single organization
+        unique_together = ('organization', 'user')
+        ordering = ['organization__name', 'user__username']
+
+    def __str__(self):
+        return f"{self.user.username} is a {self.get_role_display()} of {self.organization.name}"
 class Repository(models.Model):
-    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name='repositories',
+        help_text="The organization that owns this repository.",
+        null=True
+    )
     
     name = models.CharField(max_length=255)
     full_name = models.CharField(max_length=512, unique=True) 
@@ -22,6 +74,12 @@ class Repository(models.Model):
         null=True, 
         blank=True, 
         help_text="Timestamp of the last successful processing by the Celery task."
+    )
+    added_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL, # If the user is deleted, we keep the repo but nullify who added it
+        null=True,
+        related_name='added_repositories'
     )
     status = models.CharField(max_length=10, choices=Status.choices, default=Status.PENDING)
     root_merkle_hash = models.CharField(max_length=64, blank=True, null=True)
@@ -468,3 +526,4 @@ class ModuleDependency(models.Model):
 
     def __str__(self):
         return f"'{self.source_file.file_path}' -> '{self.target_file.file_path}'"
+
