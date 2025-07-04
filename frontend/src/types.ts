@@ -14,6 +14,10 @@ export interface LinkedSymbol {
   name: string;
   unique_id: string; // Ensure this matches your LinkedSymbolSerializer
 }
+export interface SignatureLocation {
+  line: number;
+  column: number;
+}
 export interface CodeSymbol {
   id: number;
   name: string;
@@ -31,6 +35,8 @@ export interface CodeSymbol {
   className?: string;
   loc?: number | null;
   cyclomatic_complexity?: number | null;
+  existing_docstring: string | null;
+  signature_end_location: SignatureLocation | null;
 }
 export interface SymbolDetail extends CodeSymbol { // Extends the base
   source_code: string | null;       // Specific to detail view

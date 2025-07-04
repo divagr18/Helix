@@ -2,7 +2,7 @@
 import React, { useEffect, useState } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, Outlet } from 'react-router-dom';
 import axios from 'axios';
-
+import { DependencyGraphPage } from './pages/DependencyGraphPage';
 // Components
 import { Header } from './components/Header';
 import { ThemeProvider } from "@/components/theme-provider";
@@ -65,7 +65,7 @@ function App() {
                 {/* Global components that are not part of the page layout */}
                 <Toaster richColors closeButton position="top-right" />
                 <ChatModal />
-
+                <div className="h-full">
                 <Routes>
                     {isAuthenticated ? (
                         // If authenticated, use the AuthenticatedLayout as a parent route.
@@ -74,6 +74,7 @@ function App() {
                             <Route index element={<Navigate to="/dashboard" replace />} />
                             <Route path="dashboard" element={<DashboardPage />} />
                             <Route path="repository/:repoId" element={<RepoDetailPage />} />
+                            <Route path="/repository/:repoId/architecture" element={<DependencyGraphPage />} />
                             <Route path="symbol/:symbolId" element={<SymbolDetailPage />} />
                             <Route path="search" element={<SearchResultsPage />} />
                             {/* A catch-all for any other authenticated path */}
@@ -87,6 +88,7 @@ function App() {
                         </>
                     )}
                 </Routes>
+                </div>
             </BrowserRouter>
         </ThemeProvider>
     );

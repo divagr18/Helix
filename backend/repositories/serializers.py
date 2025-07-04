@@ -140,7 +140,8 @@ class RepositoryDetailSerializer(serializers.ModelSerializer):
 class RepositorySerializer(serializers.ModelSerializer):
     class Meta:
         model = Repository
-        fields = ['id', 'name', 'full_name', 'github_id', 'status','last_processed', 'updated_at',]
+        fields = ['id', 'name', 'full_name', 'github_id', 'status','last_processed', 'updated_at','documentation_coverage',
+            'orphan_symbol_count']
         read_only_fields = ['status', 'updated_at']
 
 

@@ -12,7 +12,7 @@ import { FileTreePanel } from '../components/repo-detail/FileTreePanel';
 import { BatchActionsPanel } from '../components/repo-detail/BatchActionsPanel';
 import { OrphanSymbolsPanel, type OrphanSymbolDisplayItem } from '../components/repo-detail/OrphanSymbolsPanel';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { LayoutGrid, History } from 'lucide-react';
+import { LayoutGrid, History,Share2 } from 'lucide-react';
 import { ActivityFeed } from '@/components/repo-detail/ActivityFeed';
 // --- Type Definitions ---
 interface CodeSymbol {
@@ -63,6 +63,12 @@ export function RepoDetailPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  const getActiveTab = () => {
+        if (location.pathname.endsWith('/architecture')) return 'architecture';
+        if (location.pathname.endsWith('/activity')) return 'activity';
+        return 'files';
+    }
+
   const [selectedFile, setSelectedFile] = useState<CodeFile | null>(null);
   const [fileContent, setFileContent] = useState<string>('');
   const [contentLoading, setContentLoading] = useState(false);
@@ -92,7 +98,7 @@ export function RepoDetailPage() {
   const isAnyOperationInProgressForFileTree = isAnyFileSpecificActionInProgress || isAnyGlobalBatchActionInProgress;
 
   const [modifiedFileContent, setModifiedFileContent] = useState<string | null>(null);
-
+  
   // --- YOUR CORRECT API CALL LOGIC ---
   const orphanSymbolsList = useMemo(() => {
     if (!repo) return [];
@@ -472,8 +478,8 @@ export function RepoDetailPage() {
     return () => clearInterval(intervalId); // Cleanup on unmount or if taskId changes
   }, [activeDocGenTaskId, fetchRepoDetails]);
   const handleAnalysisChange = useCallback(() => {
-    fetchRepoDetails();
-  }, [fetchRepoDetails]);
+  fetchRepoDetails();
+}, [fetchRepoDetails]);
   const handleSaveDoc = async (funcId: number) => { // Made async for await
     const docText = generatedDocs[funcId];
     if (!docText) return;
@@ -637,18 +643,21 @@ export function RepoDetailPage() {
       {/* ============================================= */}
       {/* Tabs for switching between views            */}
       {/* ============================================= */}
-      <Tabs defaultValue="files" className="flex-grow flex flex-col min-h-0">
+      <Tabs defaultValue="files" value={getActiveTab()} className="flex-grow flex flex-col min-h-0">
 
         {/* --- 2. Tab Triggers (The navigation bar for the tabs) --- */}
         <div className="px-4 border-b border-border flex-shrink-0">
           <TabsList className="bg-transparent p-0">
-            <TabsTrigger value="files" className="text-sm h-full py-2.5">
-              <LayoutGrid className="mr-2 h-4 w-4" />
-              Browser
+            <TabsTrigger value="files" asChild>
+                <Link to={`/repository/${repoId}`}><LayoutGrid className="mr-2 h-4 w-4" />Browser</Link>
             </TabsTrigger>
-            <TabsTrigger value="activity" className="text-sm h-full py-2.5">
-              <History className="mr-2 h-4 w-4" />
-              Activity & Insights
+            {/* --- NEW TAB TRIGGER --- */}
+            <TabsTrigger value="architecture" asChild>
+                <Link to={`/repository/${repoId}/architecture`}><Share2 className="mr-2 h-4 w-4" />Architecture</Link>
+            </TabsTrigger>
+            {/* --- END NEW TAB --- */}
+            <TabsTrigger value="activity" asChild>
+                <Link to={`/repository/${repoId}/activity`}><History className="mr-2 h-4 w-4" />Activity & Insights</Link>
             </TabsTrigger>
           </TabsList>
         </div>
@@ -661,7 +670,7 @@ export function RepoDetailPage() {
           {/* ============================================= */}
           {/* Left Panel (File Tree, Batch Actions, Orphans)*/}
           {/* ============================================= */}
-          <aside className="w-[300px] md:w-[380px] flex-shrink-0 border-r border-border flex flex-col bg-card overflow-y-hidden min-h-0">
+          <aside className="w-[300px] md:w-[380px] flex-shrink-0 border-r border-border flex flex-col bg-card overflow-y-auto min-h-0">
             {/* This wrapper ensures the panels inside don't overflow the aside */}
             <div className="flex-grow flex flex-col min-h-0">
               <div className="flex-grow overflow-y-auto min-h-0">

@@ -28,7 +28,8 @@ class Repository(models.Model):
     default_branch = models.CharField(max_length=100, default='main')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
-
+    documentation_coverage = models.FloatField(default=0.0)
+    orphan_symbol_count = models.IntegerField(default=0)
     class Meta:
         db_table = 'repositories'
         verbose_name_plural = "Repositories"
@@ -441,3 +442,29 @@ class ModuleDocumentation(models.Model):
     def __str__(self):
         path_display = self.module_path if self.module_path else "Repository Root"
         return f"README for {path_display} in {self.repository.full_name}"
+    
+class ModuleDependency(models.Model):
+    """
+    Represents a dependency where one file (the source) imports another
+    file (the target) within the same repository. This forms the directed
+    edges of the module dependency graph.
+    """
+    repository = models.ForeignKey(Repository, on_delete=models.CASCADE, related_name='module_dependencies')
+    
+    # The file that contains the `import` statement
+    source_file = models.ForeignKey(CodeFile, on_delete=models.CASCADE, related_name='outgoing_dependencies')
+    
+    # The file that is being imported
+    target_file = models.ForeignKey(CodeFile, on_delete=models.CASCADE, related_name='incoming_dependencies')
+
+    class Meta:
+        db_table = 'module_dependencies'
+        # Ensure we don't create duplicate dependency edges
+        unique_together = ('source_file', 'target_file')
+        indexes = [
+            models.Index(fields=['source_file']),
+            models.Index(fields=['target_file']),
+        ]
+
+    def __str__(self):
+        return f"'{self.source_file.file_path}' -> '{self.target_file.file_path}'"

@@ -49,7 +49,11 @@
 
   /* any other theme values you need (fonts, keyframes, etc.) */
 }
-
+html,
+body,
+#root {
+  height: 100%;
+}
 html {
   font-size: 14px;
   /* Try 14px or 15px as a base */

@@ -1,4 +1,5 @@
 # backend/repositories/tasks.py
+from pathlib import Path
 from config.celery import app
 from .models import Repository,AsyncTaskStatus
 import subprocess # Import the subprocess module
@@ -11,7 +12,7 @@ import ast # Python's Abstract Syntax Tree module
 import astor,hashlib
 import requests
 from .ai_services import generate_module_readme_stream 
-from celery import chain
+from celery import chain, shared_task
 import subprocess # To call ruff CLI
 import time
 from github import Github, GithubException, UnknownObjectException
@@ -94,6 +95,9 @@ def process_repository(repo_id):
             repo.status = Repository.Status.COMPLETED
             repo.last_processed = timezone.now()
             repo.save(update_fields=['status', 'last_processed'])
+            print(f"PROCESS_REPO_TASK: Dispatching metric calculation tasks for repo {repo_id}")
+            calculate_documentation_coverage_task.delay(repo_id=repo_id)
+            detect_orphan_symbols_task.delay(repo_id=repo_id, user_id=repo.user.id)
             return # Stop here
         
         # --- Call Rust Engine ---
@@ -164,7 +168,7 @@ def process_repository(repo_id):
                     )
                     if created and symbol_obj.existing_docstring:
                         # If we're seeing this symbol for the first time and it already has a docstring
-                        symbol_obj.documentation_status = CodeSymbol.DocStatus.DOCUMENTED
+                        symbol_obj.documentation_status = CodeSymbol.DocStatus.FRESH
                         symbol_obj.save(update_fields=['documentation_status'])
                     elif created and not symbol_obj.existing_docstring:
                         # New symbol with no docstring
@@ -200,11 +204,15 @@ def process_repository(repo_id):
 
                         method_defaults = {
                             'code_file': None,
-                            'name': method_data.get('name'), 'start_line': method_data.get('start_line'),
-                            'end_line': method_data.get('end_line'), 'content_hash': method_data.get('content_hash'),
-                            'is_orphan': False,'loc': method_data.get('loc'),
-                                'cyclomatic_complexity': method_data.get('cyclomatic_complexity'),'existing_docstring': func_data.get('docstring'), # from the JSON
-        'signature_end_location': func_data.get('signature_end_location'),
+                            'name': method_data.get('name'), 
+                            'start_line': method_data.get('start_line'),
+                            'end_line': method_data.get('end_line'), 
+                            'content_hash': method_data.get('content_hash'),
+                            'is_orphan': False,
+                            'loc': method_data.get('loc'),
+                            'cyclomatic_complexity': method_data.get('cyclomatic_complexity'),
+                            'existing_docstring': method_data.get('docstring'), 
+                            'signature_end_location': method_data.get('signature_end_location'),
                         }
 
                         symbol_obj, created = CodeSymbol.objects.update_or_create(
@@ -214,7 +222,7 @@ def process_repository(repo_id):
                         )
                         if created and symbol_obj.existing_docstring:
         # If we're seeing this symbol for the first time and it already has a docstring
-                            symbol_obj.documentation_status = CodeSymbol.DocStatus.DOCUMENTED
+                            symbol_obj.documentation_status = CodeSymbol.DocStatus.FRESH
                             symbol_obj.save(update_fields=['documentation_status'])
                         elif created and not symbol_obj.existing_docstring:
                             # New symbol with no docstring
@@ -346,7 +354,10 @@ def process_repository(repo_id):
         'modified_symbols': modified_symbols_data,
         'removed_symbols': removed_symbols_data,
     }
-    
+        print(f"PROCESS_REPO_TASK: Dispatching metric calculation tasks for repo {repo_id}")
+        calculate_documentation_coverage_task.delay(repo_id=repo_id)
+        detect_orphan_symbols_task.delay(repo_id=repo_id, user_id=repo.user.id)
+        
         print(f"PROCESS_REPO_TASK: Dispatching insights generation for repo {repo.id} at commit {latest_commit_hash[:7]}")
         generate_insights_on_change_task.delay(
             repo_id=repo.id,
@@ -358,6 +369,9 @@ def process_repository(repo_id):
         print(f"PROCESS_REPO_TASK: Successfully processed and saved analysis for repository: {repo.full_name}")
         print(f"PROCESS_REPO_TASK: Dispatching orphan detection for repo {repo.id}")
         detect_orphan_symbols_task.delay(repo_id=repo.id, user_id=repo.user.id) # Pass user_id of repo owner
+        sync_knowledge_index_task.delay(repo_id=repo.id)
+        print(f"PROCESS_REPO_TASK: Dispatching module dependency resolution for repo {repo.id}")
+        resolve_module_dependencies_task.delay(repo_id=repo.id)
     except subprocess.CalledProcessError as e:
         error_message = f"Error calling Rust engine for repo_id={repo_id}. Return code: {e.returncode}. Stderr: {e.stderr[:500]}..."
         print(error_message)
@@ -1467,7 +1481,10 @@ def detect_orphan_symbols_task(self, repo_id: int, user_id: int | None = None): 
 
 
     print(f"ORPHAN_DETECT_TASK: Orphan detection complete for repo {repo_obj.full_name}. Found {actually_marked_orphan_count} orphan symbols.")
-
+    repo_obj = Repository.objects.get(id=repo_id) # Refetch or use existing repo_obj
+    repo_obj.orphan_symbol_count = actually_marked_orphan_count
+    repo_obj.save(update_fields=['orphan_symbol_count'])
+    print(f"ORPHAN_DETECT_TASK: Repo {repo_id} orphan count updated to {actually_marked_orphan_count}")
     # --- Notification Logic ---
     if actually_marked_orphan_count > 0 and user_obj: # Check if user_obj was successfully fetched
         # Fetch details for a few orphan symbols for the notification message
@@ -1502,7 +1519,35 @@ def detect_orphan_symbols_task(self, repo_id: int, user_id: int | None = None): 
         task_status_obj.save()
         
     return {"status": "success", "orphan_count": actually_marked_orphan_count}
+@shared_task
+def calculate_documentation_coverage_task(repo_id):
+    """Calculates and saves the documentation coverage for a repository."""
+    try:
+        repo = Repository.objects.get(id=repo_id)
+        
+        # Get all symbols associated with this repository
+        all_symbols = CodeSymbol.objects.filter(
+            Q(code_file__repository=repo) | Q(code_class__code_file__repository=repo)
+        )
+        total_symbol_count = all_symbols.count()
 
+        if total_symbol_count == 0:
+            coverage = 100.0 # Or 0.0, depending on how you want to treat empty repos
+        else:
+            # Count symbols that are considered "well-documented"
+            # Let's define this as having a status of FRESH.
+            documented_symbols_count = all_symbols.filter(
+                documentation_status=CodeSymbol.DocStatus.FRESH
+            ).count()
+            coverage = (documented_symbols_count / total_symbol_count) * 100.0
+        
+        repo.documentation_coverage = coverage
+        repo.save(update_fields=['documentation_coverage'])
+        print(f"COVERAGE_TASK: Repo {repo_id} coverage updated to {coverage:.2f}%")
+        return coverage
+    except Repository.DoesNotExist:
+        print(f"COVERAGE_TASK: Repository with id={repo_id} not found.")
+        return None
 @app.task(bind=True, max_retries=3, default_retry_delay=60) # Added retry for robustness
 def submit_embedding_batch_job_task(self, repo_id: int):
     task_id = self.request.id # Celery task ID of this submission task
@@ -2332,6 +2377,7 @@ def generate_and_save_module_readme_task(previous_task_result, repo_id: int, mod
         sync_knowledge_index_task.delay(repo_id=repo_id)
         print(f"README_GENERATION_TASK: Dispatched knowledge sync for repo {repo_id}.")
         
+        
         return {"status": "success", "module_doc_id": module_doc.id}
     else:
         raise Exception("Failed to generate valid README content from AI.")
@@ -2398,3 +2444,84 @@ def generate_module_documentation_workflow_task(self, user_id: int, repo_id: int
     status_tracker.status = 'IN_PROGRESS'
     status_tracker.message = "Step 1: Generating documentation for individual files..."
     status_tracker.save()
+from .models import ModuleDependency
+    
+@app.task
+def resolve_module_dependencies_task(repo_id: int):
+    """
+    Analyzes imports for all files in a repository and creates ModuleDependency
+    records. This version handles relative imports and identifies external libraries.
+    """
+    print(f"SMART_DEPENDENCY_TASK: Starting for repo {repo_id}")
+    repo = Repository.objects.get(id=repo_id)
+    ModuleDependency.objects.filter(repository=repo).delete()
+
+    all_files_in_repo = list(CodeFile.objects.filter(repository=repo))
+    
+    # Create a lookup map of file system paths for fast checking
+    # e.g., {'services/billing/utils.py': <CodeFile object>}
+    file_path_map = {file.file_path: file for file in all_files_in_repo}
+    
+    dependencies_to_create = []
+    external_dependencies = set()
+
+    for source_file in all_files_in_repo:
+        if not source_file.imports:
+            continue
+
+        source_dir = os.path.dirname(source_file.file_path)
+
+        for import_path in source_file.imports:
+            # --- NEW: Relative and Absolute Import Resolution Logic ---
+            
+            target_file = None
+            
+            # Case 1: Relative import (e.g., 'from . import utils' or 'from ..api import views')
+            if import_path.startswith('.'):
+                # Simple relative path resolution
+                # 'from .models ...' -> path relative to source_dir
+                # 'from ..api ...' -> path relative to parent of source_dir
+                # A more robust solution might need to handle complex package structures
+                normalized_path = os.path.normpath(os.path.join(source_dir, import_path.replace('.', '/')))
+                
+                # Check for direct file match (e.g., .../utils.py)
+                possible_file_path = normalized_path + '.py'
+                if possible_file_path in file_path_map:
+                    target_file = file_path_map[possible_file_path]
+                # Check for package match (e.g., .../utils/__init__.py)
+                else:
+                    possible_init_path = os.path.join(normalized_path, '__init__.py')
+                    if possible_init_path in file_path_map:
+                        target_file = file_path_map[possible_init_path]
+
+            # Case 2: Absolute import (e.g., 'from services.billing import api')
+            else:
+                possible_file_path = import_path.replace('.', '/') + '.py'
+                if possible_file_path in file_path_map:
+                    target_file = file_path_map[possible_file_path]
+                else:
+                    possible_init_path = os.path.join(import_path.replace('.', '/'), '__init__.py')
+                    if possible_init_path in file_path_map:
+                        target_file = file_path_map[possible_init_path]
+
+            # --- END NEW LOGIC ---
+
+            if target_file:
+                # This is an internal dependency
+                if source_file.id != target_file.id:
+                    dependencies_to_create.append(
+                        ModuleDependency(
+                            repository=repo,
+                            source_file=source_file,
+                            target_file=target_file
+                        )
+                    )
+            else:
+                # This is likely an external library
+                # We take the top-level module (e.g., 'django' from 'django.db.models')
+                top_level_module = import_path.split('.')[0]
+                external_dependencies.add(top_level_module)
+
+    ModuleDependency.objects.bulk_create(dependencies_to_create, ignore_conflicts=True)
+    print(f"SMART_DEPENDENCY_TASK: Created {len(dependencies_to_create)} internal module dependencies.")
+    print(f"SMART_DEPENDENCY_TASK: Identified {len(external_dependencies)} unique external dependencies: {external_dependencies}")

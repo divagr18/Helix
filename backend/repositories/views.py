@@ -29,6 +29,7 @@ from openai import OpenAI as OpenAIClient # Renaming to avoid conflict if you ha
 from pgvector.django import L2Distance # Or CosineDistance, MaxInnerProduct
 from .serializers import CodeSymbolSerializer,AsyncTaskStatusSerializer,InsightSerializer # We can reuse this for results
 import os
+from .models import ModuleDependency
 REPO_CACHE_BASE_PATH = "/var/repos" # Use the same constant
 OPENAI_CLIENT_INSTANCE = OpenAIClient()
 OPENAI_EMBEDDING_MODEL_FOR_SEARCH = "text-embedding-3-small"
@@ -1443,3 +1444,95 @@ class GenerateModuleWorkflowView(APIView):
             {"message": "Module documentation workflow initiated.", "task_id": task.id},
             status=status.HTTP_202_ACCEPTED
         )
+        
+class DependencyGraphView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, repo_id, *args, **kwargs):
+        print(f"DEP_GRAPH_VIEW: Request for repo {repo_id}")
+        
+        try:
+            repo = Repository.objects.get(id=repo_id, user=request.user)
+        except Repository.DoesNotExist:
+            return Response({"error": "Repository not found or permission denied."}, status=404)
+
+        # 1. Get all files that are part of any dependency relationship.
+        # This ensures we don't have nodes that are completely disconnected.
+        source_files = ModuleDependency.objects.filter(repository=repo).values_list('source_file', flat=True)
+        target_files = ModuleDependency.objects.filter(repository=repo).values_list('target_file', flat=True)
+        all_relevant_file_ids = set(source_files) | set(target_files)
+        
+        files = CodeFile.objects.filter(id__in=all_relevant_file_ids)
+        
+        # Create a set of internal file paths for quick lookup
+        internal_file_paths = {f.file_path for f in files}
+
+        # 2. Create nodes for all internal files involved in dependencies.
+        nodes = [
+            {
+                "id": file.file_path,
+                "data": {"label": os.path.basename(file.file_path)},
+                "position": {"x": 0, "y": 0},
+                "type": "internalNode",
+            }
+            for file in files
+        ]
+
+        # 3. Create edges for all internal dependencies.
+        internal_dependencies = ModuleDependency.objects.filter(repository=repo).select_related('source_file', 'target_file')
+        edges = [
+            {
+                "id": f"e-{dep.source_file.id}-{dep.target_file.id}",
+                "source": dep.source_file.file_path,
+                "target": dep.target_file.file_path,
+                "animated": True,
+                "type": "smoothstep",
+            }
+            for dep in internal_dependencies
+        ]
+
+        # 4. Identify and add nodes/edges for external libraries.
+        external_libs = set()
+        # A map to track which file imports which external lib to avoid duplicate edges
+        external_edges_map = set()
+
+        for file in files:
+            if not file.imports:
+                continue
+            
+            for import_path in file.imports:
+                if not import_path: continue # Skip empty import paths
+
+                # Our resolver task already figured out what's internal.
+                # If an import path can't be resolved to a file in our repo, it's external.
+                possible_file_path = import_path.replace('.', '/') + '.py'
+                possible_init_path = os.path.join(import_path.replace('.', '/'), '__init__.py')
+
+                if possible_file_path not in internal_file_paths and possible_init_path not in internal_file_paths:
+                    # It's an external library. Get the top-level package name.
+                    lib_name = import_path.split('.')[0]
+                    if lib_name:
+                        external_libs.add(lib_name)
+                        
+                        # Create a unique key for the edge to prevent duplicates
+                        edge_key = (file.file_path, f"lib-{lib_name}")
+                        if edge_key not in external_edges_map:
+                            edges.append({
+                                "id": f"e-{file.id}-lib-{lib_name}",
+                                "source": file.file_path,
+                                "target": f"lib-{lib_name}",
+                                "type": "smoothstep",
+                                "style": {"stroke": "#888", "strokeDasharray": "5,5"},
+                            })
+                            external_edges_map.add(edge_key)
+
+        # Add the unique external library nodes to our main nodes list.
+        for lib_name in external_libs:
+            nodes.append({
+                "id": f"lib-{lib_name}",
+                "data": {"label": lib_name},
+                "position": {"x": 0, "y": 0},
+                "type": "externalNode",
+            })
+
+        return Response({"nodes": nodes, "edges": edges})

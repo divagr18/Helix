@@ -21,6 +21,10 @@ export interface TrackedRepository {
     id: number;
     full_name: string;
     status: string;
+    last_processed: string | null;
+    // --- ADD THE NEW FIELDS ---
+    documentation_coverage: number;
+    orphan_symbol_count: number;
     // last_processed: string; // Add if you have it
 }
 

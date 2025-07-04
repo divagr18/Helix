@@ -5,7 +5,7 @@ import axios from 'axios';
 import { toast } from 'sonner';
 
 // Lucide Icons
-import { Github, RefreshCw, Loader2, ShieldCheck, ShieldAlert, Clock } from 'lucide-react';
+import { Github, RefreshCw, Loader2, ShieldCheck, ShieldAlert, Clock,BookOpen } from 'lucide-react';
 
 // shadcn/ui components
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
@@ -174,17 +174,20 @@ export const RepositoryCard: React.FC<RepositoryCardProps> = ({ repo, onSyncStar
                 </CardHeader>
 
                 <CardContent className="flex-grow">
-                    <div className="text-sm text-muted-foreground space-y-2">
-                        <div className="flex items-center gap-2">
-                            <ShieldCheck className="h-4 w-4 text-green-500" />
-                            <span>92% Documentation Coverage</span>
-                        </div>
-                        <div className="flex items-center gap-2">
-                            <ShieldAlert className="h-4 w-4 text-yellow-500" />
-                            <span>3 Orphan Symbols</span>
-                        </div>
-                    </div>
-                </CardContent>
+        {/* --- USE REAL DATA INSTEAD OF PLACEHOLDERS --- */}
+        <div className="text-sm text-muted-foreground space-y-2">
+          <div className="flex items-center gap-2">
+            <BookOpen className={`h-4 w-4 ${repo.documentation_coverage >= 80 ? 'text-green-500' : repo.documentation_coverage >= 50 ? 'text-yellow-500' : 'text-orange-500'}`} />
+            <span>{repo.documentation_coverage.toFixed(1)}% Doc Coverage</span>
+          </div>
+          
+          {/* Conditionally render the orphan count */}
+          <div className="flex items-center gap-2">
+            <ShieldAlert className={`h-4 w-4 ${repo.orphan_symbol_count > 0 ? 'text-red-500' : 'text-muted-foreground'}`} />
+            <span>{repo.orphan_symbol_count} Orphan Symbol{repo.orphan_symbol_count !== 1 ? 's' : ''}</span>
+          </div>
+        </div>
+      </CardContent>
 
                 <CardFooter className="border-t border-border pt-4">
                     <TooltipProvider delayDuration={100}>
