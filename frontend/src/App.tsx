@@ -1,82 +1,34 @@
 // src/App.tsx
 import React from 'react';
-import { BrowserRouter, Routes, Route, Navigate, Outlet } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import axios from 'axios';
 
 // Providers and Hooks
 import { ThemeProvider } from "@/components/theme-provider";
 import { AuthProvider, useAuth } from './contexts/AuthContext';
-import { useWorkspaceStore } from './stores/workspaceStore';
 
 // Global Components
-import { Header } from './components/Header';
 import { Toaster } from 'sonner';
-import { ChatModal } from './components/chat/ChatModal';
-import { GlobalKeyboardShortcuts } from './components/GlobalKeyboardShortcuts';
+import { ChatModal } from './components/chat/ChatModal'; // We will replace this later
+import { MainAppLayout } from './layouts/MainAppLayout';
+import { WorkspaceLayout } from './layouts/WorkspaceLayout';
+// "Mode" Pages
+import { CodeViewPage } from './pages/modes/CodeViewPage';
+import { IntelligenceViewPage } from './pages/modes/IntelligenceViewPage';
+import { TestingViewPage } from './pages/modes/TestingViewPage';
+import { ChatViewPage } from './pages/modes/ChatViewPage';
 
-// Pages
+// Standard Pages
 import { LoginPage } from './pages/LoginPage';
 import { DashboardPage } from './pages/DashboardPage';
-import { RepoDetailPage } from './pages/RepoDetailPage';
-import { SymbolDetailPage } from './pages/SymbolDetailPage';
-import { SearchResultsPage } from './pages/SearchResultsPage';
 import { SettingsLayout } from './pages/settings/SettingsLayout';
-import { ProfileSettingsPage } from './pages/settings/ProfileSettingsPage';
-import { WorkspaceSettingsPage } from './pages/settings/WorkspaceSettingsPage';
-import { DependencyGraphPage } from './pages/DependencyGraphPage';
-import { BetaInvitePage } from './pages/BetaInvitePage'; // For new user sign-ups
-import { AcceptInvitePage } from './pages/AcceptInvitePage'; // For joining a workspace
-import { ActivityFeed } from './components/repo-detail/ActivityFeed';
-import { ActivityPage } from './pages/ActivityPage';
+import { BetaInvitePage } from './pages/BetaInvitePage';
+import { AcceptInvitePage } from './pages/AcceptInvitePage';
+
 // Set global Axios defaults
 axios.defaults.xsrfCookieName = 'csrftoken';
 axios.defaults.xsrfHeaderName = 'X-CSRFToken';
 axios.defaults.withCredentials = true;
-
-/**
- * A layout component that includes the Header and handles global logic
- * for authenticated routes, like fetching workspaces.
- */
-const AuthenticatedLayout = () => {
-    const { workspaces, setWorkspaces, activeWorkspace, setActiveWorkspace } = useWorkspaceStore();
-    const [isLoadingWorkspaces, setIsLoadingWorkspaces] = React.useState(true);
-
-    React.useEffect(() => {
-        axios.get('/api/v1/organizations/')
-            .then(response => {
-                const fetchedWorkspaces = response.data;
-                setWorkspaces(fetchedWorkspaces);
-                if (fetchedWorkspaces.length > 0) {
-                    const activeExists = activeWorkspace && fetchedWorkspaces.some(w => w.id === activeWorkspace.id);
-                    if (!activeExists) {
-                        setActiveWorkspace(fetchedWorkspaces[0]);
-                    }
-                } else {
-                    setActiveWorkspace(null);
-                }
-            })
-            .catch(err => console.error("Failed to fetch workspaces", err))
-            .finally(() => setIsLoadingWorkspaces(false));
-    }, [setWorkspaces, setActiveWorkspace, activeWorkspace]);
-
-    if (isLoadingWorkspaces) {
-        return (
-            <div className="flex justify-center items-center h-full">
-                Loading your workspace...
-            </div>
-        );
-    }
-
-    return (
-        <div className="grid h-full grid-rows-[auto_1fr] bg-background text-foreground">
-            <Header />
-            <GlobalKeyboardShortcuts />
-            <main className="overflow-y-auto min-h-0">
-                <Outlet />
-            </main>
-        </div>
-    );
-};
 
 /**
  * A component to handle the routing logic based on auth state.
@@ -86,8 +38,8 @@ function AppRoutes() {
 
     if (isLoading) {
         return (
-            <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh' }}>
-                Loading...
+            <div className="flex h-full w-full items-center justify-center">
+                <p>Loading session...</p>
             </div>
         );
     }
@@ -95,39 +47,40 @@ function AppRoutes() {
     return (
         <Routes>
             {isAuthenticated ? (
-                // --- Authenticated Routes ---
-                <Route path="/" element={<AuthenticatedLayout />}>
-                    <Route index element={<Navigate to="/dashboard" replace />} />
+                // --- AUTHENTICATED ROUTES ---
+                // All authenticated routes are now children of the MainAppLayout,
+                // which provides the persistent, collapsible master sidebar.
+                <Route path="/" element={<MainAppLayout />}>
+
+                    {/* "Mode" Pages - These are the primary views of the application */}
+                    <Route path="code/repository/:repoId/*" element={<CodeViewPage />} />
+                    <Route path="intelligence" element={<IntelligenceViewPage />} />
+                    <Route path="testing" element={<TestingViewPage />} />
+                    <Route path="chat" element={<ChatViewPage />} />
+
+                    {/* Standard Full-Page Views */}
                     <Route path="dashboard" element={<DashboardPage />} />
-                    <Route path="repository/:repoId" element={<RepoDetailPage />} />
-                    <Route path="repository/:repoId/architecture" element={<DependencyGraphPage />} />
-                    <Route path="repository/:repoId/activity" element={<ActivityPage />} />
+                    <Route path="settings/*" element={<SettingsLayout />} />
 
-                    <Route path="symbol/:symbolId" element={<SymbolDetailPage />} />
-                    <Route path="search" element={<SearchResultsPage />} />
-
-                    {/* Unified Settings Routes */}
-                    <Route path="settings" element={<SettingsLayout />}>
-                        <Route index element={<Navigate to="profile" replace />} />
-                        <Route path="profile" element={<ProfileSettingsPage />} />
-                        <Route path="workspace" element={<WorkspaceSettingsPage />} />
-                    </Route>
-
-                    {/* User can accept a workspace invite while logged in */}
+                    {/* Invite handling for logged-in users */}
                     <Route path="invite/:token" element={<AcceptInvitePage />} />
 
-                    {/* Catch-all for logged-in users redirects to dashboard */}
+                    {/* --- Redirects for the authenticated state --- */}
+                    {/* The root path "/" redirects to the user's dashboard */}
+                    <Route index element={<Navigate to="/dashboard" replace />} />
+                    {/* A convenience redirect from "/code" to the dashboard */}
+                    <Route path="code" element={<Navigate to="/dashboard" replace />} />
+                    {/* A general catch-all that sends any other path to the dashboard */}
                     <Route path="*" element={<Navigate to="/dashboard" replace />} />
                 </Route>
             ) : (
-                // --- Unauthenticated Routes ---
+                // --- UNAUTHENTICATED ROUTES ---
                 <>
                     <Route path="/login" element={<LoginPage />} />
-                    {/* The main entry point for the closed beta */}
                     <Route path="/invite" element={<BetaInvitePage />} />
-                    {/* This route is for accepting workspace invites, but the component will redirect to login */}
                     <Route path="/invite/:token" element={<AcceptInvitePage />} />
-                    {/* Any other path redirects to the beta invite page */}
+
+                    {/* Any other path redirects to the main invite page for unauthenticated users */}
                     <Route path="*" element={<Navigate to="/invite" replace />} />
                 </>
             )}
@@ -136,16 +89,21 @@ function AppRoutes() {
 }
 
 /**
- * The main App component sets up all the providers.
+ * The main App component sets up all the providers and global components.
  */
 function App() {
     return (
         <ThemeProvider defaultTheme="dark" storageKey="vite-ui-theme">
             <BrowserRouter>
                 <AuthProvider>
+                    {/* Global overlays are SIBLINGS to the main app container. */}
+                    {/* This prevents them from being trapped by layout styles like CSS Grid. */}
                     <Toaster richColors closeButton position="top-right" />
                     <ChatModal />
-                    <div className="h-full">
+
+                    {/* This div is the single root for our entire visible application. */}
+                    {/* It ensures a consistent full-height context for all routes. */}
+                    <div className="h-screen w-screen overflow-hidden bg-background text-foreground">
                         <AppRoutes />
                     </div>
                 </AuthProvider>

@@ -2015,3 +2015,24 @@ from django.views.decorators.csrf import ensure_csrf_cookie
 @ensure_csrf_cookie
 def set_csrf_cookie(request):
     return JsonResponse({"detail": "CSRF cookie set."})
+
+
+class ComplexityHotspotsView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, repo_id, *args, **kwargs):
+        # Check repository ownership
+        if not Repository.objects.filter(id=repo_id, user=request.user).exists():
+            return Response({"error": "Repository not found or permission denied."}, status=status.HTTP_404_NOT_FOUND)
+
+        # --- The Query ---
+        # Find all symbols in the repository, filter out those without complexity,
+        # order them by complexity descending, and take the top 15.
+        hotspots = CodeSymbol.objects.filter(
+            Q(code_file__repository_id=repo_id) | Q(code_class__code_file__repository_id=repo_id),
+            cyclomatic_complexity__isnull=False
+        ).order_by('-cyclomatic_complexity')[:15]
+
+        # We can reuse our existing CodeSymbolSerializer
+        serializer = CodeSymbolSerializer(hotspots, many=True)
+        return Response(serializer.data)

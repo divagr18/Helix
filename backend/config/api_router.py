@@ -1,7 +1,7 @@
 # backend/config/api_router.py
 
 from rest_framework.routers import DefaultRouter
-from repositories.views import BatchDocumentModuleView, ChatView, OrganizationDetailView, OrganizationListView, RepositoryViewSet,GithubReposView,FileContentView,GenerateDocstringView, CodeSymbolDetailView, ValidateInviteCodeView, set_csrf_cookie
+from repositories.views import BatchDocumentModuleView, ChatView, ComplexityHotspotsView, OrganizationDetailView, OrganizationListView, RepositoryViewSet,GithubReposView,FileContentView,GenerateDocstringView, CodeSymbolDetailView, ValidateInviteCodeView, set_csrf_cookie
 
 router = DefaultRouter()
 from django.urls import path # Make sure path is imported
@@ -92,6 +92,7 @@ urlpatterns += [
     path('invites/accept/<uuid:token>/', AcceptInviteView.as_view(), name='accept-invite'),
     path('invites/validate/', ValidateInviteCodeView.as_view(), name='validate-invite-code'),
     path('auth/logout/', LogoutView.as_view(), name='api-logout'),
+    path('repositories/<int:repo_id>/intelligence/complexity-hotspots/', ComplexityHotspotsView.as_view(), name='repository-complexity-hotspots'),
 
     path("csrf/", set_csrf_cookie),
 

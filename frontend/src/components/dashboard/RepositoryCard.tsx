@@ -130,7 +130,11 @@ export const RepositoryCard: React.FC<RepositoryCardProps> = ({ repo, onSyncStar
                         <div className="flex-grow min-w-0">
                             <CardTitle className="text-lg font-semibold flex items-center gap-2 truncate">
                                 <Github className="h-5 w-5 text-muted-foreground flex-shrink-0" />
-                                <Link to={`/repository/${repo.id}`} className="hover:text-primary hover:underline truncate" title={repo.full_name}>
+                                <Link
+                                    to={`/code/repository/${repo.id}`}
+                                    className="hover:text-primary hover:underline truncate"
+                                    title={repo.full_name}
+                                >
                                     {repo.full_name}
                                 </Link>
                             </CardTitle>

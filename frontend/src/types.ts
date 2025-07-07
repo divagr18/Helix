@@ -150,3 +150,6 @@ export interface DetailedOrganization extends Organization {
   }[];
   invitations: Invitation[];
 }
+export interface GeneratedDoc {
+  markdown: string;
+}
