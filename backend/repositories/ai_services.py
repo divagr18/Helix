@@ -3,6 +3,7 @@ import re
 from typing import Generator,Optional
 from django.conf import settings
 from openai import OpenAI as OpenAIClient
+from agno.tools import tool
 
 from .models import CodeClass, CodeSymbol, CodeDependency,KnowledgeChunk,CodeClass,CodeFile,ModuleDocumentation 
 from pgvector.django import L2Distance
@@ -280,6 +281,16 @@ def get_helix_knowledge_base() -> AgentKnowledge:
     # We just need to give the AgentKnowledge object the configured vector_db connection.
     return AgentKnowledge(vector_db=vector_db)
 from .models import Repository  # <--- Import the Repository model
+@tool(name="user_scoped_run_query")
+def user_scoped_run_query(query: str, user_id: int) -> str:
+    """
+    Executes a SQL query with RLS enforced using the user_id.
+    """
+    try:
+        tool = HelixPostgresTools(user_id=user_id)
+        return tool.run_query(query)
+    except Exception as e:
+        return f"RLS query error: {e}"
 
 from .agno_tools import helix_knowledge_search,execute_structural_query,HelixPostgresTools
 db_settings = settings.DATABASES['default']
@@ -308,7 +319,7 @@ def get_helix_qa_agent(user_id: int, repo_id: int, file_path: Optional[str] = No
         tools=[
             helix_knowledge_search,
             execute_structural_query,
-            user_scoped_postgres_tools
+            user_scoped_run_query
         ],
         show_tool_calls=False,
         markdown=True,

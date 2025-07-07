@@ -52,7 +52,7 @@ export const ClassSummarySection: React.FC<ClassSummarySectionProps> = ({
 
     try {
       const response = await fetch(
-        `http://localhost:8000/api/v1/classes/${codeClass.id}/summarize/`,
+        `/api/v1/classes/${codeClass.id}/summarize/`,
         {
           method: 'POST',
           credentials: 'include',
@@ -145,8 +145,8 @@ export const ClassSummarySection: React.FC<ClassSummarySectionProps> = ({
                   {isLoading
                     ? 'Helix is thinking...'
                     : error
-                    ? 'Error Occurred'
-                    : 'Helix Class Summary'}
+                      ? 'Error Occurred'
+                      : 'Helix Class Summary'}
                 </span>
               </Button>
             </CollapsibleTrigger>

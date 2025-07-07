@@ -15,6 +15,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 // Custom Components
 import { RepositoryCard } from '../components/dashboard/RepositoryCard';
 import { getCookie } from '../utils';
+import { useWorkspaceStore } from '@/stores/workspaceStore';
 
 // Types (should ideally be in src/types.ts)
 export interface TrackedRepository {
@@ -36,21 +37,44 @@ export interface GithubRepository {
 }
 
 export function DashboardPage() {
+    const { activeWorkspace } = useWorkspaceStore();
     const [trackedRepos, setTrackedRepos] = useState<TrackedRepository[]>([]);
     const [trackedLoading, setTrackedLoading] = useState(true);
     const [githubRepos, setGithubRepos] = useState<GithubRepository[]>([]);
     const [githubLoading, setGithubLoading] = useState(false);
+    const [isLoading, setIsLoading] = useState(true);
+
     const [addRepoError, setAddRepoError] = useState<string | null>(null);
 
     const [isAddRepoDialogOpen, setIsAddRepoDialogOpen] = useState(false);
     const [processingRepoId, setProcessingRepoId] = useState<number | null>(null); // For re-process loading state
+    useEffect(() => {
+        // Don't try to fetch if no workspace is selected yet
+        if (!activeWorkspace) {
+            setIsLoading(false);
+            setTrackedRepos([]);
+            return;
+        }
 
+        setIsLoading(true);
+        // Fetch repositories. The backend will automatically filter by user membership.
+        // We can pass the organization_id as a query param for explicit filtering.
+        axios.get(`/api/v1/repositories/?organization_id=${activeWorkspace.id}`)
+            .then(response => {
+                setTrackedRepos(response.data);
+            })
+            .catch(err => {
+                console.error("Failed to fetch repositories for workspace", err);
+                toast.error("Could not load repositories.");
+            })
+            .finally(() => setIsLoading(false));
+    }, [activeWorkspace]);
     const fetchTrackedRepos = useCallback((showLoadingSpinner = false) => {
         // Only show the main skeleton loader on the initial fetch
         if (showLoadingSpinner) {
             setTrackedLoading(true);
         }
-        axios.get('http://localhost:8000/api/v1/repositories/', { withCredentials: true })
+        axios.get('/api/v1/repositories/', { withCredentials: true })
             .then(response => {
                 // Sort repositories, e.g., by name
                 const sortedRepos = response.data.sort((a: TrackedRepository, b: TrackedRepository) => a.full_name.localeCompare(b.full_name));
@@ -83,7 +107,7 @@ export function DashboardPage() {
     const handleFetchGithubRepos = () => {
         setGithubLoading(true);
         setAddRepoError(null);
-        axios.get('http://localhost:8000/api/v1/github-repos/', { withCredentials: true })
+        axios.get('/api/v1/github-repos/', { withCredentials: true })
             .then(response => setGithubRepos(response.data))
             .catch(err => {
                 console.error("Error fetching GitHub repositories:", err);
@@ -93,12 +117,20 @@ export function DashboardPage() {
     };
 
     const handleAddRepository = (repo: GithubRepository) => {
+
+        if (!activeWorkspace) {
+            toast.error("No active workspace selected.", {
+                description: "Please select or create a workspace before adding a repository.",
+            });
+            return; // Stop the function here.
+        }
         const payload = {
             name: repo.name,
             full_name: repo.full_name,
             github_id: repo.id,
+            organization_id: activeWorkspace.id,
         };
-        axios.post('http://localhost:8000/api/v1/repositories/', payload, {
+        axios.post('/api/v1/repositories/', payload, {
             withCredentials: true,
             headers: { 'X-CSRFToken': getCookie('csrftoken') },
         })

@@ -14,7 +14,7 @@ export const ActivityFeed: React.FC<{ repoId: number }> = ({ repoId }) => {
 
     const fetchAllInsights = useCallback(() => {
         setIsLoadingInsights(true);
-        axios.get(`http://localhost:8000/api/v1/repositories/${repoId}/insights/`)
+        axios.get(`/api/v1/repositories/${repoId}/insights/`)
             .then(response => {
                 setAllInsights(response.data.results || response.data || []);
             })

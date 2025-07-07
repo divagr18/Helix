@@ -51,7 +51,7 @@ export const CommitGraph: React.FC<CommitGraphProps> = ({ repoId, onCommitSelect
     const [hoveredSha, setHoveredSha] = useState<string | null>(null);
     useEffect(() => {
         setIsLoading(true);
-        axios.get(`http://localhost:8000/api/v1/repositories/${repoId}/commit-history/`)
+        axios.get(`/api/v1/repositories/${repoId}/commit-history/`)
             .then(response => setCommits(response.data || []))
             .catch(err => {
                 setError("Could not load commit history.");

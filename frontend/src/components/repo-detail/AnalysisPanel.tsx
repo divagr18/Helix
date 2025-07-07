@@ -31,14 +31,14 @@ export const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
   const isAnyDocSaving = savingDocId !== null;
 
   return (
-    <div className="h-full flex flex-col bg-background">
+    <div className="h-full min-h-0 overflow-hidden grid grid-rows-[auto_auto_1fr] bg-background">
       {/* Panel Header */}
-      <div className="flex-shrink-0 border-b border-border">
+      <div className="border-b border-border flex flex-col flex-1 min-h-0 overflow-hidden">
         <ModuleReadmeTester repoId={repoId} />
       </div>
-      <div className="p-3 md:p-4 border-b border-border sticky top-0 bg-card z-10">
+      <div className="p-3 md:p-4 border-b border-border bg-card z-10">
         <h3 className="text-base md:text-lg font-semibold text-foreground">
-          Analysis for: 
+          Analysis for:
           {selectedFile ? (
             <span className="font-normal text-muted-foreground ml-1 truncate" title={selectedFile.file_path}>
               {selectedFile.file_path.split('/').pop()}
@@ -50,7 +50,7 @@ export const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
       </div>
 
       {/* Main Content Area */}
-      <div className="flex-grow overflow-y-auto p-2 md:p-3 space-y-1">
+      <div className="overflow-y-auto p-2 md:p-3 space-y-1 min-h-0">
         {selectedFile ? (
           (selectedFile.symbols.length > 0 || selectedFile.classes.length > 0) ? (
             <>
@@ -72,19 +72,19 @@ export const AnalysisPanel: React.FC<AnalysisPanelProps> = ({
               {/* Render classes and their methods */}
               {selectedFile.classes.map(cls => (
                 <Card key={`class-${cls.id}`} className="mb-3 bg-card/50 border-border shadow-sm">
-                  
+
                   {/* CardHeader now only contains the title */}
                   <CardHeader className="p-3 md:p-4 !pb-2">
                     <CardTitle className="text-md md:text-lg font-semibold text-primary">
                       Class: {cls.name}
                     </CardTitle>
                   </CardHeader>
-                  
+
                   {/* A new div below the header holds the summary section */}
                   <div className="px-3 md:px-4 pb-3">
-                    <ClassSummarySection 
-                      codeClass={cls} 
-                      onSummaryGenerated={onAnalysisChange} 
+                    <ClassSummarySection
+                      codeClass={cls}
+                      onSummaryGenerated={onAnalysisChange}
                     />
                   </div>
 

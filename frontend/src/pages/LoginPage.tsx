@@ -7,7 +7,7 @@ import { Separator } from "../components/ui/separator";
 import { Github as GithubIcon } from "lucide-react";
 
 export function LoginPage() {
-    const GITHUB_LOGIN_URL = 'http://localhost:8000/accounts/github/login/';
+    const GITHUB_LOGIN_URL = '/accounts/github/login/';
 
     return (
         <div className="flex items-center justify-center min-h-screen bg-background px-4">
@@ -49,8 +49,8 @@ export function LoginPage() {
                     <div className="relative">
                         <Separator />
                         <span className="absolute inset-x-0 mx-auto w-max bg-background px-2 text-sm text-muted-foreground">
-              or
-            </span>
+                            or
+                        </span>
                     </div>
 
                     {/* Email / Password Form */}
@@ -88,12 +88,12 @@ export function LoginPage() {
                 </CardContent>
 
                 <CardFooter className="flex justify-center">
-          <span className="text-sm text-muted-foreground">
-            New to Helix CME?{" "}
-              <a href="/signup" className="font-medium text-primary hover:underline">
-              Create an account
-            </a>
-          </span>
+                    <span className="text-sm text-muted-foreground">
+                        New to Helix CME?{" "}
+                        <a href="/signup" className="font-medium text-primary hover:underline">
+                            Create an account
+                        </a>
+                    </span>
                 </CardFooter>
             </Card>
         </div>

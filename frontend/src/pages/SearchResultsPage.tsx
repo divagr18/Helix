@@ -22,7 +22,7 @@ export function SearchResultsPage() {
         if (query) {
             setLoading(true);
             setError(null);
-            axios.get(`http://localhost:8000/api/v1/search/semantic/?q=${encodeURIComponent(query)}`, { withCredentials: true })
+            axios.get(`/api/v1/search/semantic/?q=${encodeURIComponent(query)}`, { withCredentials: true })
                 .then(response => {
                     setResults(response.data);
                     setLoading(false);

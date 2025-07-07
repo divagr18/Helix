@@ -1,8 +1,9 @@
+import uuid
 from django.db import models
 from django.conf import settings
 from pgvector.django import VectorField # Import VectorField
 from pgvector.django import HnswIndex
-
+from django.utils import timezone
 from django.contrib.auth import get_user_model
 from .utils import get_source_for_symbol
 User = get_user_model()
@@ -20,6 +21,10 @@ class Organization(models.Model):
     )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    ai_requests_this_month = models.PositiveIntegerField(default=0)
+    ai_requests_limit = models.PositiveIntegerField(default=100) # A generous limit for the beta
+
+    last_usage_reset = models.DateField(default=timezone.now)
 
     class Meta:
         db_table = 'organizations'
@@ -526,4 +531,28 @@ class ModuleDependency(models.Model):
 
     def __str__(self):
         return f"'{self.source_file.file_path}' -> '{self.target_file.file_path}'"
+    
+
+class Invitation(models.Model):
+    class InviteStatus(models.TextChoices):
+        PENDING = 'PENDING', 'Pending'
+        ACCEPTED = 'ACCEPTED', 'Accepted'
+        EXPIRED = 'EXPIRED', 'Expired'
+
+    organization = models.ForeignKey('Organization', on_delete=models.CASCADE, related_name='invitations')
+    email = models.EmailField(help_text="Email of the user being invited.")
+    role = models.CharField(max_length=10, choices=OrganizationMember.Role.choices, default=OrganizationMember.Role.MEMBER)
+    invited_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='sent_invitations')
+    token = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
+    status = models.CharField(max_length=10, choices=InviteStatus.choices, default=InviteStatus.PENDING)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'organization_invitations'
+        unique_together = ('organization', 'email', 'status') # Allow re-inviting if previous was not pending
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"Invitation for {self.email} to join {self.organization.name}"
 

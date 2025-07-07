@@ -21,7 +21,7 @@ const InternalNode = ({ data }: { data: { label: string } }) => (
   </div>
 );
 
-const ExternalNode = ({ data }: { data: { label:string } }) => (
+const ExternalNode = ({ data }: { data: { label: string } }) => (
   <div style={{ padding: '10px', border: '1px dashed #f59e0b', borderRadius: '5px', background: '#3a3024', color: '#f59e0b' }}>
     {data.label}
   </div>
@@ -64,7 +64,7 @@ const getLayoutedElements = (nodes: Node[], edges: Edge[], direction = 'TB') => 
 
 export const DependencyGraphPage = () => {
   const { repoId } = useParams<{ repoId: string }>();
-  
+
   // --- 1. CALL ALL HOOKS UNCONDITIONALLY AT THE TOP ---
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
@@ -93,17 +93,17 @@ export const DependencyGraphPage = () => {
       setIsLoading(true);
       setError(null);
       try {
-        const response = await axios.get(`http://localhost:8000/api/v1/repositories/${repoId}/dependency-graph/`);
+        const response = await axios.get(`/api/v1/repositories/${repoId}/dependency-graph/`);
         const { nodes: initialNodes, edges: initialEdges } = response.data;
-        
+
         if (initialNodes.length === 0) {
-            setNodes([]);
-            setEdges([]);
-            // No need to return here, let the render logic handle the empty state
+          setNodes([]);
+          setEdges([]);
+          // No need to return here, let the render logic handle the empty state
         } else {
-            const layouted = getLayoutedElements(initialNodes, initialEdges);
-            setNodes(layouted.nodes);
-            setEdges(layouted.edges);
+          const layouted = getLayoutedElements(initialNodes, initialEdges);
+          setNodes(layouted.nodes);
+          setEdges(layouted.edges);
         }
 
       } catch (err) {
@@ -125,7 +125,7 @@ export const DependencyGraphPage = () => {
   if (error) {
     return <div className="flex items-center justify-center h-full p-8 text-center text-destructive">{error}</div>;
   }
-  
+
   if (nodes.length === 0) {
     return <div className="flex items-center justify-center h-full p-8 text-center text-muted-foreground">No internal module dependencies were found to build a graph.</div>;
   }
@@ -134,8 +134,8 @@ export const DependencyGraphPage = () => {
   return (
     <div className="h-full w-full">
       <div className="absolute top-4 right-4 z-10 flex gap-2">
-          <button onClick={() => onLayout('TB')} className="px-2 py-1 text-xs bg-card border rounded hover:bg-muted">Vertical Layout</button>
-          <button onClick={() => onLayout('LR')} className="px-2 py-1 text-xs bg-card border rounded hover:bg-muted">Horizontal Layout</button>
+        <button onClick={() => onLayout('TB')} className="px-2 py-1 text-xs bg-card border rounded hover:bg-muted">Vertical Layout</button>
+        <button onClick={() => onLayout('LR')} className="px-2 py-1 text-xs bg-card border rounded hover:bg-muted">Horizontal Layout</button>
       </div>
       <ReactFlow
         nodes={nodes}

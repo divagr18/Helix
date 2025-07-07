@@ -110,7 +110,7 @@ export function SymbolDetailPage() {
 
         try {
             const response = await fetch(
-                `http://localhost:8000/api/v1/symbols/${symbol.id}/suggest-refactors/`,
+                `/api/v1/symbols/${symbol.id}/suggest-refactors/`,
                 {
                     method: 'POST',
                     credentials: 'include',
@@ -148,7 +148,7 @@ export function SymbolDetailPage() {
         setAiGeneratedDoc(""); // Clear previous, set to empty for streaming
         let streamedText = "";
         try {
-            const response = await fetch(`http://localhost:8000/api/v1/functions/${symbol.id}/generate-docstring/`, { credentials: 'include' });
+            const response = await fetch(`/api/v1/functions/${symbol.id}/generate-docstring/`, { credentials: 'include' });
             if (!response.ok) {
                 const errorText = await response.text();
                 throw new Error(errorText || `AI doc generation failed (status: ${response.status})`);
@@ -185,7 +185,7 @@ export function SymbolDetailPage() {
 
         try {
             const response = await fetch(
-                `http://localhost:8000/api/v1/symbols/${symbol.id}/explain-code/`,
+                `/api/v1/symbols/${symbol.id}/explain-code/`,
                 {
                     method: 'POST', // Use POST as defined in the backend
                     credentials: 'include',
@@ -233,7 +233,7 @@ export function SymbolDetailPage() {
         if (!symbol) return false;
         try {
             const response = await axios.post(
-                `http://localhost:8000/api/v1/functions/${symbol.id}/save-docstring/`,
+                `/api/v1/functions/${symbol.id}/save-docstring/`,
                 { documentation_text: docText },
                 { withCredentials: true, headers: { 'X-CSRFToken': getCookie('csrftoken') } }
             );
@@ -265,7 +265,7 @@ export function SymbolDetailPage() {
         setIsCreatingPR(true);
         setPrStatus({ message: "Initiating PR creation..." });
         try {
-            const response = await axios.post(`http://localhost:8000/api/v1/symbols/${symbol.id}/create-pr/`, {}, {
+            const response = await axios.post(`/api/v1/symbols/${symbol.id}/create-pr/`, {}, {
                 withCredentials: true,
                 headers: { 'X-CSRFToken': getCookie('csrftoken') }
             });
@@ -290,7 +290,7 @@ export function SymbolDetailPage() {
 
         try {
             const response = await fetch(
-                `http://localhost:8000/api/v1/symbols/${symbol.id}/suggest-tests/`,
+                `/api/v1/symbols/${symbol.id}/suggest-tests/`,
                 {
                     method: 'POST',
                     credentials: 'include',
@@ -327,7 +327,7 @@ export function SymbolDetailPage() {
         setFlowLoading(true);
         setInitialLoadAttempted(true);
         setNodes([]); setEdges([]); setFlowError(null);
-        axios.get(`http://localhost:8000/api/v1/symbols/${symbol.id}/generate-diagram/`, { withCredentials: true })
+        axios.get(`/api/v1/symbols/${symbol.id}/generate-diagram/`, { withCredentials: true })
             .then(response => {
                 if (response.data && response.data.nodes && response.data.edges) {
                     const formattedNodes = response.data.nodes.map((node: any) => ({
@@ -354,7 +354,7 @@ export function SymbolDetailPage() {
             setNodes([]); setEdges([]); setFlowError(null); setInitialLoadAttempted(false);
             setAiGeneratedDoc(null); /* setIsEditingDoc(false); */ setPrStatus(null); // isEditingDoc is internal to DocumentationSection
 
-            axios.get(`http://localhost:8000/api/v1/symbols/${symbolId}/`, { withCredentials: true })
+            axios.get(`/api/v1/symbols/${symbolId}/`, { withCredentials: true })
                 .then(response => {
                     const fetchedSymbol: PageSymbolDetail = response.data;
                     setSymbol(fetchedSymbol);

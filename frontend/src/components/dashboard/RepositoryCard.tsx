@@ -5,7 +5,7 @@ import axios from 'axios';
 import { toast } from 'sonner';
 
 // Lucide Icons
-import { Github, RefreshCw, Loader2, ShieldCheck, ShieldAlert, Clock,BookOpen } from 'lucide-react';
+import { Github, RefreshCw, Loader2, ShieldCheck, ShieldAlert, Clock, BookOpen } from 'lucide-react';
 
 // shadcn/ui components
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
@@ -71,7 +71,7 @@ export const RepositoryCard: React.FC<RepositoryCardProps> = ({ repo, onSyncStar
         toast.info(`Deleting ${repo.full_name}...`);
         try {
             await axios.delete(
-                `http://localhost:8000/api/v1/repositories/${repo.id}/`,
+                `/api/v1/repositories/${repo.id}/`,
                 {
                     withCredentials: true,
                     headers: { 'X-CSRFToken': getCookie('csrftoken') || '' }
@@ -93,7 +93,7 @@ export const RepositoryCard: React.FC<RepositoryCardProps> = ({ repo, onSyncStar
         toast.info(`Requesting sync for ${repo.full_name}...`);
         try {
             const response = await axios.post(
-                `http://localhost:8000/api/v1/repositories/${repo.id}/reprocess/`,
+                `/api/v1/repositories/${repo.id}/reprocess/`,
                 {},
                 {
                     withCredentials: true,
@@ -174,20 +174,20 @@ export const RepositoryCard: React.FC<RepositoryCardProps> = ({ repo, onSyncStar
                 </CardHeader>
 
                 <CardContent className="flex-grow">
-        {/* --- USE REAL DATA INSTEAD OF PLACEHOLDERS --- */}
-        <div className="text-sm text-muted-foreground space-y-2">
-          <div className="flex items-center gap-2">
-            <BookOpen className={`h-4 w-4 ${repo.documentation_coverage >= 80 ? 'text-green-500' : repo.documentation_coverage >= 50 ? 'text-yellow-500' : 'text-orange-500'}`} />
-            <span>{repo.documentation_coverage.toFixed(1)}% Doc Coverage</span>
-          </div>
-          
-          {/* Conditionally render the orphan count */}
-          <div className="flex items-center gap-2">
-            <ShieldAlert className={`h-4 w-4 ${repo.orphan_symbol_count > 0 ? 'text-red-500' : 'text-muted-foreground'}`} />
-            <span>{repo.orphan_symbol_count} Orphan Symbol{repo.orphan_symbol_count !== 1 ? 's' : ''}</span>
-          </div>
-        </div>
-      </CardContent>
+                    {/* --- USE REAL DATA INSTEAD OF PLACEHOLDERS --- */}
+                    <div className="text-sm text-muted-foreground space-y-2">
+                        <div className="flex items-center gap-2">
+                            <BookOpen className={`h-4 w-4 ${repo.documentation_coverage >= 80 ? 'text-green-500' : repo.documentation_coverage >= 50 ? 'text-yellow-500' : 'text-orange-500'}`} />
+                            <span>{repo.documentation_coverage.toFixed(1)}% Doc Coverage</span>
+                        </div>
+
+                        {/* Conditionally render the orphan count */}
+                        <div className="flex items-center gap-2">
+                            <ShieldAlert className={`h-4 w-4 ${repo.orphan_symbol_count > 0 ? 'text-red-500' : 'text-muted-foreground'}`} />
+                            <span>{repo.orphan_symbol_count} Orphan Symbol{repo.orphan_symbol_count !== 1 ? 's' : ''}</span>
+                        </div>
+                    </div>
+                </CardContent>
 
                 <CardFooter className="border-t border-border pt-4">
                     <TooltipProvider delayDuration={100}>

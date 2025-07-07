@@ -16,7 +16,7 @@ app.config_from_object('django.conf:settings', namespace='CELERY')
 app.conf.beat_schedule = {
     'poll-openai-batch-jobs-every-5-minutes': {
         'task': 'repositories.tasks.poll_and_process_completed_batches_task',
-        'schedule': crontab(minute='*/1'),  # Run every 5 minutes
+        'schedule': crontab(minute='*/5'),  # Run every 5 minutes
         'args': (), # No arguments needed for this task
     },
     # You can add other scheduled tasks here in the future

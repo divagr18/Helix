@@ -1,11 +1,13 @@
 # backend/config/api_router.py
 
 from rest_framework.routers import DefaultRouter
-from repositories.views import BatchDocumentModuleView, ChatView, OrganizationDetailView, OrganizationListView, RepositoryViewSet,GithubReposView,FileContentView,GenerateDocstringView, CodeSymbolDetailView
+from repositories.views import BatchDocumentModuleView, ChatView, OrganizationDetailView, OrganizationListView, RepositoryViewSet,GithubReposView,FileContentView,GenerateDocstringView, CodeSymbolDetailView, ValidateInviteCodeView, set_csrf_cookie
 
 router = DefaultRouter()
 from django.urls import path # Make sure path is imported
-from users.views import AuthCheckView
+from users.views import AuthCheckView, LogoutView
+from users.views import UserMeView # Import the new view
+
 from repositories.views import UserNotificationsView, MarkNotificationReadView
 router.register(r'repositories', RepositoryViewSet, basename='repository')
 from repositories.views import (
@@ -27,8 +29,20 @@ from repositories.views import (
     BatchGenerateDocsForSelectedFilesView,
     CreateBatchPRForSelectedFilesView,
     TaskStatusView,ApproveDocstringView,ExplainCodeView, SuggestTestsView,RepositoryInsightsView,CommitHistoryView,
-    ClassSummaryView,ReprocessRepositoryView, SuggestRefactorsView,GenerateModuleWorkflowView,DependencyGraphView
+    ClassSummaryView,ReprocessRepositoryView, SuggestRefactorsView,GenerateModuleWorkflowView,DependencyGraphView,OrganizationMemberListView,
+    OrganizationMemberDetailView,
+    InvitationListView,
+    AcceptInviteView
 )
+
+
+
+from django.views.decorators.csrf import ensure_csrf_cookie
+from django.http import JsonResponse
+
+@ensure_csrf_cookie
+def set_csrf_token(request):
+    return JsonResponse({"detail": "CSRF cookie set"})
 # The variable name 'urlpatterns' is what Django expects to find.
 urlpatterns = router.urls
 urlpatterns += [
@@ -71,5 +85,17 @@ urlpatterns += [
     path('repositories/<int:repo_id>/dependency-graph/', DependencyGraphView.as_view(), name='repository-dependency-graph'),
     path('organizations/', OrganizationListView.as_view(), name='organization-list'),
     path('organizations/<int:org_id>/', OrganizationDetailView.as_view(), name='organization-detail'),
+    path('users/me/', UserMeView.as_view(), name='user-me'),
+    path('organizations/<int:org_id>/members/', OrganizationMemberListView.as_view(), name='organization-member-list'),
+    path('organizations/<int:org_id>/members/<int:membership_id>/', OrganizationMemberDetailView.as_view(), name='organization-member-detail'),
+    path('organizations/<int:org_id>/invites/', InvitationListView.as_view(), name='organization-invites'),
+    path('invites/accept/<uuid:token>/', AcceptInviteView.as_view(), name='accept-invite'),
+    path('invites/validate/', ValidateInviteCodeView.as_view(), name='validate-invite-code'),
+    path('auth/logout/', LogoutView.as_view(), name='api-logout'),
+
+    path("csrf/", set_csrf_cookie),
+
+
+
 ]
 

@@ -85,7 +85,7 @@ export const ChatModal = () => {
 
         try {
             const response = await fetch(
-                `http://localhost:8000/api/v1/repositories/${activeRepoId}/chat/`,
+                `/api/v1/repositories/${activeRepoId}/chat/`,
                 {
                     method: 'POST',
                     credentials: 'include',

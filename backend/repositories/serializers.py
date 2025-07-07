@@ -124,6 +124,25 @@ class CodeFileSerializer(serializers.ModelSerializer):
         ]
 
 # A serializer for the full repository detail view.
+
+class RepositoryCreateSerializer(serializers.ModelSerializer):
+    """
+    Serializer specifically for creating a new Repository.
+    It validates the incoming data required for creation.
+    """
+    # This field is sent by the frontend
+    organization_id = serializers.IntegerField(write_only=True)
+    
+
+    class Meta:
+        model = Repository
+        # These are the fields the frontend will send to create a repo
+        fields = [
+            'github_id',
+            'full_name',
+            'default_branch',
+            'organization_id',
+        ]
 class RepositoryDetailSerializer(serializers.ModelSerializer):
     files = CodeFileSerializer(many=True, read_only=True)
 
@@ -236,3 +255,34 @@ class CreateOrganizationSerializer(serializers.ModelSerializer):
     class Meta:
         model = Organization
         fields = ['name'] # Only the name is needed for creation
+
+
+from .models import Invitation
+
+class InvitationSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Invitation
+        fields = ['id', 'email', 'role', 'status', 'created_at']
+        read_only_fields = ['id', 'status', 'created_at']
+
+class CreateInvitationSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+    role = serializers.ChoiceField(choices=OrganizationMember.Role.choices, default=OrganizationMember.Role.MEMBER)
+
+class DetailedOrganizationSerializer(serializers.ModelSerializer):
+    """
+    A more detailed serializer for the Workspace Settings page,
+    including members and pending invitations.
+    """
+    memberships = OrganizationMemberSerializer(many=True, read_only=True)
+    # --- NEW: Add pending invitations ---
+    invitations = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Organization
+        fields = ['id', 'name', 'owner', 'created_at', 'memberships', 'invitations']
+
+    def get_invitations(self, obj):
+        # We only want to show invitations that are still pending.
+        pending_invites = obj.invitations.filter(status=Invitation.InviteStatus.PENDING)
+        return InvitationSerializer(pending_invites, many=True).data

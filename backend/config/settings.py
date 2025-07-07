@@ -46,6 +46,7 @@ INSTALLED_APPS = [
     'django.contrib.sites',
     'corsheaders',
     "repositories",
+    
     'rest_framework',
     "django_celery_beat",
     'allauth',
@@ -114,7 +115,9 @@ AUTH_PASSWORD_VALIDATORS = [
     },
 ]
 
-
+ACCOUNT_FORMS = {
+    'signup': 'users.forms.CustomSignupForm',
+}
 # Internationalization
 # https://docs.djangoproject.com/en/5.0/topics/i18n/
 
@@ -145,24 +148,45 @@ AUTHENTICATION_BACKENDS = [
 
 # Add these settings at the bottom
 SITE_ID = 1
-LOGIN_REDIRECT_URL = 'http://localhost:5173/dashboard' # Where to send user after login
-ACCOUNT_LOGOUT_REDIRECT_URL = 'http://localhost:5173/' # Where to send user after logout
+
+ACCOUNT_DEFAULT_HTTP_PROTOCOL = "https"
+
+LOGIN_REDIRECT_URL = "/dashboard"
+ACCOUNT_LOGOUT_REDIRECT_URL = "/"
 
 # Allauth provider settings
 SOCIALACCOUNT_PROVIDERS = {
     'github': {
         'SCOPE': [
-            'user',
             'repo', # Ask for permission to read repositories
         ],
     }
 }
 CORS_ALLOWED_ORIGINS = [
-    "http://localhost:5173", # The origin of our React frontend
+    "http://localhost:5173",
+    "https://7352-2405-201-1c-1029-3959-dfcc-2e4a-d18.ngrok-free.app",
+    "https://woodcock-wondrous-infinitely.ngrok-free.app" # The origin of our React frontend
 ]
+SESSION_COOKIE_SECURE = True  # Required for HTTPS
+CSRF_COOKIE_SECURE = True
+SESSION_COOKIE_SAMESITE = 'None'  # Needed for cross-origin
+CSRF_COOKIE_SAMESITE = 'None'
+# settings.py
+SESSION_COOKIE_DOMAIN = None  # Allow any domain
+SESSION_COOKIE_PATH = '/'
+SESSION_COOKIE_SECURE = True  # Required for ngrok (HTTPS)
+SESSION_COOKIE_SAMESITE = 'None'  # Required for cross-origin
+SESSION_COOKIE_HTTPONLY = True
 
+# Also update CSRF settings
+CSRF_COOKIE_DOMAIN = None
+CSRF_COOKIE_SECURE = True
+CSRF_COOKIE_SAMESITE = 'None'
 # This is the crucial setting that allows the browser to send
 # the session cookie to our backend.
+ACCOUNT_REDIRECT_WHITELIST = [
+    "https://woodcock-wondrous-infinitely.ngrok-free.app",
+]
 CORS_ALLOW_CREDENTIALS = True
 SOCIALACCOUNT_LOGIN_ON_GET = True
 ACCOUNT_EMAIL_VERIFICATION = 'none'
@@ -173,8 +197,12 @@ CSRF_TRUSTED_ORIGINS = [
     "https://subdomain.example.com",
     "http://localhost:3000",  # if you're using React/Vite locally
     "http://127.0.0.1:5173",
-    "http://localhost:5173"  # for Vite dev server
+    "http://localhost:5173",
+      "https://woodcock-wondrous-infinitely.ngrok-free.app"  # for Vite dev server
 ]
+SOCIAL_REDIRECT_HOST = "woodcock-wondrous-infinitely.ngrok-free.app"
+
+
 
     
 REST_FRAMEWORK = {
@@ -184,4 +212,18 @@ REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.IsAuthenticated',
     ]
+}
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'handlers': {
+        'console': {
+            'level': 'DEBUG',
+            'class': 'logging.StreamHandler',
+        },
+    },
+    'root': {
+        'handlers': ['console'],
+        'level': 'DEBUG',
+    },
 }

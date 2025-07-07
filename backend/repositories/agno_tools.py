@@ -3,7 +3,7 @@ from agno.tools import tool
 from openai import OpenAI
 import psycopg2 # Import the OpenAI library
 # We need access to our models and the OpenAI client
-from .models import KnowledgeChunk, CodeSymbol, Repository
+from .models import KnowledgeChunk, CodeSymbol, OrganizationMember, Repository
 OPENAI_CLIENT = OpenAI()
 from pgvector.django import L2Distance
 
@@ -11,32 +11,50 @@ from typing import Optional
 from django.db.models import Q ,F,Count # <--- ADD THIS IMPORT
 
 @tool
-def helix_knowledge_search(query: str, repo_id: int) -> str:
+def helix_knowledge_search(query: str, repo_id: int, user_id: int) -> str:
     """
     Searches the repository's knowledge base across multiple levels (from high-level
     READMEs down to source code) to answer questions about how code works, its purpose,
     or for implementation examples. This is the primary tool for understanding code.
+    The user's permission to access the repository is verified before searching.
     """
-    print(f"AGNO_TOOL: Executing Multi-Layered Knowledge Search for repo {repo_id} with query: '{query}'")
+    print(f"AGNO_TOOL: Executing Multi-Layered Knowledge Search for repo {repo_id}, user {user_id} with query: '{query}'")
     
+    # --- THIS IS THE CRUCIAL FIX ---
+    # 1. Validate that the user has access to the requested repository.
     try:
-        # 1. Generate an embedding for the user's query (this is done once)
+        # This check ensures the repo belongs to an org the user is part of.
+        is_member = OrganizationMember.objects.filter(
+            organization__repositories__id=repo_id,
+            user_id=user_id
+        ).exists()
+
+        if not is_member:
+            return "Error: You do not have permission to access this repository or it does not exist."
+            
+    except Exception as e:
+        print(f"AGNO_TOOL: ERROR during permission check: {e}")
+        return "An error occurred while verifying repository access."
+    # --- END FIX ---
+
+    try:
+        # 2. Generate an embedding for the user's query
         query_embedding = OPENAI_CLIENT.embeddings.create(
             input=[query], 
-            model="text-embedding-3-small" # Or from settings
+            model="text-embedding-3-small"
         ).data[0].embedding
-
-        # --- NEW: Multi-Layered Search Logic ---
         
-        # We will gather context from different layers and give priority to higher-level docs.
-        # We use a dictionary to avoid adding the same chunk multiple times.
+        # Now that we've confirmed access, the rest of the queries can proceed.
+        # The RLS policies will provide an additional layer of security, but this
+        # initial check is good practice and provides a clearer error message.
+        
         context_chunks = {}
 
-        # Layer 1: Search for Module READMEs (Highest Priority)
+        # Layer 1: Search for Module READMEs
         readme_chunks = KnowledgeChunk.objects.filter(
             repository_id=repo_id,
             chunk_type=KnowledgeChunk.ChunkType.MODULE_README
-        ).order_by(L2Distance('embedding', query_embedding))[:2] # Get top 2 READMEs
+        ).order_by(L2Distance('embedding', query_embedding))[:2]
         for chunk in readme_chunks:
             context_chunks[chunk.id] = chunk
 
@@ -44,50 +62,41 @@ def helix_knowledge_search(query: str, repo_id: int) -> str:
         class_summary_chunks = KnowledgeChunk.objects.filter(
             repository_id=repo_id,
             chunk_type=KnowledgeChunk.ChunkType.CLASS_SUMMARY
-        ).order_by(L2Distance('embedding', query_embedding))[:3] # Get top 3 class summaries
+        ).order_by(L2Distance('embedding', query_embedding))[:3]
         for chunk in class_summary_chunks:
             context_chunks[chunk.id] = chunk
 
-        # Layer 3: Search for Symbol Docstrings (if we still need more context)
+        # Layer 3 & 4: Fill with Docstrings and Source Code
         if len(context_chunks) < 5:
             needed = 5 - len(context_chunks)
-            docstring_chunks = KnowledgeChunk.objects.filter(
+            remaining_chunks = KnowledgeChunk.objects.filter(
                 repository_id=repo_id,
-                chunk_type=KnowledgeChunk.ChunkType.SYMBOL_DOCSTRING
+                chunk_type__in=[
+                    KnowledgeChunk.ChunkType.SYMBOL_DOCSTRING,
+                    KnowledgeChunk.ChunkType.SYMBOL_SOURCE
+                ]
             ).order_by(L2Distance('embedding', query_embedding))[:needed]
-            for chunk in docstring_chunks:
-                context_chunks[chunk.id] = chunk
-
-        # Layer 4: Search for Source Code (as a last resort)
-        if len(context_chunks) < 5:
-            needed = 5 - len(context_chunks)
-            source_chunks = KnowledgeChunk.objects.filter(
-                repository_id=repo_id,
-                chunk_type=KnowledgeChunk.ChunkType.SYMBOL_SOURCE
-            ).order_by(L2Distance('embedding', query_embedding))[:needed]
-            for chunk in source_chunks:
+            for chunk in remaining_chunks:
                 context_chunks[chunk.id] = chunk
 
         if not context_chunks:
             return "No relevant information was found in the knowledge base for this query."
 
-        # 3. Format the combined results into a structured string for the agent's context
-        # We sort by chunk type to present the context logically to the agent.
+        # 3. Format the combined results into a structured string
+        # ... (The formatting logic remains the same, but we need to handle related fields being null) ...
+        
         sorted_chunks = sorted(list(context_chunks.values()), key=lambda c: c.chunk_type)
-
         context_str = "--- Retrieved Context (Prioritized from High-Level to Low-Level) ---\n\n"
+        
         for chunk in sorted_chunks:
-            # Build a descriptive source string for each chunk
-            source_description = ""
-            if chunk.chunk_type == 'MODULE_README':
-                path = getattr(chunk, 'module_path', 'repository root') # Assuming ModuleDoc has this
-                source_description = f"Source: README for module '{path}'"
-            elif chunk.chunk_type == 'CLASS_SUMMARY' and chunk.related_class:
-                source_description = f"Source: Summary for class '{chunk.related_class.name}' in '{chunk.related_file.file_path}'"
-            elif chunk.chunk_type == 'SYMBOL_DOCSTRING' and chunk.related_symbol:
-                source_description = f"Source: Documentation for function '{chunk.related_symbol.name}' in '{chunk.related_file.file_path}'"
-            elif chunk.chunk_type == 'SYMBOL_SOURCE' and chunk.related_symbol:
-                source_description = f"Source: Source Code for function '{chunk.related_symbol.name}' in '{chunk.related_file.file_path}'"
+            source_description = f"Source: {chunk.get_chunk_type_display()}"
+            # Add more specific source info if available
+            if chunk.related_class:
+                source_description += f" for class '{chunk.related_class.name}'"
+            if chunk.related_symbol:
+                source_description += f" for function '{chunk.related_symbol.name}'"
+            if chunk.related_file:
+                 source_description += f" in '{chunk.related_file.file_path}'"
             
             context_str += f"{source_description}\n"
             context_str += f"Content:\n{chunk.content}\n\n"
@@ -208,7 +217,7 @@ class HelixPostgresTools(PostgresTools):
             try:
                 with self._connection.cursor() as cursor:
                     cursor.execute("SET app.current_user_id = %s", (str(self.user_id),))
-                log_info(f"AGNO_TOOL_INIT: Set app.current_user_id = {self.user_id} for this session.")
+                print(f"AGNO_TOOL_INIT: Set app.current_user_id = {self.user_id} for this session.")
             except Exception as e:
                 log_error(f"AGNO_TOOL_INIT: FATAL - Failed to set session variable for RLS: {e}")
                 self._connection.close()

@@ -12,7 +12,7 @@ import { FileTreePanel } from '../components/repo-detail/FileTreePanel';
 import { BatchActionsPanel } from '../components/repo-detail/BatchActionsPanel';
 import { OrphanSymbolsPanel, type OrphanSymbolDisplayItem } from '../components/repo-detail/OrphanSymbolsPanel';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { LayoutGrid, History,Share2 } from 'lucide-react';
+import { LayoutGrid, History, Share2 } from 'lucide-react';
 import { ActivityFeed } from '@/components/repo-detail/ActivityFeed';
 // --- Type Definitions ---
 interface CodeSymbol {
@@ -64,10 +64,10 @@ export function RepoDetailPage() {
   const [error, setError] = useState<string | null>(null);
 
   const getActiveTab = () => {
-        if (location.pathname.endsWith('/architecture')) return 'architecture';
-        if (location.pathname.endsWith('/activity')) return 'activity';
-        return 'files';
-    }
+    if (location.pathname.endsWith('/architecture')) return 'architecture';
+    if (location.pathname.endsWith('/activity')) return 'activity';
+    return 'files';
+  }
 
   const [selectedFile, setSelectedFile] = useState<CodeFile | null>(null);
   const [fileContent, setFileContent] = useState<string>('');
@@ -98,7 +98,7 @@ export function RepoDetailPage() {
   const isAnyOperationInProgressForFileTree = isAnyFileSpecificActionInProgress || isAnyGlobalBatchActionInProgress;
 
   const [modifiedFileContent, setModifiedFileContent] = useState<string | null>(null);
-  
+
   // --- YOUR CORRECT API CALL LOGIC ---
   const orphanSymbolsList = useMemo(() => {
     if (!repo) return [];
@@ -140,7 +140,7 @@ export function RepoDetailPage() {
 
     toast.info("Saving changes...");
     // This requires a new backend endpoint: PUT or POST /api/v1/files/<id>/content/
-    axios.put(`http://localhost:8000/api/v1/files/${selectedFile.id}/content/`, { content: modifiedFileContent }, { // The configuration object
+    axios.put(`/api/v1/files/${selectedFile.id}/content/`, { content: modifiedFileContent }, { // The configuration object
       withCredentials: true,
       headers: {
         'X-CSRFToken': getCookie('csrftoken'), // Get the token from cookies
@@ -178,7 +178,7 @@ export function RepoDetailPage() {
     setPrURL(null);               // Clear any previous PR URL
 
     axios.post(
-      `http://localhost:8000/api/v1/repositories/${repo.id}/create-batch-pr-selected/`,
+      `/api/v1/repositories/${repo.id}/create-batch-pr-selected/`,
       { file_ids: Array.from(selectedFilesForBatch) },
       {
         withCredentials: true,
@@ -213,7 +213,7 @@ export function RepoDetailPage() {
     onFailure?: (data: any) => void  // Optional callback on failure
   ) => {
     try {
-      const response = await axios.get(`http://localhost:8000/api/v1/task-status/${taskId}/`, {
+      const response = await axios.get(`/api/v1/task-status/${taskId}/`, {
         withCredentials: true,                 // ← send session+csrf cookies
         headers: {
           'X-CSRFToken': getCookie('csrftoken') // ← required for PATCH
@@ -324,7 +324,7 @@ export function RepoDetailPage() {
     setPrURL(null);
 
     axios.post(
-      `http://localhost:8000/api/v1/repositories/${repo.id}/batch-generate-docs-selected/`,
+      `/api/v1/repositories/${repo.id}/batch-generate-docs-selected/`,
       { file_ids: Array.from(selectedFilesForBatch) }, // Send array of selected file IDs
       {
         withCredentials: true,                 // ← send session+csrf cookies
@@ -356,7 +356,7 @@ export function RepoDetailPage() {
     setBatchMessages(prev => ({ ...prev, [fileId]: `Initiating batch doc generation for ${fileName}...` }));
 
     axios.post( // Use POST as it's an action
-      `http://localhost:8000/api/v1/files/${fileId}/batch-generate-docs/`,
+      `/api/v1/files/${fileId}/batch-generate-docs/`,
       {},
       {
         withCredentials: true,                 // ← send session+csrf cookies
@@ -390,7 +390,7 @@ export function RepoDetailPage() {
   const fetchRepoDetails = useCallback(() => {
     if (repoId) {
       setLoading(true); // Consider if you want a full page loading spinner here or something more subtle
-      axios.get(`http://localhost:8000/api/v1/repositories/${repoId}/`, { withCredentials: true })
+      axios.get(`/api/v1/repositories/${repoId}/`, { withCredentials: true })
         .then(response => {
           const repoData = response.data;
           const targetFilePath = "ImageEditor.py"; // Change to your file
@@ -478,8 +478,8 @@ export function RepoDetailPage() {
     return () => clearInterval(intervalId); // Cleanup on unmount or if taskId changes
   }, [activeDocGenTaskId, fetchRepoDetails]);
   const handleAnalysisChange = useCallback(() => {
-  fetchRepoDetails();
-}, [fetchRepoDetails]);
+    fetchRepoDetails();
+  }, [fetchRepoDetails]);
   const handleSaveDoc = async (funcId: number) => { // Made async for await
     const docText = generatedDocs[funcId];
     if (!docText) return;
@@ -488,7 +488,7 @@ export function RepoDetailPage() {
 
     try {
       await axios.post( // Added await
-        `http://localhost:8000/api/v1/functions/${funcId}/save-docstring/`,
+        `/api/v1/functions/${funcId}/save-docstring/`,
         { documentation_text: docText },
         {
           withCredentials: true,                 // ← send session+csrf cookies
@@ -528,7 +528,7 @@ export function RepoDetailPage() {
     setContentLoading(true);
 
     // 3. Fetch the new content.
-    axios.get(`http://localhost:8000/api/v1/files/${file.id}/content/`, { withCredentials: true })
+    axios.get(`/api/v1/files/${file.id}/content/`, { withCredentials: true })
       .then(response => {
         console.log("API Response:", response);
         // Assuming the API returns { "content": "..." }
@@ -564,7 +564,7 @@ export function RepoDetailPage() {
 
     try {
       const response = await fetch(
-        `http://localhost:8000/api/v1/functions/${funcId}/generate-docstring/`,
+        `/api/v1/functions/${funcId}/generate-docstring/`,
         { credentials: 'include' } // Your correct credentials setting
       );
       if (!response.body) return;
@@ -596,7 +596,7 @@ export function RepoDetailPage() {
 
     // 3️⃣ Do the POST exactly once.
     axios.post(
-      `http://localhost:8000/api/v1/files/${fileId}/create-batch-pr/`,
+      `/api/v1/files/${fileId}/create-batch-pr/`,
       {},
       {
         withCredentials: true,
@@ -649,28 +649,28 @@ export function RepoDetailPage() {
         <div className="px-4 border-b border-border flex-shrink-0">
           <TabsList className="bg-transparent p-0">
             <TabsTrigger value="files" asChild>
-                <Link to={`/repository/${repoId}`}><LayoutGrid className="mr-2 h-4 w-4" />Browser</Link>
+              <Link to={`/repository/${repoId}`}><LayoutGrid className="mr-2 h-4 w-4" />Browser</Link>
             </TabsTrigger>
             {/* --- NEW TAB TRIGGER --- */}
             <TabsTrigger value="architecture" asChild>
-                <Link to={`/repository/${repoId}/architecture`}><Share2 className="mr-2 h-4 w-4" />Architecture</Link>
+              <Link to={`/repository/${repoId}/architecture`}><Share2 className="mr-2 h-4 w-4" />Architecture</Link>
             </TabsTrigger>
             {/* --- END NEW TAB --- */}
             <TabsTrigger value="activity" asChild>
-                <Link to={`/repository/${repoId}/activity`}><History className="mr-2 h-4 w-4" />Activity & Insights</Link>
+              <Link to={`/repository/${repoId}/activity`}><History className="mr-2 h-4 w-4" />Activity & Insights</Link>
             </TabsTrigger>
           </TabsList>
         </div>
 
         {/* --- 3. Tab Content for "File Browser" --- */}
-        <TabsContent value="files" className="flex-grow flex flex-row overflow-y-hidden mt-0">
+        <TabsContent value="files" className="flex-grow flex flex-row overflow-hidden mt-0">
           {/* Your existing three-panel layout is now wrapped in this TabsContent */}
           {/* It remains a flex row to keep the side-by-side panel structure */}
 
           {/* ============================================= */}
           {/* Left Panel (File Tree, Batch Actions, Orphans)*/}
           {/* ============================================= */}
-          <aside className="w-[300px] md:w-[380px] flex-shrink-0 border-r border-border flex flex-col bg-card overflow-y-auto min-h-0">
+          <aside className="w-[300px] md:w-[380px] flex-shrink-0 border-l border-border flex flex-col bg-background min-w-0 min-h-0 overflow-hidden">
             {/* This wrapper ensures the panels inside don't overflow the aside */}
             <div className="flex-grow flex flex-col min-h-0">
               <div className="flex-grow overflow-y-auto min-h-0">
@@ -707,9 +707,12 @@ export function RepoDetailPage() {
                 </div>
               )}
 
-              <div className="p-3 md:p-4 border-t border-border bg-background shadow-inner">
-                <OrphanSymbolsPanel orphanSymbols={orphanSymbolsList as OrphanSymbolDisplayItem[]} />
+              <div className="border-t border-border bg-background shadow-inner overflow-y-auto max-h-[250px]">
+                <div className="p-3 md:p-4">
+                  <OrphanSymbolsPanel orphanSymbols={orphanSymbolsList as OrphanSymbolDisplayItem[]} />
+                </div>
               </div>
+
             </div>
           </aside>
 
@@ -758,7 +761,7 @@ export function RepoDetailPage() {
           {/* ============================================= */}
           {/* Right Panel (Analysis)                      */}
           {/* ============================================= */}
-          <aside className="w-[350px] md:w-[400px] flex-shrink-0 border-l border-border flex flex-col bg-background overflow-hidden min-w-0">
+          <aside className="w-[350px] md:w-[400px] flex-shrink-0 h-full border-l border-border flex flex-col bg-background min-w-0">
             <AnalysisPanel
               repoId={repo.id}
               selectedFile={selectedFile}

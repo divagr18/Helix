@@ -32,7 +32,7 @@ export const ModuleReadmeTester: React.FC<ModuleReadmeTesterProps> = ({ repoId }
     setComponentState('fetching_existing');
     setReadmeContent(null); // Clear previous content
     try {
-      const response = await axios.get(`http://localhost:8000/api/v1/repositories/${repoId}/module-documentation/?path=${encodeURIComponent(path)}`);
+      const response = await axios.get(`/api/v1/repositories/${repoId}/module-documentation/?path=${encodeURIComponent(path)}`);
       setReadmeContent(response.data.content_md);
       toast.success("Loaded saved README for this module.");
       setComponentState('displaying');
@@ -51,7 +51,7 @@ export const ModuleReadmeTester: React.FC<ModuleReadmeTesterProps> = ({ repoId }
     setWorkflowStep('checking_coverage');
     toast.info("Analyzing module documentation coverage...");
     try {
-      const response = await axios.get(`http://localhost:8000/api/v1/repositories/${repoId}/module-coverage/?path=${encodeURIComponent(modulePath.trim())}`);
+      const response = await axios.get(`/api/v1/repositories/${repoId}/module-coverage/?path=${encodeURIComponent(modulePath.trim())}`);
       const count = response.data.undocumented_count;
       setUndocumentedCount(count);
       if (count > 0) {
@@ -73,7 +73,7 @@ export const ModuleReadmeTester: React.FC<ModuleReadmeTesterProps> = ({ repoId }
     toast.loading("Starting batch documentation job...", { id: 'batch-doc-start' });
     try {
       const response = await axios.post(
-        `http://localhost:8000/api/v1/repositories/${repoId}/batch-document-module/`,
+        `/api/v1/repositories/${repoId}/batch-document-module/`,
         { path: modulePath.trim() }, // This is the request body
         {
           withCredentials: true,
@@ -96,7 +96,7 @@ export const ModuleReadmeTester: React.FC<ModuleReadmeTesterProps> = ({ repoId }
     try {
       // We use the existing re-process endpoint
       const response = await axios.post(
-        `http://localhost:8000/api/v1/repositories/${repoId}/reprocess/`,
+        `/api/v1/repositories/${repoId}/reprocess/`,
         {}, // Empty request body
         {
           withCredentials: true,
@@ -122,7 +122,7 @@ export const ModuleReadmeTester: React.FC<ModuleReadmeTesterProps> = ({ repoId }
     let generationSuccess = false;
     // This logic is from our previous implementation and remains the same
     try {
-      const response = await fetch(`http://localhost:8000/api/v1/repositories/${repoId}/generate-module-workflow/`, {
+      const response = await fetch(`/api/v1/repositories/${repoId}/generate-module-workflow/`, {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json', 'X-CSRFToken': getCookie('csrftoken') || '' },
@@ -166,7 +166,7 @@ export const ModuleReadmeTester: React.FC<ModuleReadmeTesterProps> = ({ repoId }
     if (!activeTaskId) return;
 
     const intervalId = setInterval(() => {
-      axios.get(`http://localhost:8000/api/v1/task-status/${activeTaskId}/`)
+      axios.get(`/api/v1/task-status/${activeTaskId}/`)
         .then(response => {
           const statusData: AsyncTaskStatus = response.data;
           setTaskStatus(statusData);
@@ -245,8 +245,10 @@ export const ModuleReadmeTester: React.FC<ModuleReadmeTesterProps> = ({ repoId }
           Check for a saved README or generate/regenerate one for any module path.
         </CardDescription>
       </CardHeader>
-      <CardContent className="space-y-4">
-        <div className="flex items-center gap-2">
+      <CardContent
+        className="flex flex-col h-full max-h-full p-4 space-y-4 flex-1 min-h-0"
+      >
+        <div className="flex-shrink-0 flex items-center gap-2">
           <Input
             placeholder="Leave blank for root, or enter path..."
             value={modulePath}
@@ -265,10 +267,44 @@ export const ModuleReadmeTester: React.FC<ModuleReadmeTesterProps> = ({ repoId }
 
         {/* The display area logic remains the same */}
         {(componentState === 'displaying' || componentState === 'generating' || componentState === 'fetching_existing') && readmeContent !== null && (
-          <div className="prose prose-sm dark:prose-invert max-w-none rounded-md border border-border bg-background/50 p-4 mt-4">
-            {(componentState === 'generating' || componentState === 'fetching_existing') && !readmeContent && <Loader2 className="h-6 w-6 animate-spin" />}
-            <Markdown remarkPlugins={[remarkGfm]}>{readmeContent}</Markdown>
+          <div
+            className="overflow-auto max-h-[250px] border border-border rounded-md bg-background/50 p-4"
+          >
+            {(componentState === 'generating' || componentState === 'fetching_existing') && !readmeContent && (
+              <Loader2 className="h-6 w-6 animate-spin" />
+            )}
+            <Markdown
+              remarkPlugins={[remarkGfm]}
+              components={{
+                // shrink headings
+                h1: ({ node, ...props }) => <h1 className="text-lg font-semibold" {...props} />,
+                h2: ({ node, ...props }) => <h2 className="text-base font-semibold" {...props} />,
+                h3: ({ node, ...props }) => <h3 className="text-sm font-semibold" {...props} />,
+                // wrap inline code
+                code({ inline, className, children, ...props }) {
+                  if (inline) {
+                    return (
+                      <code
+                        className="whitespace-pre-wrap break-words bg-muted px-1 rounded"
+                        {...props}
+                      >
+                        {children}
+                      </code>
+                    );
+                  }
+                  // wrap block code
+                  return (
+                    <pre className="whitespace-pre-wrap break-words p-2 bg-muted rounded overflow-auto" {...props}>
+                      <code className={className}>{children}</code>
+                    </pre>
+                  );
+                },
+              }}
+            >
+              {readmeContent!}
+            </Markdown>
           </div>
+
         )}
       </CardContent>
     </Card>

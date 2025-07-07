@@ -3,6 +3,8 @@ import os,shutil
 import subprocess
 from django.db.models import Q,F  # <--- ADD THIS IMPORT
 from rest_framework import generics, permissions
+
+from .permissions import IsMemberOfOrganization
 from .tasks import create_documentation_pr_task,batch_generate_docstrings_task # We will create this task soon
 from django.utils.decorators import method_decorator
 from rest_framework import viewsets
@@ -10,12 +12,11 @@ from .models import CodeFile, CodeSymbol as CodeFunction, Repository, CodeSymbol
 from .ai_services import generate_class_summary_stream, generate_module_readme_stream,generate_refactor_stream # 03c03c03c NEW IMPORT
 from .tasks import process_repository # Import the Celery task
 import json
-from .serializers import CodeSymbolSerializer, RepositorySerializer,RepositoryDetailSerializer,NotificationSerializer
+from .serializers import CodeSymbolSerializer, DetailedOrganizationSerializer, RepositorySerializer,RepositoryDetailSerializer,NotificationSerializer
 from rest_framework.views import APIView
 from django.views.decorators.csrf import csrf_exempt
 from rest_framework.response import Response
 from allauth.socialaccount.models import SocialToken
-from .diagram_utils import generate_mermaid_for_symbol_dependencies
 import requests,re
 from django.http import Http404, HttpResponse
 from django.http import StreamingHttpResponse # Import Django's native streaming class
@@ -30,99 +31,107 @@ from pgvector.django import L2Distance # Or CosineDistance, MaxInnerProduct
 from .serializers import CodeSymbolSerializer,AsyncTaskStatusSerializer,InsightSerializer # We can reuse this for results
 import os
 from .models import ModuleDependency
+from .decorators import check_usage_limit
+from .serializers import RepositorySerializer, RepositoryDetailSerializer, RepositoryCreateSerializer
+from rest_framework import serializers
+
 REPO_CACHE_BASE_PATH = "/var/repos" # Use the same constant
 OPENAI_CLIENT_INSTANCE = OpenAIClient()
 OPENAI_EMBEDDING_MODEL_FOR_SEARCH = "text-embedding-3-small"
 @method_decorator(csrf_exempt, name="dispatch")
+@method_decorator(csrf_exempt, name="dispatch")
 class RepositoryViewSet(viewsets.ModelViewSet):
-    permission_classes = [permissions.IsAuthenticated]
-    # The serializer class will be determined by the get_serializer_class method
-    serializer_class = RepositoryDetailSerializer 
+    permission_classes = [permissions.IsAuthenticated, IsMemberOfOrganization]
+    serializer_class = RepositoryDetailSerializer # Default for retrieve, etc.
 
     def get_queryset(self):
-        """
-        This queryset is now filtered based on the user's organization memberships.
-        It finds all organizations the user is a member of, then returns all
-        repositories belonging to those organizations.
-        """
+        # This logic is correct and remains unchanged.
         user = self.request.user
-        # Get all organization IDs the user is a member of
         organization_ids = OrganizationMember.objects.filter(user=user).values_list('organization_id', flat=True)
-        # Return all repositories that belong to any of those organizations
         return Repository.objects.filter(organization_id__in=organization_ids)
 
     def get_serializer_class(self):
+        """
+        Return the appropriate serializer class based on the action.
+        """
         if self.action == 'list':
             return RepositorySerializer
+        # --- USE OUR NEW SERIALIZER FOR THE 'create' ACTION ---
+        if self.action == 'create':
+            return RepositoryCreateSerializer
+        # For all other actions, use the detailed serializer.
         return RepositoryDetailSerializer
 
     def create(self, request, *args, **kwargs):
         """
-        Overrides the default create action to handle organization logic.
+        Overrides the default create action. It now uses the RepositoryCreateSerializer
+        which handles the initial data validation.
         """
-        # 1. Get the organization_id from the request data sent by the frontend.
-        organization_id = request.data.get('organization_id')
-        if not organization_id:
-            return Response({"error": "organization_id is required."}, status=status.HTTP_400_BAD_REQUEST)
-
-        # 2. Validate that the current user is a member of the target organization.
-        try:
-            membership = OrganizationMember.objects.get(organization_id=organization_id, user=request.user)
-        except OrganizationMember.DoesNotExist:
-            return Response({"error": "You are not a member of this organization or it does not exist."}, status=status.HTTP_403_FORBIDDEN)
-
-        # 3. Proceed with creating the repository, but pass our validated data.
+        # get_serializer() will now correctly return an instance of RepositoryCreateSerializer
+        # because we updated get_serializer_class().
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         
-        # Use our custom perform_create to save with the correct context
-        self.perform_create(serializer, organization=membership.organization, added_by=request.user)
+        # We call perform_create, which now contains all the logic.
+        # The serializer instance is passed along.
+        self.perform_create(serializer)
         
-        headers = self.get_success_headers(serializer.data)
-        return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
+        # We need to return the data in the format of the *detail* serializer, not the create one.
+        # So we create a new serializer instance for the response.
+        response_serializer = RepositoryDetailSerializer(serializer.instance)
+        headers = self.get_success_headers(response_serializer.data)
+        return Response(response_serializer.data, status=status.HTTP_201_CREATED, headers=headers)
 
-    def perform_create(self, serializer, organization, added_by):
+    def perform_create(self, serializer):
         """
-        Saves the new repository instance with the validated organization
-        and the user who added it.
+        This method is called by `create` after validation.
+        It handles the security checks and saving the object.
         """
-        # The serializer now saves the instance with the organization and added_by user.
-        repo = serializer.save(organization=organization, added_by=added_by)
+        # 1. Get the organization_id from the validated data of our CreateSerializer
+        organization_id = serializer.validated_data.pop('organization_id')
+
+        # 2. Check if the user is a member of that organization
+        try:
+            membership = OrganizationMember.objects.get(organization_id=organization_id, user=self.request.user)
+        except OrganizationMember.DoesNotExist:
+            # This security check is crucial.
+            raise serializers.ValidationError({"detail": "You are not a member of this workspace."})
+
+        # 3. Save the new repository with the correct context.
+        # The `serializer.save()` method will call `Repository.objects.create()` with the
+        # remaining validated data, plus the extra arguments we provide here.
+        # This is where the `organization` object is correctly passed to the model.
+        repo = serializer.save(
+            organization=membership.organization,
+            added_by=self.request.user
+        )
         
-        # Dispatch the Celery task after the repo is successfully created
-        process_repository.delay(repo.id)
+        # The post_save signal on the `repo` object will now trigger the Celery task correctly.
 
-    # --- ALSO, UPDATE THE DELETION LOGIC ---
-    # The default destroy action needs to be overridden to check org membership.
-    def destroy(self, request, *args, **kwargs):
+    # The perform_destroy method you have is already correct and doesn't need changes.
+    def perform_destroy(self, instance):
         """
-        Deletes a repository after checking for organization ownership/membership.
+        Overrides the default destroy action to also delete files from the filesystem.
         """
-        repo = self.get_object() # Gets the repository instance based on the URL's pk
+        # --- 3. NO PERMISSION CHECK NEEDED HERE ---
+        # The IsMemberOfOrganization.has_object_permission check has already been
+        # run by DRF before this method is ever called. This makes the code cleaner.
+
+        repo_full_name = instance.full_name
+        repo_path = os.path.join(REPO_CACHE_BASE_PATH, str(instance.id))
+
+        # First, delete the database record. Cascading deletes will handle related objects.
+        instance.delete()
+        print(f"Successfully deleted repository record for '{repo_full_name}'.")
         
-        # Check if the user is a member of the organization that owns this repo.
-        # For extra safety, you could restrict deletion to only 'OWNER' or 'ADMIN' roles.
-        is_member = OrganizationMember.objects.filter(
-            organization=repo.organization, 
-            user=request.user
-            # role__in=[OrganizationMember.Role.OWNER, OrganizationMember.Role.ADMIN]
-        ).exists()
-
-        if not is_member:
-            return Response({"error": "You do not have permission to delete this repository."}, status=status.HTTP_403_FORBIDDEN)
-
-        repo_full_name = repo.full_name
-        repo_path = os.path.join(REPO_CACHE_BASE_PATH, str(repo.id))
-
-        # Perform the deletion
-        self.perform_destroy(repo)
-        
-        # Delete the cached files from the filesystem
+        # Then, delete the cached files from the filesystem.
         if os.path.exists(repo_path):
-            shutil.rmtree(repo_path)
-            print(f"Successfully deleted cached files for '{repo_full_name}'.")
-
-        return Response(status=status.HTTP_204_NO_CONTENT)
+            try:
+                shutil.rmtree(repo_path)
+                print(f"Successfully deleted cached files for '{repo_full_name}'.")
+            except Exception as e:
+                # Log this critical error, as we now have orphaned files.
+                print(f"CRITICAL ERROR: Failed to delete repo cache for '{repo_full_name}' at '{repo_path}': {e}")
 
 @method_decorator(csrf_exempt, name="dispatch")
 class GithubReposView(APIView):
@@ -218,9 +227,17 @@ class FileContentView(APIView):
         # Get file_id from the URL
         file_id = kwargs.get('file_id')
         try:
-            code_file = CodeFile.objects.get(id=file_id, repository__user=request.user)
+            # We construct a query that joins through the necessary tables:
+            # CodeFile -> Repository -> Organization -> OrganizationMember -> User
+            code_file = CodeFile.objects.get(
+                id=file_id,
+                repository__organization__memberships__user=request.user
+            )
         except CodeFile.DoesNotExist:
-            return Response({"error": "File not found or permission denied."}, status=404)
+            return Response(
+                {"error": "File not found or permission denied."},
+                status=status.HTTP_404_NOT_FOUND
+            )
         repo_path = os.path.join(REPO_CACHE_BASE_PATH, str(code_file.repository.id))
         full_file_path = os.path.join(repo_path, code_file.file_path)
 
@@ -314,8 +331,8 @@ class GenerateDocstringView(APIView):
         try:
             # Your existing Q filter for ownership check
             q_filter = Q(id=function_id) & (
-                Q(code_file__repository__user=request.user) | 
-                Q(code_class__code_file__repository__user=request.user)
+                Q(code_file__repository__organization__memberships__user=request.user) | 
+                Q(code_class__code_file__repository__organization__memberships__user=request.user)
             )
             code_symbol_obj = CodeSymbol.objects.select_related(
                 'code_file__repository', 
@@ -391,8 +408,8 @@ class SaveDocstringView(APIView):
 
         try:
             q_filter = Q(id=symbol_id) & (
-                Q(code_file__repository__user=request.user) | 
-                Q(code_class__code_file__repository__user=request.user)
+                Q(code_file__repository__organization__memberships__user=request.user) | 
+                Q(code_class__code_file__repository__organization__memberships__user=request.user)
             )
             symbol = CodeSymbol.objects.select_related( # Select related for serializer efficiency
                 'code_file__repository', 
@@ -456,8 +473,8 @@ class CodeSymbolDetailView(generics.RetrieveAPIView):
         # This queryset ensures a user can only ever access symbols
         # that belong to repositories they own.
         return CodeSymbol.objects.filter(
-            Q(code_file__repository__user=self.request.user) |
-            Q(code_class__code_file__repository__user=self.request.user)
+            Q(code_file__repository__organization__memberships__user=self.request.user) |
+            Q(code_class__code_file__repository__organization__memberships__user=self.request.user)
         ).distinct()
 
 class SemanticSearchView(generics.ListAPIView):
@@ -478,29 +495,9 @@ class SemanticSearchView(generics.ListAPIView):
             )
             query_embedding = response.data[0].embedding
 
-            # 2. Find symbols in the user's repositories that are semantically similar
-            # We need to ensure we only search within repositories the user has access to.
-            # This can be complex if a symbol doesn't directly link to a user.
-            # For now, let's assume we search all symbols and filter later,
-            # or ideally, filter by repositories owned by request.user.
 
-            # Get repositories owned by the user
             user_repos = Repository.objects.filter(user=self.request.user)
-            
-            # Filter CodeSymbols that belong to these repositories
-            # This query ensures we only search within the user's accessible symbols.
-            # It uses L2Distance, but CosineDistance is often preferred for semantic similarity.
-            # For CosineDistance, lower is better (more similar).
-            # For L2Distance, lower is better.
-            # For MaxInnerProduct, higher is better.
-            
-            # Using CosineDistance: 1 - (embedding <=> query_embedding)
-            # We want to order by similarity (ascending for distance, descending for similarity score)
-            # pgvector's <=> operator gives cosine distance.
-            # A common way to order is by this distance.
-            
-            # Let's use L2Distance for this example, order by distance ascending
-            # Ensure the CodeSymbol model has an 'embedding' field
+
             similar_symbols = CodeSymbol.objects.filter(
                 Q(code_file__repository__in=user_repos) | Q(code_class__code_file__repository__in=user_repos)
             ).annotate(
@@ -515,6 +512,7 @@ class SemanticSearchView(generics.ListAPIView):
 
 
 from .tasks import create_documentation_pr_task
+from django.core.exceptions import PermissionDenied
 
 class CreateDocPRView(APIView):
     permission_classes = [permissions.IsAuthenticated]
@@ -522,15 +520,34 @@ class CreateDocPRView(APIView):
     def post(self, request, *args, **kwargs):
         symbol_id = kwargs.get('symbol_id')
         try:
-            # Ensure the user owns the symbol
-            symbol = CodeSymbol.objects.get(
-                id=symbol_id,
-            )
-            if not symbol.documentation: # Or check if documentation_hash matches content_hash
-                return Response({"error": "Documentation must be saved and up-to-date before creating a PR."}, status=status.HTTP_400_BAD_REQUEST)
+            # --- THIS IS THE FIX ---
+            # 1. Get the symbol first
+            symbol = CodeSymbol.objects.select_related(
+                'code_file__repository__organization', 
+                'code_class__code_file__repository__organization'
+            ).get(id=symbol_id)
+
+            # 2. Determine the organization from the symbol
+            if symbol.code_file:
+                org = symbol.code_file.repository.organization
+            elif symbol.code_class:
+                org = symbol.code_class.code_file.repository.organization
+            else:
+                # Should not happen, but as a safeguard
+                raise PermissionDenied("Symbol is not associated with a repository.")
+
+            # 3. Check if the user is a member of that organization
+            if not OrganizationMember.objects.filter(organization=org, user=request.user).exists():
+                raise PermissionDenied("You do not have permission to access this symbol.")
+            # --- END FIX ---
+
+            if not symbol.documentation: # Check the correct field name
+                return Response({"error": "Documentation must be generated and saved before creating a PR."}, status=status.HTTP_400_BAD_REQUEST)
 
         except CodeSymbol.DoesNotExist:
-            return Response({"error": "Symbol not found or permission denied."}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"error": "Symbol not found."}, status=status.HTTP_404_NOT_FOUND)
+        except PermissionDenied as e:
+            return Response({"error": str(e)}, status=status.HTTP_403_FORBIDDEN)
 
         # Trigger the Celery task
         task = create_documentation_pr_task.delay(symbol_id, request.user.id)
@@ -546,8 +563,24 @@ class GenerateArchitectureDiagramView(APIView):
         print(f"VIEW_GEN_DIAGRAM: Request for symbol_id: {symbol_id}, user: {request.user.username}")
 
         try:
-            q_filter = Q(id=symbol_id) & (Q(code_file__repository__user=request.user) | Q(code_class__code_file__repository__user=request.user))
-            central_symbol = CodeSymbol.objects.select_related('code_file__repository', 'code_class__code_file__repository').get(q_filter)
+            # --- THIS IS THE FIX ---
+            # 1. Get the symbol first
+            central_symbol = CodeSymbol.objects.select_related(
+                'code_file__repository__organization', 
+                'code_class__code_file__repository__organization'
+            ).get(id=symbol_id)
+
+            # 2. Determine the organization
+            if central_symbol.code_file:
+                org = central_symbol.code_file.repository.organization
+            elif central_symbol.code_class:
+                org = central_symbol.code_class.code_file.repository.organization
+            else:
+                raise PermissionDenied("Symbol is not associated with a repository.")
+
+            # 3. Check membership
+            if not OrganizationMember.objects.filter(organization=org, user=request.user).exists():
+                raise PermissionDenied("You do not have permission to access this symbol.")
         except CodeSymbol.DoesNotExist:
             return Response({"error": "Symbol not found or permission denied."}, status=status.HTTP_404_NOT_FOUND)
         except Exception as e:
@@ -582,7 +615,10 @@ class BatchGenerateDocsForFileView(APIView):
 
         try:
             # Verify user has access to this code_file by checking ownership of the repository
-            code_file_exists = CodeFile.objects.filter(id=code_file_id, repository__user=request.user).exists()
+            code_file_exists = CodeFile.objects.filter(
+                id=code_file_id,
+                repository__organization__memberships__user=request.user
+            ).exists()
             if not code_file_exists:
                 print(f"Permission denied or file not found for file_id: {code_file_id}, user_id: {user_id}")
                 return Response(
@@ -615,7 +651,19 @@ class CreateBatchDocsPRView(APIView):
         user_id = request.user.id
 
         try:
-            code_file = CodeFile.objects.get(id=code_file_id, repository__user=request.user)
+            # --- THIS IS THE FIX ---
+            # 1. Get the file and its related organization
+            code_file = CodeFile.objects.select_related('repository__organization').get(id=code_file_id)
+            
+            # 2. Check if the current user is a member of that organization
+            is_member = OrganizationMember.objects.filter(
+                organization=code_file.repository.organization,
+                user=request.user
+            ).exists()
+
+            if not is_member:
+                # Raise a permission error if they are not a member
+                raise PermissionDenied("You do not have permission to access this file.")
         except CodeFile.DoesNotExist:
             return Response(
                 {"error": "File not found or permission denied."},
@@ -653,17 +701,24 @@ class BatchGenerateDocsForSelectedFilesView(APIView):
                             status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            # Verify user owns the repository
-            repo = Repository.objects.get(id=repo_id, user_id=user_id)
+            # --- THIS IS THE FIX ---
+            # 1. Get the repository
+            repo = Repository.objects.get(id=repo_id)
+
+            # 2. Check if the current user is a member of the repo's organization
+            is_member = OrganizationMember.objects.filter(
+                organization=repo.organization,
+                user=request.user
+            ).exists()
+
+            if not is_member:
+                raise PermissionDenied("You do not have permission to access this repository.")
+            # --- END FIX ---
             
-            # Verify all file_ids belong to this repository and actually exist
-            # This ensures data integrity before dispatching the task
+            # The rest of your validation logic is still good and can remain
             valid_files_query = CodeFile.objects.filter(id__in=file_ids, repository=repo)
-            if valid_files_query.count() != len(set(file_ids)): # Use set to handle potential duplicates in input
-                 # Find which IDs are problematic for a more specific error (optional enhancement)
-                print(f"VIEW_BATCH_DOCS: Validation failed. Expected {len(set(file_ids))} valid files, found {valid_files_query.count()}.")
-                return Response({"error": "One or more file IDs are invalid, do not belong to the specified repository, or were not found."}, 
-                                 status=status.HTTP_400_BAD_REQUEST)
+            if valid_files_query.count() != len(set(file_ids)):
+                return Response({"error": "One or more file IDs are invalid or do not belong to the specified repository."}, status=status.HTTP_400_BAD_REQUEST)
         except Repository.DoesNotExist:
             print(f"VIEW_BATCH_DOCS: Repository {repo_id} not found or permission denied for user {user_id}.")
             return Response({"error": "Repository not found or permission denied."}, 
@@ -707,18 +762,25 @@ class CreateBatchPRForSelectedFilesView(APIView):
                             status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            repo = Repository.objects.get(id=repo_id, user_id=user_id)
+            # --- THIS IS THE FIX (Identical to the previous view) ---
+            repo = Repository.objects.get(id=repo_id)
+            is_member = OrganizationMember.objects.filter(
+                organization=repo.organization,
+                user=request.user
+            ).exists()
+            if not is_member:
+                raise PermissionDenied("You do not have permission to access this repository.")
+            # --- END FIX ---
+
             valid_files_query = CodeFile.objects.filter(id__in=file_ids, repository=repo)
             if valid_files_query.count() != len(set(file_ids)):
-                 print(f"VIEW_BATCH_PR: Validation failed for PR. Expected {len(set(file_ids))} valid files, found {valid_files_query.count()}.")
-                 return Response({"error": "One or more file IDs are invalid or do not belong to the specified repository for PR."}, 
-                                 status=status.HTTP_400_BAD_REQUEST)
+                 return Response({"error": "One or more file IDs are invalid or do not belong to the specified repository for PR."}, status=status.HTTP_400_BAD_REQUEST)
+        
         except Repository.DoesNotExist:
-            print(f"VIEW_BATCH_PR: Repository {repo_id} not found or permission denied for user {user_id} for PR.")
-            return Response({"error": "Repository not found or permission denied for PR."}, 
-                            status=status.HTTP_404_NOT_FOUND)
+            return Response({"error": "Repository not found for PR."}, status=status.HTTP_404_NOT_FOUND)
+        except PermissionDenied as e:
+            return Response({"error": str(e)}, status=status.HTTP_403_FORBIDDEN)
         except Exception as e:
-            print(f"VIEW_BATCH_PR: Error during pre-task checks for repo {repo_id} for PR: {e}")
             return Response({"error": "Server error during pre-PR validation."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
         try:
@@ -740,7 +802,10 @@ class TaskStatusView(APIView):
         print(f"VIEW_TASK_STATUS: Request for task_id={task_id}, user={request.user.username}")
         try:
             # Fetch the task status, ensuring it belongs to the requesting user
-            task_status = AsyncTaskStatus.objects.get(task_id=task_id, user=request.user)
+            task_status = AsyncTaskStatus.objects.get(
+                task_id=task_id,
+                repository__organization__memberships__user=request.user
+            )
             serializer = AsyncTaskStatusSerializer(task_status)
             return Response(serializer.data)
         except AsyncTaskStatus.DoesNotExist:
@@ -760,8 +825,8 @@ class ApproveDocstringView(APIView):
         try:
             # Ensure user owns the symbol
             q_filter = Q(id=symbol_id) & (
-                Q(code_file__repository__user=request.user) | 
-                Q(code_class__code_file__repository__user=request.user)
+                Q(code_file__repository__organization__memberships__user=request.user) | 
+                Q(code_class__code_file__repository__organization__memberships__user=request.user)
             )
             symbol = CodeSymbol.objects.get(q_filter)
         except CodeSymbol.DoesNotExist:
@@ -914,8 +979,8 @@ class ExplainCodeView(APIView):
 
         try:
             q_filter = Q(id=symbol_id) & (
-                Q(code_file__repository__user=request.user) |
-                Q(code_class__code_file__repository__user=request.user)
+                Q(code_file__repository__organization__memberships__user=request.user) |
+                Q(code_class__code_file__repository__organization__memberships__user=request.user)
             )
             symbol_obj = CodeSymbol.objects.select_related(
                 'code_file__repository', 
@@ -1027,8 +1092,8 @@ class SuggestTestsView(APIView):
 
         try:
             q_filter = Q(id=symbol_id) & (
-                Q(code_file__repository__user=request.user) |
-                Q(code_class__code_file__repository__user=request.user)
+                Q(code_file__repository__organization__memberships__user=request.user) |
+                Q(code_class__code_file__repository__organization__memberships__user=request.user)
             )
             symbol_obj = CodeSymbol.objects.select_related(
                 'code_file', 
@@ -1069,10 +1134,10 @@ class ClassSummaryView(APIView):
         try:
             # Check ownership via the file the class belongs to
             code_class_obj = CodeClass.objects.select_related(
-                'code_file__repository__user'
+                'code_file__repository'
             ).get(
                 id=class_id,
-                code_file__repository__user=request.user
+                code_file__repository__organization__memberships__user=request.user
             )
         except CodeClass.DoesNotExist:
             return Response({"error": "Class not found or permission denied."}, status=status.HTTP_404_NOT_FOUND)
@@ -1096,7 +1161,10 @@ class ReprocessRepositoryView(APIView):
         
         try:
             # Ensure the user owns the repository they are trying to reprocess
-            repo = Repository.objects.get(id=repo_id, user=request.user)
+            repo = Repository.objects.get(
+                id=repo_id, 
+                organization__memberships__user=request.user
+            )
         except Repository.DoesNotExist:
             return Response(
                 {"error": "Repository not found or permission denied."}, 
@@ -1136,9 +1204,17 @@ class RepositoryInsightsView(generics.ListAPIView):
 
     def get_queryset(self):
         repo_id = self.kwargs.get('repo_id')
-        # Ensure user owns the repo they are requesting insights for
-        if not Repository.objects.filter(id=repo_id, user=self.request.user).exists():
+        
+        # --- THIS IS THE FIX ---
+        # Change the permission check to use the new organization path.
+        is_member = Repository.objects.filter(
+            id=repo_id, 
+            organization__memberships__user=self.request.user
+        ).exists()
+
+        if not is_member:
             return Insight.objects.none() # Return empty queryset if no permission
+        # --- END FIX ---
         
         return Insight.objects.filter(repository_id=repo_id).order_by('-created_at')
 
@@ -1153,7 +1229,10 @@ class CommitHistoryView(APIView):
         print(f"VIEW_COMMIT_HISTORY: Request for repo_id: {repo_id} by user: {request.user.username}")
 
         try:
-            repo = Repository.objects.get(id=repo_id, user=request.user)
+            repo = Repository.objects.get(
+                id=repo_id, 
+                organization__memberships__user=request.user
+            )
         except Repository.DoesNotExist:
             return Response(
                 {"error": "Repository not found or permission denied."},
@@ -1197,10 +1276,6 @@ class CommitHistoryView(APIView):
                     # Parse the JSON string for a single commit
                     commit_data = json.loads(line)
                     
-                    # --- THIS IS THE KEY CHANGE ---
-                    # The "%P" format gives a space-separated string of parent hashes.
-                    # We split this string to create a proper list, which matches the mock data's format.
-                    # If there are no parents, `parents_str` will be an empty string, and split() will correctly return [].
                     parent_hashes_str = commit_data.get('parents_str', '')
                     commit_data['parents'] = parent_hashes_str.split()
                     
@@ -1241,12 +1316,24 @@ class SuggestRefactorsView(APIView):
             )
 
         try:
-            # Check ownership and fetch the symbol object
-            q_filter = Q(id=symbol_id) & (
-                Q(code_file__repository__user=request.user) |
-                Q(code_class__code_file__repository__user=request.user)
+            # --- THIS IS THE FIX ---
+            # We construct a query that checks for membership in the symbol's organization.
+            # This query ensures that the symbol exists AND the user has permission to see it.
+            
+            # This checks symbols that are directly in a file
+            q_for_file_symbols = Q(
+                code_file__repository__organization__memberships__user=request.user
             )
-            symbol_obj = CodeSymbol.objects.get(q_filter)
+            
+            # This checks symbols that are inside a class
+            q_for_class_symbols = Q(
+                code_class__code_file__repository__organization__memberships__user=request.user
+            )
+
+            # We find the CodeSymbol with the given ID, AND it must satisfy one of the permission checks.
+            symbol_obj = CodeSymbol.objects.get(
+                Q(id=symbol_id) & (q_for_file_symbols | q_for_class_symbols)
+            )
         except CodeSymbol.DoesNotExist:
             return Response(
                 {"error": "Symbol not found or permission denied."}, 
@@ -1267,6 +1354,7 @@ from .ai_services import handle_chat_query_stream
 @method_decorator(csrf_exempt, name='dispatch')
 class ChatView(APIView):
     permission_classes = [permissions.IsAuthenticated]
+    @method_decorator(check_usage_limit) # <--- APPLY DECORATOR
 
     def post(self, request, repo_id, *args, **kwargs):
         query = request.data.get('query')
@@ -1284,8 +1372,16 @@ class ChatView(APIView):
         # The OPENAI_CLIENT check is no longer needed here as the service handles it
         
         try:
-            Repository.objects.get(id=repo_id, user=request.user)
-        except Repository.DoesNotExist:
+            is_member = OrganizationMember.objects.filter(
+                organization__repositories__id=repo_id,
+                user=request.user
+            ).exists()
+
+            if not is_member:
+                # Raise a specific error to be caught below
+                raise Repository.DoesNotExist
+
+        except Repository.DoesNotExist: # This will catch the case where the repo doesn't exist at all
             return Response(
                 {"error": "Repository not found or permission denied."}, 
                 status=status.HTTP_404_NOT_FOUND
@@ -1356,6 +1452,7 @@ class ProposeChangeView(APIView):
 @method_decorator(csrf_exempt, name='dispatch')
 class SummarizeModuleView(APIView):
     permission_classes = [permissions.IsAuthenticated]
+    @method_decorator(check_usage_limit) # <--- APPLY DECORATOR
 
     def post(self, request, repo_id, *args, **kwargs):
         module_path = request.data.get('path')
@@ -1388,6 +1485,7 @@ class SummarizeModuleView(APIView):
 @method_decorator(csrf_exempt, name='dispatch')
 class BatchDocumentModuleView(APIView):
     permission_classes = [permissions.IsAuthenticated]
+    @method_decorator(check_usage_limit) # <--- APPLY DECORATOR
 
     def post(self, request, repo_id, *args, **kwargs):
         """
@@ -1431,7 +1529,7 @@ class BatchDocumentModuleView(APIView):
         
 class ModuleCoverageView(APIView):
     permission_classes = [permissions.IsAuthenticated]
-
+    @method_decorator(check_usage_limit) # <--- APPLY DECORATOR
     def get(self, request, repo_id, *args, **kwargs):
         module_path = request.query_params.get('path', '').strip()
         print("Hello")
@@ -1480,14 +1578,29 @@ class ModuleDocumentationView(APIView):
     def get(self, request, repo_id, *args, **kwargs):
         module_path = request.query_params.get('path', '')
         
+        # --- THIS IS THE FIX ---
+        # We can no longer filter Repository directly by user.
+        # Instead, we check if the user is a member of the repository's organization.
+        
+        # This is a more explicit and secure way to check for permission.
+        is_member = OrganizationMember.objects.filter(
+            # Find a membership record...
+            user=request.user, 
+            # ...for the organization that owns the repository we're interested in.
+            organization__repositories__id=repo_id 
+        ).exists()
+
+        if not is_member:
+            return Response({"error": "Repository not found or permission denied."}, status=status.HTTP_404_NOT_FOUND)
+        
+        # --- END FIX ---
+
         try:
-            # Check ownership via the repository relationship
-            repo = Repository.objects.get(id=repo_id, user=request.user)
-            module_doc = ModuleDocumentation.objects.get(repository=repo, module_path=module_path)
+            # Now that we've confirmed permission, we can safely get the module doc.
+            # We don't need to get the repo object first.
+            module_doc = ModuleDocumentation.objects.get(repository_id=repo_id, module_path=module_path)
             serializer = ModuleDocumentationSerializer(module_doc)
             return Response(serializer.data)
-        except Repository.DoesNotExist:
-            return Response({"error": "Repository not found or permission denied."}, status=status.HTTP_404_NOT_FOUND)
         except ModuleDocumentation.DoesNotExist:
             return Response({"error": "No saved README found for this module path."}, status=status.HTTP_404_NOT_FOUND)
         
@@ -1496,11 +1609,16 @@ from .tasks import generate_module_documentation_workflow_task
 @method_decorator(csrf_exempt, name='dispatch')
 class GenerateModuleWorkflowView(APIView):
     permission_classes = [permissions.IsAuthenticated]
-
+    @method_decorator(check_usage_limit) # <--- APPLY DECORATOR
     def post(self, request, repo_id, *args, **kwargs):
         module_path = request.data.get('path', '')
 
-        if not Repository.objects.filter(id=repo_id, user=request.user).exists():
+        is_member = OrganizationMember.objects.filter(
+            organization__repositories__id=repo_id, 
+            user=request.user
+        ).exists()
+
+        if not is_member:
             return Response({"error": "Repository not found or permission denied."}, status=status.HTTP_404_NOT_FOUND)
 
         # Dispatch the single "master" workflow task
@@ -1517,14 +1635,28 @@ class GenerateModuleWorkflowView(APIView):
         
 class DependencyGraphView(APIView):
     permission_classes = [permissions.IsAuthenticated]
-
+    @method_decorator(check_usage_limit) # <--- APPLY DECORATOR
     def get(self, request, repo_id, *args, **kwargs):
         print(f"DEP_GRAPH_VIEW: Request for repo {repo_id}")
         
         try:
-            repo = Repository.objects.get(id=repo_id, user=request.user)
-        except Repository.DoesNotExist:
-            return Response({"error": "Repository not found or permission denied."}, status=404)
+            is_member = OrganizationMember.objects.filter(
+                organization__repositories__id=repo_id,
+                user=request.user
+            ).exists()
+
+            if not is_member:
+                raise PermissionDenied("You do not have permission to access this repository.")
+
+            # If the check passes, we can safely get the repo object.
+            repo = Repository.objects.get(id=repo_id)
+
+        except (Repository.DoesNotExist, PermissionDenied) as e:
+            # Catch either the repo not existing or the permission check failing.
+            return Response(
+                {"error": "Repository not found or permission denied."}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
 
         # 1. Get all files that are part of any dependency relationship.
         # This ensures we don't have nodes that are completely disconnected.
@@ -1680,3 +1812,206 @@ class OrganizationDetailView(APIView):
             serializer.save()
             return Response(OrganizationSerializer(org).data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+
+import shutil
+class OrganizationDetailView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_membership(self, org_id, user):
+        """Helper to get a membership if the user is part of the org."""
+        try:
+            return OrganizationMember.objects.select_related('organization').get(organization_id=org_id, user=user)
+        except OrganizationMember.DoesNotExist:
+            raise Http404
+
+    def get(self, request, org_id, *args, **kwargs):
+        """Get detailed data for a single organization, including members and invites."""
+        membership = self.get_membership(org_id, request.user)
+        # --- Use the new, more detailed serializer ---
+        serializer = DetailedOrganizationSerializer(membership.organization)
+        return Response(serializer.data)
+
+    def patch(self, request, org_id, *args, **kwargs):
+        """Update an organization's details (e.g., rename)."""
+        membership = self.get_membership(org_id, request.user)
+        org = membership.organization
+
+        # --- PERMISSION CHECK ---
+        if membership.role not in [OrganizationMember.Role.OWNER, OrganizationMember.Role.ADMIN]:
+            return Response({"error": "You do not have permission to edit this organization."}, status=status.HTTP_403_FORBIDDEN)
+
+        serializer = CreateOrganizationSerializer(org, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(OrganizationSerializer(org).data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def delete(self, request, org_id, *args, **kwargs):
+        """Delete an entire organization and all its contents."""
+        membership = self.get_membership(org_id, request.user)
+        org = membership.organization
+
+        # --- PERMISSION CHECK: Only the OWNER can delete ---
+        if membership.role != OrganizationMember.Role.OWNER:
+            return Response({"error": "Only the workspace owner can delete it."}, status=status.HTTP_403_FORBIDDEN)
+
+        print(f"ORG_DELETION: User {request.user.id} is deleting organization '{org.name}' (ID: {org.id})")
+
+        # Manually delete repository caches before the DB records are gone
+        repo_ids = list(org.repositories.values_list('id', flat=True))
+        for r_id in repo_ids:
+            repo_path = os.path.join(REPO_CACHE_BASE_PATH, str(r_id))
+            if os.path.exists(repo_path):
+                try:
+                    shutil.rmtree(repo_path)
+                    print(f"ORG_DELETION: Removed cached repo files for repo ID {r_id}")
+                except Exception as e:
+                    # Log this error but don't stop the deletion process
+                    print(f"ORG_DELETION: WARNING - Failed to delete repo cache for {r_id}: {e}")
+        
+        # Deleting the organization will cascade and delete all related
+        # repositories, members, insights, chunks, etc.
+        org.delete()
+
+        return Response(status=status.HTTP_204_NO_CONTENT)
+    
+from .models import Invitation, OrganizationMember
+from .serializers import InvitationSerializer, CreateInvitationSerializer, OrganizationSerializer
+
+# Helper function to check for admin/owner permissions
+def is_admin_or_owner(user, organization):
+    return OrganizationMember.objects.filter(
+        user=user,
+        organization=organization,
+        role__in=[OrganizationMember.Role.OWNER, OrganizationMember.Role.ADMIN]
+    ).exists()
+
+class OrganizationMemberListView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, org_id, *args, **kwargs):
+        if not is_admin_or_owner(request.user, org_id):
+             return Response({"error": "You do not have permission to view members."}, status=status.HTTP_403_FORBIDDEN)
+        
+        members = OrganizationMember.objects.filter(organization_id=org_id).select_related('user')
+        serializer = OrganizationMemberSerializer(members, many=True)
+        return Response(serializer.data)
+
+class OrganizationMemberDetailView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def delete(self, request, org_id, membership_id, *args, **kwargs):
+        if not is_admin_or_owner(request.user, org_id):
+            return Response({"error": "You do not have permission to remove members."}, status=status.HTTP_403_FORBIDDEN)
+        
+        try:
+            membership = OrganizationMember.objects.get(id=membership_id, organization_id=org_id)
+            # Prevent owner from being removed
+            if membership.role == OrganizationMember.Role.OWNER:
+                return Response({"error": "The owner cannot be removed from the workspace."}, status=status.HTTP_400_BAD_REQUEST)
+            
+            membership.delete()
+            return Response(status=status.HTTP_204_NO_CONTENT)
+        except OrganizationMember.DoesNotExist:
+            raise Http404
+
+class InvitationListView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, org_id, *args, **kwargs):
+        if not is_admin_or_owner(request.user, org_id):
+            return Response({"error": "You do not have permission to view invitations."}, status=status.HTTP_403_FORBIDDEN)
+        
+        invitations = Invitation.objects.filter(organization_id=org_id, status=Invitation.InviteStatus.PENDING)
+        serializer = InvitationSerializer(invitations, many=True)
+        return Response(serializer.data)
+
+    def post(self, request, org_id, *args, **kwargs):
+        if not is_admin_or_owner(request.user, org_id):
+            return Response({"error": "You do not have permission to send invitations."}, status=status.HTTP_403_FORBIDDEN)
+
+        serializer = CreateInvitationSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        email = serializer.validated_data['email']
+        role = serializer.validated_data['role']
+
+        # Check if user is already a member
+        if OrganizationMember.objects.filter(organization_id=org_id, user__email=email).exists():
+            return Response({"error": "This user is already a member of the workspace."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Create or update pending invitation
+        invitation, created = Invitation.objects.update_or_create(
+            organization_id=org_id,
+            email=email,
+            status=Invitation.InviteStatus.PENDING,
+            defaults={'role': role, 'invited_by': request.user}
+        )
+        
+        # TODO: Send invitation email with link: f"/invite/{invitation.token}"
+        print(f"SIMULATING EMAIL: Invite link for {email}: /invite/{invitation.token}")
+        
+        return Response(InvitationSerializer(invitation).data, status=status.HTTP_201_CREATED)
+
+class AcceptInviteView(APIView):
+    permission_classes = [permissions.IsAuthenticated] # User must be logged in to accept
+
+    def post(self, request, token, *args, **kwargs):
+        try:
+            invitation = Invitation.objects.get(token=token, status=Invitation.InviteStatus.PENDING)
+        except Invitation.DoesNotExist:
+            return Response({"error": "This invitation is invalid or has expired."}, status=status.HTTP_404_NOT_FOUND)
+
+        # Check if the logged-in user's email matches the invite email
+        if request.user.email.lower() != invitation.email.lower():
+            return Response({"error": "This invitation is for a different email address."}, status=status.HTTP_403_FORBIDDEN)
+
+        # Add user to organization
+        member, created = OrganizationMember.objects.update_or_create(
+            organization=invitation.organization,
+            user=request.user,
+            defaults={'role': invitation.role}
+        )
+        
+        invitation.status = Invitation.InviteStatus.ACCEPTED
+        invitation.save()
+
+        return Response(OrganizationSerializer(invitation.organization).data, status=status.HTTP_200_OK)
+    
+
+from users.models import BetaInviteCode
+
+class ValidateInviteCodeView(APIView):
+    permission_classes = [permissions.AllowAny] # Anyone can check a code
+
+    def post(self, request, *args, **kwargs):
+        code_str = request.data.get('code')
+        if not code_str:
+            return Response({"error": "Invite code is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            invite_code = BetaInviteCode.objects.get(code=code_str, is_active=True)
+            
+            # Check if the code has uses left
+            if invite_code.uses >= invite_code.max_uses:
+                return Response({"error": "This invite code has already been used."}, status=status.HTTP_400_BAD_REQUEST)
+
+            # --- Store the valid code in the user's session ---
+            request.session['validated_invite_code'] = str(invite_code.code)
+            print(f"INVITE_VALIDATION: Stored code {invite_code.code} in session {request.session.session_key}")
+            
+            return Response({"message": "Invite code is valid. Please proceed to sign up."}, status=status.HTTP_200_OK)
+
+        except BetaInviteCode.DoesNotExist:
+            return Response({"error": "Invalid invite code."}, status=status.HTTP_404_NOT_FOUND)
+        
+
+from django.http import JsonResponse
+from django.views.decorators.csrf import ensure_csrf_cookie
+
+@ensure_csrf_cookie
+def set_csrf_cookie(request):
+    return JsonResponse({"detail": "CSRF cookie set."})

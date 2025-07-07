@@ -17,10 +17,30 @@ export default defineConfig({
     },
   },
   server: {
+    allowedHosts: [
+      'localhost',
+      '127.0.0.1',
+      'woodcock-wondrous-infinitely.ngrok-free.app' // 👈 add this
+    ],
     watch: {
       usePolling: true,
       interval: 1000, // or 500 for faster dev
     },
-    
+    proxy: {
+      // Proxy all `/api/...` requests to Django
+      '/api': {
+        target: 'http://backend:8000',
+        changeOrigin: true,
+        secure: false,
+        rewrite: (path) => path.replace(/^\/api/, '/api'),
+      },
+      // Proxy the Allauth OAuth endpoints too:
+      '/accounts': {
+        target: 'http://backend:8000',
+        changeOrigin: false,
+        secure: false,
+        // we leave the path untouched so `/accounts/github/login/` → same on Django
+      },
+    },
   },
 });

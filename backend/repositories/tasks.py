@@ -33,15 +33,24 @@ from openai import OpenAI # Import the OpenAI library
 RUST_ENGINE_PATH = "/app/engine/helix-engine/target/release/helix-engine"
 OPENAI_CLIENT = OpenAI()
 OPENAI_EMBEDDING_MODEL = "text-embedding-3-small"
+from django.core.cache import cache
+
 @app.task
 def process_repository(repo_id):
+
+
+    lock_key = f"process_repo_lock_{repo_id}"
+    # Since we don't have `self.request.id`, we can just use a simple value for the lock
+    if not cache.add(lock_key, "locked", timeout=900):
+        print(f"PROCESS_REPO_TASK: Aborting for repo {repo_id}, another task is already running.")
+        return
     try:
-        repo = Repository.objects.get(id=repo_id)
+        # --- IMPORTANT: Ensure 'added_by' is selected for efficiency ---
+        repo = Repository.objects.select_related('organization', 'added_by').get(id=repo_id)
     except Repository.DoesNotExist:
         print(f"Error: Repository with id={repo_id} not found.")
-        # Optionally update AsyncTaskStatus if this task is tracked
-        # For now, just return as per original logic
         return
+        
 
     repo_path = os.path.join(REPO_CACHE_BASE_PATH, str(repo.id))
 
@@ -53,13 +62,17 @@ def process_repository(repo_id):
         # --- Git Cache Management ---
         # (Your existing git clone/pull logic - seems okay)
         # ... (ensure SocialToken and token logic is robust) ...
-        social_account = repo.user.socialaccount_set.filter(provider='github').first()
+        if not repo.added_by:
+            raise Exception(f"Repository {repo.full_name} has no associated user to fetch a token.")
+
+        user_who_added_repo = repo.added_by
+        social_account = user_who_added_repo.socialaccount_set.filter(provider='github').first()
         if not social_account:
-            raise Exception(f"No GitHub social account found for user {repo.user.username} to process repo {repo.full_name}")
+            raise Exception(f"No GitHub social account found for user {user_who_added_repo.username} to process repo {repo.full_name}")
         
         social_token = SocialToken.objects.filter(account=social_account).first()
         if not social_token:
-            raise Exception(f"No GitHub token found for user {repo.user.username} to process repo {repo.full_name}")
+            raise Exception(f"No GitHub token found for user {user_who_added_repo.username} to process repo {repo.full_name}")
         
         token = social_token.token
         clone_url = f"https://oauth2:{token}@github.com/{repo.full_name}.git"
@@ -97,7 +110,7 @@ def process_repository(repo_id):
             repo.save(update_fields=['status', 'last_processed'])
             print(f"PROCESS_REPO_TASK: Dispatching metric calculation tasks for repo {repo_id}")
             calculate_documentation_coverage_task.delay(repo_id=repo_id)
-            detect_orphan_symbols_task.delay(repo_id=repo_id, user_id=repo.user.id)
+            detect_orphan_symbols_task.delay(repo_id=repo.id, user_id=user_who_added_repo.id)
             return # Stop here
         
         # --- Call Rust Engine ---
@@ -109,7 +122,7 @@ def process_repository(repo_id):
         json_output_string = result.stdout
         repo_analysis_data = json.loads(json_output_string)
 
-
+        
         # --- Database Transaction: Processing ---
         with transaction.atomic():
             print("PROCESS_REPO_TASK: Starting Pass 1: Creating/Updating Files, Classes, and Symbols...")
@@ -340,7 +353,7 @@ def process_repository(repo_id):
                     f"after recent updates. Consider regenerating or reviewing them.\n\nExamples:\n{details_for_message}"
                 )
                 Notification.objects.create(
-                    user=repo.user, repository=repo, message=notification_message,
+                    user=user_who_added_repo, repository=repo, message=notification_message,
                     notification_type=Notification.NotificationType.STALENESS_ALERT
                 )
             # --- END Staleness Detection ---
@@ -356,7 +369,6 @@ def process_repository(repo_id):
     }
         print(f"PROCESS_REPO_TASK: Dispatching metric calculation tasks for repo {repo_id}")
         calculate_documentation_coverage_task.delay(repo_id=repo_id)
-        detect_orphan_symbols_task.delay(repo_id=repo_id, user_id=repo.user.id)
         
         print(f"PROCESS_REPO_TASK: Dispatching insights generation for repo {repo.id} at commit {latest_commit_hash[:7]}")
         generate_insights_on_change_task.delay(
@@ -368,7 +380,7 @@ def process_repository(repo_id):
         index_repository_knowledge_task.delay(repo_id=repo.id)
         print(f"PROCESS_REPO_TASK: Successfully processed and saved analysis for repository: {repo.full_name}")
         print(f"PROCESS_REPO_TASK: Dispatching orphan detection for repo {repo.id}")
-        detect_orphan_symbols_task.delay(repo_id=repo.id, user_id=repo.user.id) # Pass user_id of repo owner
+        detect_orphan_symbols_task.delay(repo_id=repo.id, user_id=user_who_added_repo.id) # Pass user_id of repo owner
         sync_knowledge_index_task.delay(repo_id=repo.id)
         print(f"PROCESS_REPO_TASK: Dispatching module dependency resolution for repo {repo.id}")
         resolve_module_dependencies_task.delay(repo_id=repo.id)
@@ -392,6 +404,8 @@ def process_repository(repo_id):
         repo.status = Repository.Status.FAILED
         # repo.error_message = error_message
         repo.save()
+    finally:
+        cache.delete(lock_key)
 
 User = get_user_model()
 def update_docstring_in_ast(source_code: str, target_symbol_name: str, new_docstring: str, target_class_name: str = None):

@@ -71,6 +71,7 @@ export interface Repository {
   status: string;
   root_merkle_hash: string | null;
   files: CodeFile[];
+  organization: number;
 }
 export interface InsightRelatedSymbol {
   id: number;
@@ -98,14 +99,7 @@ export interface Insight {
   is_resolved: boolean;
   created_at: string; // ISO 8601 date string
 }
-// src/types.ts
 
-// ... your existing types (Repository, CodeFile, CodeSymbol, Insight, etc.) ...
-
-/**
- * Represents the status of a long-running asynchronous task tracked in the backend.
- * This matches the structure of the AsyncTaskStatus model and its serializer.
- */
 export interface AsyncTaskStatus {
   task_id: string;
   name: string;
@@ -131,4 +125,28 @@ export interface AsyncTaskStatus {
     // Allow for other potential properties
     [key: string]: any;
   } | null;
+}
+export interface Organization {
+  id: number;
+  name: string;
+  // You can add more fields like owner, members, etc. as needed
+}
+export interface Invitation {
+  id: number;
+  email: string;
+  role: 'OWNER' | 'ADMIN' | 'MEMBER';
+  status: 'PENDING' | 'ACCEPTED' | 'EXPIRED';
+  created_at: string;
+}
+export interface DetailedOrganization extends Organization {
+  memberships: {
+    id: number;
+    role: 'OWNER' | 'ADMIN' | 'MEMBER';
+    user: {
+      id: number;
+      username: string;
+      email: string;
+    };
+  }[];
+  invitations: Invitation[];
 }
