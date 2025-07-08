@@ -93,6 +93,12 @@ class Repository(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
     documentation_coverage = models.FloatField(default=0.0)
     orphan_symbol_count = models.IntegerField(default=0)
+    source_root = models.CharField(
+        max_length=255,
+        default='.',
+        blank=True,
+        help_text="The source root directory for Python imports, relative to the repo root (e.g., 'src', '.')."
+    )
     class Meta:
         db_table = 'repositories'
         verbose_name_plural = "Repositories"

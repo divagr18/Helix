@@ -2021,18 +2021,72 @@ class ComplexityHotspotsView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, repo_id, *args, **kwargs):
-        # Check repository ownership
-        if not Repository.objects.filter(id=repo_id, user=request.user).exists():
-            return Response({"error": "Repository not found or permission denied."}, status=status.HTTP_404_NOT_FOUND)
+        
+        # --- THIS IS THE FIX ---
+        # 1. Check if a repository with the given ID exists AND
+        # 2. if the current user is a member of the organization that owns that repository.
+        # This is the new, correct permission check.
+        has_access = Repository.objects.filter(
+            id=repo_id,
+            organization__memberships__user=request.user
+        ).exists()
 
-        # --- The Query ---
-        # Find all symbols in the repository, filter out those without complexity,
-        # order them by complexity descending, and take the top 15.
+        if not has_access:
+            return Response({"error": "Repository not found or permission denied."}, status=status.HTTP_404_NOT_FOUND)
+        # --- END FIX ---
+
+        # The rest of your query is already correct as it filters by repo_id.
         hotspots = CodeSymbol.objects.filter(
             Q(code_file__repository_id=repo_id) | Q(code_class__code_file__repository_id=repo_id),
             cyclomatic_complexity__isnull=False
         ).order_by('-cyclomatic_complexity')[:15]
 
-        # We can reuse our existing CodeSymbolSerializer
         serializer = CodeSymbolSerializer(hotspots, many=True)
+        return Response(serializer.data)
+    
+# backend/repositories/views.py
+from .serializers import RepositorySelectorSerializer # Import the new serializer
+
+class RepositorySelectorListView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        user = request.user
+
+        # For now, we get all repos for the user. Later, this could be filtered by active workspace.
+        organization_ids = OrganizationMember.objects.filter(user=user).values_list('organization_id', flat=True)
+
+        # 2. Filter repositories that belong to any of those organizations.
+        repos = Repository.objects.filter(organization_id__in=organization_ids).order_by('full_name')
+        serializer = RepositorySelectorSerializer(repos, many=True)
+        return Response(serializer.data)
+    
+# backend/repositories/views.py
+# ... imports ...
+from .serializers import OrphanSymbolSerializer
+
+class OrphanSymbolsView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, repo_id, *args, **kwargs):
+        # --- THIS IS THE FIX ---
+        # Use the correct, organization-based permission check to ensure the user
+        # has access to the repository through their organization membership.
+        has_access = Repository.objects.filter(
+            id=repo_id,
+            organization__memberships__user=request.user
+        ).exists()
+
+        if not has_access:
+            return Response({"error": "Repository not found or permission denied."}, status=status.HTTP_404_NOT_FOUND)
+        # --- END FIX ---
+
+        # The rest of the query is already correctly filtered by repo_id,
+        # so it's safe to execute after the permission check passes.
+        orphan_symbols = CodeSymbol.objects.filter(
+            (Q(code_file__repository_id=repo_id) | Q(code_class__code_file__repository_id=repo_id)),
+            is_orphan=True
+        ).select_related('code_file', 'code_class').order_by('code_file__file_path', 'start_line')
+
+        serializer = OrphanSymbolSerializer(orphan_symbols, many=True)
         return Response(serializer.data)

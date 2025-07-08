@@ -1397,140 +1397,147 @@ def create_pr_for_multiple_files_task(self, repo_id: int, user_id: int, file_ids
             except Exception as branch_delete_e:
                 print(f"BATCH_PR_TASK: Failed to cleanup branch {new_branch_name}: {branch_delete_e}")
         raise # Re-raise for Celery to handle and mark as failed
-@app.task(bind=True)
-def detect_orphan_symbols_task(self, repo_id: int, user_id: int | None = None): # user_id for potential notification
+@shared_task(bind=True)
+def detect_orphan_symbols_task(self, repo_id: int, user_id: int | None = None):
     task_id = self.request.id
-    print(f"ORPHAN_DETECT_TASK: Started (ID: {task_id}) for repo_id={repo_id}")
+    print(f"ORPHAN_DETECT_TASK (v2): Started (ID: {task_id}) for repo_id={repo_id}")
 
-    task_status_obj = None
-    user_obj = None
-    repo_obj = None
-
+    # --- Initial Setup (from your original code) ---
     try:
         repo_obj = Repository.objects.get(id=repo_id)
-        if user_id: # If user_id is provided (e.g., if triggered by a user action)
+        
+        if user_id:
             user_obj = User.objects.get(id=user_id)
-        else: # If triggered systemically (e.g., after process_repository), use repo owner
-            user_obj = repo_obj.user
+        else:
+            # Fallback to the user who added the repository if no user is specified
+            user_obj = repo_obj.added_by if repo_obj.added_by else User.objects.filter(owned_organizations__repositories=repo_obj).first()
+
+        if not user_obj:
+            raise User.DoesNotExist("Could not determine a user for notifications.")
 
     except (Repository.DoesNotExist, User.DoesNotExist) as e:
         print(f"ORPHAN_DETECT_TASK: ERROR - Repo or User not found for task {task_id}: {e}")
         return {"status": "error", "message": "Repository or initiating user not found."}
-    except Exception as e:
-        print(f"ORPHAN_DETECT_TASK: ERROR - Creating AsyncTaskStatus for {task_id}: {e}")
-
-
+    source_root = repo_obj.source_root if repo_obj.source_root != '.' else ''
     print(f"ORPHAN_DETECT_TASK: Analyzing repository: {repo_obj.full_name}")
 
-    # --- Performant Orphan Detection ---
-    # 1. Get all symbols belonging to this repository.
-    all_symbols_in_repo_ids = CodeSymbol.objects.filter(
-        Q(code_file__repository=repo_obj) | Q(code_class__code_file__repository=repo_obj)
-    ).values_list('id', flat=True)
+    # --- 1. Find symbols with no incoming calls ---
+    all_symbols_in_repo = CodeSymbol.objects.filter(
+        Q(code_file__repository_id=repo_id) | Q(code_class__code_file__repository_id=repo_id)
+    )
+    all_symbol_ids = set(all_symbols_in_repo.values_list('id', flat=True))
 
-    if not all_symbols_in_repo_ids:
+    if not all_symbol_ids:
         print(f"ORPHAN_DETECT_TASK: No symbols found in repository {repo_obj.full_name}.")
-        if task_status_obj:
-            task_status_obj.status = AsyncTaskStatus.TaskStatus.SUCCESS
-            task_status_obj.message = "No symbols found in repository to analyze."
-            task_status_obj.progress = 100
-            task_status_obj.save()
+        repo_obj.orphan_symbol_count = 0
+        repo_obj.save(update_fields=['orphan_symbol_count'])
         return {"status": "success", "message": "No symbols found."}
 
-    # 2. Get IDs of all symbols that are *callees* (i.e., are being called).
-    #    We only care about callees that are within the current repository.
-    called_symbol_ids_in_repo = CodeDependency.objects.filter(
-        Q(callee_id__in=all_symbols_in_repo_ids) & # Callee is in this repo
-        (Q(caller__code_file__repository=repo_obj) | Q(caller__code_class__code_file__repository=repo_obj)) # Caller is also in this repo
-    ).values_list('callee_id', flat=True).distinct()
-    
-    called_symbol_ids_set = set(called_symbol_ids_in_repo)
-    all_symbols_in_repo_ids_set = set(all_symbols_in_repo_ids)
+    called_symbol_ids = set(CodeDependency.objects.filter(
+        callee_id__in=all_symbol_ids
+    ).values_list('callee_id', flat=True).distinct())
 
-    orphan_symbol_ids = list(all_symbols_in_repo_ids_set - called_symbol_ids_set)
-    
-    symbols_to_update_as_orphan = []
-    symbols_to_update_as_not_orphan = []
-    actually_marked_orphan_count = 0
+    potential_orphan_ids = all_symbol_ids - called_symbol_ids
+    print(f"ORPHAN_DETECT_TASK: Found {len(potential_orphan_ids)} symbols with no internal calls.")
 
-    # Iterate through all symbols to update their status.
-    # We could do this in two bulk updates: one for orphans, one for non-orphans.
-    for symbol_id in all_symbols_in_repo_ids_set:
-        is_potentially_orphan = symbol_id in orphan_symbol_ids
+    # --- 2. Build a set of all explicitly imported symbol paths ---
+    all_imported_paths = set()
+    repo_files = CodeFile.objects.filter(repository_id=repo_id)
+    for code_file in repo_files:
+        if isinstance(code_file.imports, list):
+            for imp in code_file.imports:
+                all_imported_paths.add(imp)
+    print(f"ORPHAN_DETECT_TASK: Found {len(all_imported_paths)} unique import strings across the repo.")
+
+    # --- 3. Identify which of the potential orphans are "public" because they are imported ---
+    # We fetch all potentially orphan symbols at once for efficiency
+    symbols_to_check = CodeSymbol.objects.filter(id__in=potential_orphan_ids).select_related('code_file', 'code_class')
+    
+    publicly_imported_ids = set()
+    for symbol in symbols_to_check:
+        # --- THIS IS THE NEW CANONICAL PATH LOGIC ---
+        # Get the file path relative to the repo root
+        full_path = symbol.code_file.file_path
         
-        # Apply entry point heuristics (MVP)
-        # Example: Don't mark `__init__` methods as orphans for now.
-        # A more robust check would see if the CLASS containing the __init__ is instantiated/used.
-        is_known_entry_point = False
-        if is_potentially_orphan:
-            try:
-                # Fetch the symbol to check its name, only if potentially orphan to save queries
-                symbol_obj_for_check = CodeSymbol.objects.get(id=symbol_id)
-                if symbol_obj_for_check.name == "__init__":
-                    is_known_entry_point = True
-                # Add more heuristics here:
-                # e.g., if symbol_obj_for_check.name == "main" and not symbol_obj_for_check.code_class:
-                # is_known_entry_point = True
-            except CodeSymbol.DoesNotExist:
-                continue # Should not happen if ID came from all_symbols_in_repo_ids
-
-        is_truly_orphan = is_potentially_orphan and not is_known_entry_point
-
-        # Update the symbol's is_orphan field
-        # We collect IDs to do bulk updates for performance
-        if is_truly_orphan:
-            symbols_to_update_as_orphan.append(symbol_id)
+        # Strip the source root to get the Python-relative path
+        # e.g., 'backend/src/app/views.py' with source_root 'backend/src' -> 'app/views.py'
+        if source_root and full_path.startswith(source_root):
+            python_path = os.path.relpath(full_path, source_root)
         else:
-            symbols_to_update_as_not_orphan.append(symbol_id)
+            python_path = full_path
 
-    # Bulk update symbols
-    if symbols_to_update_as_orphan:
-        updated_count = CodeSymbol.objects.filter(id__in=symbols_to_update_as_orphan).update(is_orphan=True)
-        actually_marked_orphan_count = updated_count
-        print(f"ORPHAN_DETECT_TASK: Marked {updated_count} symbols as ORPHAN.")
+        # Convert file path to module path
+        # e.g., 'app/views.py' -> 'app.views'
+        module_path = python_path.replace('.py', '').replace('/', '.')
+        
+        if symbol.code_class:
+            canonical_path = f"{module_path}.{symbol.code_class.name}.{symbol.name}"
+        else:
+            canonical_path = f"{module_path}.{symbol.name}"
+
+        wildcard_path = f"{module_path}.*"
+        if canonical_path in all_imported_paths or wildcard_path in all_imported_paths:
+            publicly_imported_ids.add(symbol.id)
+        # --- END FIX ---
+
+    print(f"ORPHAN_DETECT_TASK: Identified {len(publicly_imported_ids)} potential orphans as publicly imported.")
+
+    # --- 4. Determine "True Orphans" and apply entry-point heuristics ---
+    # True orphans are those with no calls AND are not publicly imported.
+    true_orphan_ids = potential_orphan_ids - publicly_imported_ids
     
-    if symbols_to_update_as_not_orphan:
-        updated_count = CodeSymbol.objects.filter(id__in=symbols_to_update_as_not_orphan).update(is_orphan=False)
-        print(f"ORPHAN_DETECT_TASK: Marked {updated_count} symbols as NOT ORPHAN.")
+    final_orphan_ids_to_mark = []
+    # We already have the symbol objects, so we can iterate over them directly
+    symbols_to_check_for_entry_points = [s for s in symbols_to_check if s.id in true_orphan_ids]
+    
+    for symbol in symbols_to_check_for_entry_points:
+        # Your existing entry-point logic
+        if symbol.name not in ["__init__", "main"]: # Add other known entry points like 'app' for Flask/FastAPI
+            final_orphan_ids_to_mark.append(symbol.id)
 
+    print(f"ORPHAN_DETECT_TASK: After heuristics, {len(final_orphan_ids_to_mark)} symbols are considered true orphans.")
 
-    print(f"ORPHAN_DETECT_TASK: Orphan detection complete for repo {repo_obj.full_name}. Found {actually_marked_orphan_count} orphan symbols.")
-    repo_obj = Repository.objects.get(id=repo_id) # Refetch or use existing repo_obj
+    # --- 5. Bulk update the database ---
+    # Mark true orphans
+    if final_orphan_ids_to_mark:
+        CodeSymbol.objects.filter(id__in=final_orphan_ids_to_mark).update(is_orphan=True)
+    
+    # Un-mark everything else that is NOT a true orphan
+    ids_to_unmark = list(all_symbol_ids - set(final_orphan_ids_to_mark))
+    if ids_to_unmark:
+        CodeSymbol.objects.filter(id__in=ids_to_unmark).update(is_orphan=False)
+
+    # --- 6. Update Repo Stats and Create Notifications ---
+    actually_marked_orphan_count = len(final_orphan_ids_to_mark)
+    print(f"ORPHAN_DETECT_TASK: Marked {actually_marked_orphan_count} symbols as ORPHAN.")
+    
     repo_obj.orphan_symbol_count = actually_marked_orphan_count
     repo_obj.save(update_fields=['orphan_symbol_count'])
     print(f"ORPHAN_DETECT_TASK: Repo {repo_id} orphan count updated to {actually_marked_orphan_count}")
-    # --- Notification Logic ---
-    if actually_marked_orphan_count > 0 and user_obj: # Check if user_obj was successfully fetched
-        # Fetch details for a few orphan symbols for the notification message
-        orphan_examples = CodeSymbol.objects.filter(id__in=symbols_to_update_as_orphan[:5]).select_related('code_file', 'code_class__code_file')
+
+    # Your existing notification logic (no changes needed)
+    if actually_marked_orphan_count > 0 and user_obj:
+        orphan_examples = CodeSymbol.objects.filter(id__in=final_orphan_ids_to_mark[:5]).select_related('code_file', 'code_class__code_file')
         example_details = []
         for orphan_sym in orphan_examples:
             file_p = orphan_sym.code_file.file_path if orphan_sym.code_file else (orphan_sym.code_class.code_file.file_path if orphan_sym.code_class else "N/A")
             example_details.append(f"- `{orphan_sym.name}` in `{file_p}`")
         
         details_msg = "\n".join(example_details)
-        if len(symbols_to_update_as_orphan) > 5:
-            details_msg += f"\n... and {len(symbols_to_update_as_orphan) - 5} more."
+        if len(final_orphan_ids_to_mark) > 5:
+            details_msg += f"\n... and {len(final_orphan_ids_to_mark) - 5} more."
 
         notification_message = (
-            f"{actually_marked_orphan_count} potential orphan (uncalled) symbol(s) "
-            f"were detected in repository '{repo_obj.full_name}'.\n\nExamples:\n{details_msg}"
+            f"{actually_marked_orphan_count} potential orphan symbols were detected in '{repo_obj.full_name}'. "
+            "These are symbols that are not called internally and not imported by other modules.\n\nExamples:\n{details_msg}"
         )
         Notification.objects.create(
-            user=user_obj, # Use the determined user object
+            user=user_obj,
             repository=repo_obj,
             message=notification_message,
-            notification_type=Notification.NotificationType.STALENESS_ALERT # Re-use or add ORPHAN_ALERT type
-            # link_url=f"/repositories/{repo_obj.id}/orphans/" # Future link to a page showing orphans
+            notification_type=Notification.NotificationType.STALENESS_ALERT # Consider adding an ORPHAN_ALERT type
         )
         print(f"ORPHAN_DETECT_TASK: Created notification for {user_obj.username}.")
-
-    if task_status_obj:
-        task_status_obj.status = AsyncTaskStatus.TaskStatus.SUCCESS
-        task_status_obj.message = f"Orphan detection complete. Found {actually_marked_orphan_count} orphan symbols."
-        task_status_obj.progress = 100
-        task_status_obj.result_data = {"orphan_count": actually_marked_orphan_count}
-        task_status_obj.save()
         
     return {"status": "success", "orphan_count": actually_marked_orphan_count}
 @shared_task

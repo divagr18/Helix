@@ -1,7 +1,7 @@
 # backend/config/api_router.py
 
 from rest_framework.routers import DefaultRouter
-from repositories.views import BatchDocumentModuleView, ChatView, ComplexityHotspotsView, OrganizationDetailView, OrganizationListView, RepositoryViewSet,GithubReposView,FileContentView,GenerateDocstringView, CodeSymbolDetailView, ValidateInviteCodeView, set_csrf_cookie
+from repositories.views import BatchDocumentModuleView, ChatView, ComplexityHotspotsView, OrganizationDetailView, OrganizationListView, OrphanSymbolsView, RepositorySelectorListView, RepositoryViewSet,GithubReposView,FileContentView,GenerateDocstringView, CodeSymbolDetailView, ValidateInviteCodeView, set_csrf_cookie
 
 router = DefaultRouter()
 from django.urls import path # Make sure path is imported
@@ -95,7 +95,8 @@ urlpatterns += [
     path('repositories/<int:repo_id>/intelligence/complexity-hotspots/', ComplexityHotspotsView.as_view(), name='repository-complexity-hotspots'),
 
     path("csrf/", set_csrf_cookie),
-
+    path('repo-selector-list/', RepositorySelectorListView.as_view(), name='repository-selector-list'),
+    path('repositories/<int:repo_id>/intelligence/orphan-symbols/', OrphanSymbolsView.as_view(), name='repository-orphan-symbols'),
 
 
 ]

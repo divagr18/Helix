@@ -286,3 +286,31 @@ class DetailedOrganizationSerializer(serializers.ModelSerializer):
         # We only want to show invitations that are still pending.
         pending_invites = obj.invitations.filter(status=Invitation.InviteStatus.PENDING)
         return InvitationSerializer(pending_invites, many=True).data
+    
+# backend/repositories/serializers.py
+class RepositorySelectorSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Repository
+        fields = ['id', 'full_name']
+        
+# backend/repositories/serializers.py
+
+class OrphanSymbolSerializer(serializers.ModelSerializer):
+    """
+    A serializer specifically for displaying orphan symbols in a list.
+    It includes the necessary context like file path and class name.
+    """
+    file_path = serializers.CharField(source='code_file.file_path', read_only=True, allow_null=True)
+    class_name = serializers.CharField(source='code_class.name', read_only=True, allow_null=True)
+
+    class Meta:
+        model = CodeSymbol
+        fields = [
+            'id',
+            'name',
+            'file_path',
+            'class_name',
+            'start_line',
+            'loc',
+            'cyclomatic_complexity',
+        ]

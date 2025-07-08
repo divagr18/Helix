@@ -3,6 +3,8 @@ import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
 import axios from 'axios';
 import { toast } from 'sonner';
+import { useWorkspaceStore } from '@/stores/workspaceStore'; // <--- 1. Import the store
+
 
 // Lucide Icons
 import { Github, RefreshCw, Loader2, ShieldCheck, ShieldAlert, Clock, BookOpen } from 'lucide-react';
@@ -60,12 +62,20 @@ const getStatusInfo = (status: string): { variant: "default" | "secondary" | "de
     }
 };
 
-export const RepositoryCard: React.FC<RepositoryCardProps> = ({ repo, onSyncStarted }) => {
+export const RepositoryCard: React.FC<RepositoryCardProps> = ({ repo, onSyncStarted,onRepoDeleted }) => {
     // This local state is just for the instant feedback when the button is clicked,
     // before the parent's data refresh shows the new repo.status.
     const [isRequestingSync, setIsRequestingSync] = useState(false);
     const [isDeleting, setIsDeleting] = useState(false);
     const [isAlertOpen, setIsAlertOpen] = useState(false);
+    const { setActiveRepository } = useWorkspaceStore();
+
+    // --- 3. Create a handler to set the active repo ---
+    const handleNavigateToRepo = () => {
+        // This sets the clicked repository as the globally active one
+        setActiveRepository(repo);
+    };
+    
     const handleDelete = async () => {
         setIsDeleting(true);
         toast.info(`Deleting ${repo.full_name}...`);
@@ -131,7 +141,9 @@ export const RepositoryCard: React.FC<RepositoryCardProps> = ({ repo, onSyncStar
                             <CardTitle className="text-lg font-semibold flex items-center gap-2 truncate">
                                 <Github className="h-5 w-5 text-muted-foreground flex-shrink-0" />
                                 <Link
-                                    to={`/code/repository/${repo.id}`}
+                                    // --- THIS IS THE CORRECT URL STRUCTURE ---
+                                    to={`/repository/${repo.id}/code`} 
+                                    onClick={handleNavigateToRepo}
                                     className="hover:text-primary hover:underline truncate"
                                     title={repo.full_name}
                                 >

@@ -59,11 +59,10 @@ struct Args {
 fn parse_import_statement(node: &Node, code: &str) -> Vec<String> {
     let mut modules = Vec::new();
     let mut cursor = node.walk();
-
+    // For `import a, b.c`
     for child in node.children(&mut cursor) {
         if child.kind() == "dotted_name" || child.kind() == "aliased_import" {
-            let name_node = child.child_by_field_name("name").unwrap_or(child);
-            if let Ok(module_name) = name_node.utf8_text(code.as_bytes()) {
+            if let Ok(module_name) = child.child_by_field_name("name").unwrap_or(child).utf8_text(code.as_bytes()) {
                 modules.push(module_name.to_string());
             }
         }
@@ -118,12 +117,44 @@ fn extract_docstring(body_node: &Node, code: &str) -> Option<String> {
     }
     None
 }
-fn parse_import_from_statement(node: &Node, code: &str) -> Vec<String> {
+fn parse_import_from_statement(node: &Node, code: &str, current_file_path: &str) -> Vec<String> {
     let mut modules = Vec::new();
+    let module_name_node = node.child_by_field_name("module_name");
+    
+    if let Some(module_name_node) = module_name_node {
+        if let Ok(mut base_module) = module_name_node.utf8_text(code.as_bytes()) {
+            // --- THIS IS THE NEW RELATIVE IMPORT LOGIC ---
+            if base_module.starts_with('.') {
+                // Get the directory of the current file
+                let current_dir = std::path::Path::new(current_file_path).parent().unwrap_or_else(|| std::path::Path::new(""));
+                
+                // Handle leading dots (e.g., '..', '...')
+                let mut temp_path = current_dir.to_path_buf();
+                let mut relative_base = base_module;
+                while relative_base.starts_with('.') {
+                    temp_path.pop();
+                    relative_base = &relative_base[1..];
+                }
+                
+                // Join the resolved path with the rest of the import
+                let mut resolved_path = temp_path.join(relative_base.replace('.', "/"));
+                base_module = resolved_path.to_str().unwrap_or("").replace('/', ".");
+            }
+            // --- END NEW LOGIC ---
 
-    if let Some(module_node) = node.child_by_field_name("module_name") {
-        if let Ok(module_name) = module_node.utf8_text(code.as_bytes()) {
-            modules.push(module_name.to_string());
+            // The rest of the logic remains the same, but now uses the resolved `base_module`
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if child.kind() == "dotted_name" || child.kind() == "aliased_import" {
+                    if child.start_position() > module_name_node.end_position() {
+                        if let Ok(imported_item) = child.child_by_field_name("name").unwrap_or(child).utf8_text(code.as_bytes()) {
+                            modules.push(format!("{}.{}", base_module, imported_item));
+                        }
+                    }
+                } else if child.kind() == "wildcard_import" {
+                    modules.push(format!("{}.*", base_module));
+                }
+            }
         }
     }
     modules
@@ -408,7 +439,7 @@ fn main() {
                         imports_in_file.extend(parse_import_statement(&node, &code_string));
                     }
                     if node.kind() == "import_from_statement" {
-                        imports_in_file.extend(parse_import_from_statement(&node, &code_string));
+                        imports_in_file.extend(parse_import_from_statement(&node, &code_string, relative_path_str));
                     }
 
                     if node.kind() == "function_definition"

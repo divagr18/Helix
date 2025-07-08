@@ -24,15 +24,13 @@ import { DashboardPage } from './pages/DashboardPage';
 import { SettingsLayout } from './pages/settings/SettingsLayout';
 import { BetaInvitePage } from './pages/BetaInvitePage';
 import { AcceptInvitePage } from './pages/AcceptInvitePage';
+import { RepoContextLoader } from './pages/modes/RepoContextLoader';
 
 // Set global Axios defaults
 axios.defaults.xsrfCookieName = 'csrftoken';
 axios.defaults.xsrfHeaderName = 'X-CSRFToken';
 axios.defaults.withCredentials = true;
 
-/**
- * A component to handle the routing logic based on auth state.
- */
 function AppRoutes() {
     const { isAuthenticated, isLoading } = useAuth();
 
@@ -48,29 +46,30 @@ function AppRoutes() {
         <Routes>
             {isAuthenticated ? (
                 // --- AUTHENTICATED ROUTES ---
-                // All authenticated routes are now children of the MainAppLayout,
-                // which provides the persistent, collapsible master sidebar.
+                // The MainAppLayout is now the single entry point for the entire
+                // authenticated application. It provides the persistent master sidebar.
                 <Route path="/" element={<MainAppLayout />}>
-
-                    {/* "Mode" Pages - These are the primary views of the application */}
-                    <Route path="code/repository/:repoId/*" element={<CodeViewPage />} />
-                    <Route path="intelligence" element={<IntelligenceViewPage />} />
-                    <Route path="testing" element={<TestingViewPage />} />
-                    <Route path="chat" element={<ChatViewPage />} />
-
-                    {/* Standard Full-Page Views */}
+                    
+                    {/* The Dashboard is the default page */}
+                    <Route index element={<Navigate to="/dashboard" replace />} />
                     <Route path="dashboard" element={<DashboardPage />} />
-                    <Route path="settings/*" element={<SettingsLayout />} />
 
-                    {/* Invite handling for logged-in users */}
+                    {/* The "IDE" View for a specific repository */}
+                    {/* This route group is now correctly nested inside the MainAppLayout */}
+                    <Route path="repository/:repoId" element={<RepoContextLoader />}>
+                        <Route path="code" element={<CodeViewPage />} />
+                        <Route path="intelligence" element={<IntelligenceViewPage />} />
+                        <Route path="testing" element={<TestingViewPage />} />
+                        <Route path="chat" element={<ChatViewPage />} />
+                        {/* A default redirect for the repo root */}
+                        <Route index element={<Navigate to="code" replace />} />
+                    </Route>
+
+                    {/* Other top-level pages */}
+                    <Route path="settings/*" element={<SettingsLayout />} />
                     <Route path="invite/:token" element={<AcceptInvitePage />} />
 
-                    {/* --- Redirects for the authenticated state --- */}
-                    {/* The root path "/" redirects to the user's dashboard */}
-                    <Route index element={<Navigate to="/dashboard" replace />} />
-                    {/* A convenience redirect from "/code" to the dashboard */}
-                    <Route path="code" element={<Navigate to="/dashboard" replace />} />
-                    {/* A general catch-all that sends any other path to the dashboard */}
+                    {/* A general catch-all for any other path sends the user to their dashboard */}
                     <Route path="*" element={<Navigate to="/dashboard" replace />} />
                 </Route>
             ) : (
@@ -79,14 +78,14 @@ function AppRoutes() {
                     <Route path="/login" element={<LoginPage />} />
                     <Route path="/invite" element={<BetaInvitePage />} />
                     <Route path="/invite/:token" element={<AcceptInvitePage />} />
-
-                    {/* Any other path redirects to the main invite page for unauthenticated users */}
                     <Route path="*" element={<Navigate to="/invite" replace />} />
                 </>
             )}
         </Routes>
     );
 }
+
+// ... The rest of your App.tsx (App component, etc.) remains the same.
 
 /**
  * The main App component sets up all the providers and global components.
