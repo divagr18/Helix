@@ -46,7 +46,6 @@ INSTALLED_APPS = [
     'django.contrib.sites',
     'corsheaders',
     "repositories",
-    
     'rest_framework',
     "django_celery_beat",
     'allauth',

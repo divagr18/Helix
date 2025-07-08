@@ -2,6 +2,7 @@ use clap::Parser;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::fs;
+use std::process::Command;
 use walkdir::WalkDir;
 
 use tree_sitter::{Node, Point};
@@ -59,10 +60,13 @@ struct Args {
 fn parse_import_statement(node: &Node, code: &str) -> Vec<String> {
     let mut modules = Vec::new();
     let mut cursor = node.walk();
-    // For `import a, b.c`
     for child in node.children(&mut cursor) {
         if child.kind() == "dotted_name" || child.kind() == "aliased_import" {
-            if let Ok(module_name) = child.child_by_field_name("name").unwrap_or(child).utf8_text(code.as_bytes()) {
+            if let Ok(module_name) = child
+                .child_by_field_name("name")
+                .unwrap_or(child)
+                .utf8_text(code.as_bytes())
+            {
                 modules.push(module_name.to_string());
             }
         }
@@ -117,44 +121,12 @@ fn extract_docstring(body_node: &Node, code: &str) -> Option<String> {
     }
     None
 }
-fn parse_import_from_statement(node: &Node, code: &str, current_file_path: &str) -> Vec<String> {
-    let mut modules = Vec::new();
-    let module_name_node = node.child_by_field_name("module_name");
-    
-    if let Some(module_name_node) = module_name_node {
-        if let Ok(mut base_module) = module_name_node.utf8_text(code.as_bytes()) {
-            // --- THIS IS THE NEW RELATIVE IMPORT LOGIC ---
-            if base_module.starts_with('.') {
-                // Get the directory of the current file
-                let current_dir = std::path::Path::new(current_file_path).parent().unwrap_or_else(|| std::path::Path::new(""));
-                
-                // Handle leading dots (e.g., '..', '...')
-                let mut temp_path = current_dir.to_path_buf();
-                let mut relative_base = base_module;
-                while relative_base.starts_with('.') {
-                    temp_path.pop();
-                    relative_base = &relative_base[1..];
-                }
-                
-                // Join the resolved path with the rest of the import
-                let mut resolved_path = temp_path.join(relative_base.replace('.', "/"));
-                base_module = resolved_path.to_str().unwrap_or("").replace('/', ".");
-            }
-            // --- END NEW LOGIC ---
 
-            // The rest of the logic remains the same, but now uses the resolved `base_module`
-            let mut cursor = node.walk();
-            for child in node.children(&mut cursor) {
-                if child.kind() == "dotted_name" || child.kind() == "aliased_import" {
-                    if child.start_position() > module_name_node.end_position() {
-                        if let Ok(imported_item) = child.child_by_field_name("name").unwrap_or(child).utf8_text(code.as_bytes()) {
-                            modules.push(format!("{}.{}", base_module, imported_item));
-                        }
-                    }
-                } else if child.kind() == "wildcard_import" {
-                    modules.push(format!("{}.*", base_module));
-                }
-            }
+fn parse_import_from_statement(node: &Node, code: &str) -> Vec<String> {
+    let mut modules = Vec::new();
+    if let Some(module_node) = node.child_by_field_name("module_name") {
+        if let Ok(module_name) = module_node.utf8_text(code.as_bytes()) {
+            modules.push(module_name.to_string());
         }
     }
     modules
@@ -414,6 +386,10 @@ fn main() {
 
     let mut all_analyzed_files: Vec<FileAnalysis> = Vec::new();
 
+    // --- FIX 2: Get the absolute path for the source root ---
+    let absolute_dir_path = fs::canonicalize(&args.dir_path)
+        .expect("Failed to get absolute path for the provided directory");
+
     for entry in WalkDir::new(&args.dir_path)
         .into_iter()
         .filter_map(|e| e.ok())
@@ -429,17 +405,19 @@ fn main() {
                 let root_node = tree.root_node();
                 let mut top_level_functions: Vec<MethodInfo> = Vec::new();
                 let mut classes_in_file: Vec<ClassInfo> = Vec::new();
-                let mut imports_in_file: Vec<String> = Vec::new();
+                let mut raw_imports_in_file: Vec<String> = Vec::new(); // Store raw imports here
                 let relative_path = path.strip_prefix(&args.dir_path).unwrap_or(path);
                 let relative_path_str = relative_path.to_str().unwrap_or("");
 
                 let mut cursor = root_node.walk();
                 for node in root_node.children(&mut cursor) {
+                    // Extract RAW import strings
                     if node.kind() == "import_statement" {
-                        imports_in_file.extend(parse_import_statement(&node, &code_string));
+                        raw_imports_in_file.extend(parse_import_statement(&node, &code_string));
                     }
                     if node.kind() == "import_from_statement" {
-                        imports_in_file.extend(parse_import_from_statement(&node, &code_string, relative_path_str));
+                        raw_imports_in_file
+                            .extend(parse_import_from_statement(&node, &code_string));
                     }
 
                     if node.kind() == "function_definition"
@@ -485,6 +463,41 @@ fn main() {
                         }
                     }
                 }
+                let resolved_imports: Vec<String> = if !raw_imports_in_file.is_empty() {
+                    let raw_imports_json = serde_json::to_string(&raw_imports_in_file)
+                        .unwrap_or_else(|_| "[]".to_string());
+
+                    // Assumes the script is in a 'scripts' directory relative to the executable
+                    let script_path = "/app/scripts/resolve_imports.py";
+
+                    let output = Command::new("python3")
+                        .arg(script_path)
+                        .arg(&absolute_dir_path) // Pass the absolute path of the repo as the source_root
+                        .arg(relative_path_str) // Pass the file path relative to the source_root
+                        .arg(&raw_imports_json)
+                        .output()
+                        .expect("Failed to execute Python import resolver script");
+
+                    if output.status.success() {
+                        // Parse the JSON array from the script's stdout
+                        serde_json::from_slice(&output.stdout).unwrap_or_else(|err| {
+                            eprintln!(
+                                "Error parsing JSON from Python script for {}: {}",
+                                relative_path_str, err
+                            );
+                            raw_imports_in_file // Fallback to raw imports on JSON error
+                        })
+                    } else {
+                        eprintln!(
+                            "Python script failed for {}: {}",
+                            relative_path_str,
+                            String::from_utf8_lossy(&output.stderr)
+                        );
+                        raw_imports_in_file // Fallback to raw imports on script error
+                    }
+                } else {
+                    vec![]
+                };
 
                 let mut combined_child_hashes = String::new();
                 top_level_functions.sort_by(|a, b| a.name.cmp(&b.name));
@@ -496,11 +509,12 @@ fn main() {
                     combined_child_hashes.push_str(&class.structure_hash);
                 }
 
-                imports_in_file.sort();
-                for import_str in &imports_in_file {
+                // Create a mutable copy to sort for consistent hashing
+                let mut sorted_imports = resolved_imports.clone();
+                sorted_imports.sort();
+                for import_str in &sorted_imports {
                     combined_child_hashes.push_str(import_str);
                 }
-
                 let mut file_hasher = Sha256::new();
                 file_hasher.update(combined_child_hashes);
                 let file_structure_hash = format!("{:x}", file_hasher.finalize());
@@ -509,7 +523,7 @@ fn main() {
                     path: relative_path_str.to_string(),
                     functions: top_level_functions,
                     classes: classes_in_file,
-                    imports: imports_in_file,
+                    imports: resolved_imports,
                     structure_hash: file_structure_hash,
                 });
             }

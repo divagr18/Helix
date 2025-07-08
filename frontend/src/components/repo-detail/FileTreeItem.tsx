@@ -22,6 +22,7 @@ export const FileTreeItem: React.FC<FileTreeItemProps> = ({ node }) => {
         setSelectedFile,
         selectedFilesForBatch,
         toggleFileForBatch,
+        setBatchSelection,
         // We'll add task status consumption later
     } = useRepo();
 
@@ -47,15 +48,22 @@ export const FileTreeItem: React.FC<FileTreeItemProps> = ({ node }) => {
     };
 
     const handleFolderCheckboxChange = (checked: boolean) => {
+        // Start with a mutable copy of the current selection
         const newSelected = new Set(selectedFilesForBatch);
+
+        // Get all file IDs within this folder and its subfolders
+        const descendantFileIds = getFileIdsFromNode(node);
+
         if (checked) {
+            // Add all descendant file IDs to the set
             descendantFileIds.forEach(id => newSelected.add(id));
         } else {
+            // Remove all descendant file IDs from the set
             descendantFileIds.forEach(id => newSelected.delete(id));
         }
-        // This needs a new context function: setMultipleBatchFiles(newSet)
-        // For now, we'll just log it. We will add this to the context next.
-        console.log("Setting multiple files:", newSelected);
+
+        // Update the global state with the new, complete set in one go
+        setBatchSelection(newSelected);
     };
 
     return (

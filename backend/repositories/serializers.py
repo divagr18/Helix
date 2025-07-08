@@ -314,3 +314,21 @@ class OrphanSymbolSerializer(serializers.ModelSerializer):
             'loc',
             'cyclomatic_complexity',
         ]
+
+from .models import TestCoverageReport, FileCoverage
+
+class FileCoverageSerializer(serializers.ModelSerializer):
+    file_path = serializers.CharField(source='code_file.file_path', read_only=True)
+    code_file_id = serializers.IntegerField(source='code_file.id', read_only=True)
+
+    class Meta:
+        model = FileCoverage
+        fields = ['id', 'file_path', 'code_file_id','line_rate', 'covered_lines', 'missed_lines']
+
+class TestCoverageReportSerializer(serializers.ModelSerializer):
+    # Nest the file-specific coverage data within the main report
+    file_coverages = FileCoverageSerializer(many=True, read_only=True)
+    
+    class Meta:
+        model = TestCoverageReport
+        fields = ['id', 'repository', 'commit_hash', 'uploaded_at', 'overall_coverage', 'file_coverages']

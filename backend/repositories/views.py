@@ -3,16 +3,18 @@ import os,shutil
 import subprocess
 from django.db.models import Q,F  # <--- ADD THIS IMPORT
 from rest_framework import generics, permissions
-
+from django.core.files.storage import default_storage
+from rest_framework.parsers import MultiPartParser, FormParser
+import uuid
 from .permissions import IsMemberOfOrganization
-from .tasks import create_documentation_pr_task,batch_generate_docstrings_task # We will create this task soon
+from .tasks import calculate_documentation_coverage_task, create_documentation_pr_task,batch_generate_docstrings_task, parse_coverage_report_task # We will create this task soon
 from django.utils.decorators import method_decorator
 from rest_framework import viewsets
-from .models import CodeFile, CodeSymbol as CodeFunction, Repository, CodeSymbol,CodeDependency,AsyncTaskStatus, Notification,CodeClass,Insight
+from .models import CodeFile, CodeSymbol as CodeFunction, Repository, CodeSymbol,CodeDependency,AsyncTaskStatus, Notification,CodeClass,Insight, TestCoverageReport
 from .ai_services import generate_class_summary_stream, generate_module_readme_stream,generate_refactor_stream # 03c03c03c NEW IMPORT
 from .tasks import process_repository # Import the Celery task
 import json
-from .serializers import CodeSymbolSerializer, DetailedOrganizationSerializer, RepositorySerializer,RepositoryDetailSerializer,NotificationSerializer
+from .serializers import CodeSymbolSerializer, DetailedOrganizationSerializer, RepositorySerializer,RepositoryDetailSerializer,NotificationSerializer, TestCoverageReportSerializer
 from rest_framework.views import APIView
 from django.views.decorators.csrf import csrf_exempt
 from rest_framework.response import Response
@@ -415,6 +417,14 @@ class SaveDocstringView(APIView):
                 'code_file__repository', 
                 'code_class__code_file__repository'
             ).get(q_filter)
+            repo = symbol.code_file.repository if symbol.code_file else symbol.code_class.code_file.repository
+            is_member = OrganizationMember.objects.filter(
+                organization=repo.organization,
+                user=request.user
+            ).exists()
+
+            if not is_member:
+                 return Response({"error": "Permission denied. You are not a member of this repository's organization."}, status=status.HTTP_403_FORBIDDEN)
         except CodeSymbol.DoesNotExist:
             return Response({"error": "Symbol not found or permission denied."}, status=status.HTTP_404_NOT_FOUND)
 
@@ -455,6 +465,7 @@ class SaveDocstringView(APIView):
             # Serialize the updated symbol to send back to the frontend
             # This ensures the frontend gets the latest hashes and status
             serializer = CodeSymbolSerializer(symbol) 
+            calculate_documentation_coverage_task.delay(repo.id)
             print(f"VIEW_SAVE_DOC: Successfully saved documentation and status for symbol {symbol.id}")
             return Response(serializer.data, status=status.HTTP_200_OK)
         except Exception as e:
@@ -2089,4 +2100,65 @@ class OrphanSymbolsView(APIView):
         ).select_related('code_file', 'code_class').order_by('code_file__file_path', 'start_line')
 
         serializer = OrphanSymbolSerializer(orphan_symbols, many=True)
+        return Response(serializer.data)
+    
+
+class CoverageUploadView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+    parser_classes = (MultiPartParser, FormParser)
+
+    def post(self, request, repo_id, *args, **kwargs):
+        # --- REFACTORED PERMISSION CHECK ---
+        # Use the single, efficient query to check for existence and permission.
+        repo = Repository.objects.filter(
+            id=repo_id,
+            organization__memberships__user=request.user
+        ).first()
+
+        # If the query returns nothing, the user either doesn't have permission
+        # or the repository doesn't exist.
+        if not repo:
+            return Response({"error": "Repository not found or permission denied."}, status=status.HTTP_404_NOT_FOUND)
+        # --- END REFACTORED PERMISSION CHECK ---
+
+        file_obj = request.FILES.get('file')
+        commit_hash = request.data.get('commit_hash')
+
+        if not file_obj:
+            return Response({"error": "No coverage file provided."}, status=status.HTTP_400_BAD_REQUEST)
+        if not commit_hash:
+            return Response({"error": "Commit hash is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Save the uploaded file to a temporary location within the default storage
+        # (e.g., your MEDIA_ROOT or S3 bucket).
+        temp_file_name = f"coverage_uploads/{repo.id}_{uuid.uuid4()}.xml"
+        temp_file_path = default_storage.save(temp_file_name, file_obj)
+
+        # Dispatch the Celery task to process the file asynchronously
+        parse_coverage_report_task.delay(repo.id, commit_hash, temp_file_path)
+
+        return Response({"message": "Coverage report uploaded and is being processed."}, status=status.HTTP_202_ACCEPTED)
+
+# The LatestCoverageReportView already uses the correct pattern, so no changes are needed there.
+class LatestCoverageReportView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, repo_id, *args, **kwargs):
+        # This view is already correct.
+        repo = Repository.objects.filter(
+            id=repo_id,
+            organization__memberships__user=request.user
+        ).first()
+
+        if not repo:
+            print("Bruh")
+            return Response({"error": "Repository not found or permission denied."}, status=status.HTTP_404_NOT_FOUND)
+        
+        latest_report = TestCoverageReport.objects.filter(repository=repo).order_by('-uploaded_at').first()
+        
+        if not latest_report:
+            print("Bruh 2")
+            return Response({"error": "No coverage report found for this repository."}, status=status.HTTP_404_NOT_FOUND)
+            
+        serializer = TestCoverageReportSerializer(latest_report)
         return Response(serializer.data)

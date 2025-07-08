@@ -39,6 +39,7 @@ interface RepoContextType {
     savingDocId: number | null;
     handleGenerateDoc: (symbolId: number) => Promise<void>;
     handleSaveDoc: (symbolId: number, docToSave: string) => Promise<void>;
+    setBatchSelection: (newSelection: Set<number>) => void;
 }
 
 const RepoContext = createContext<RepoContextType | undefined>(undefined);
@@ -62,6 +63,10 @@ export const RepoProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const [generatingDocId, setGeneratingDocId] = useState<number | null>(null);
     const [savingDocId, setSavingDocId] = useState<number | null>(null);
 
+    // --- 2. Create the new handler ---
+    const setBatchSelection = useCallback((newSelection: Set<number>) => {
+        setSelectedFilesForBatch(newSelection);
+    }, []);
     // Data Fetching Logic
     const fetchRepoDetails = useCallback(() => {
         if (repoId) {
@@ -303,6 +308,7 @@ export const RepoProvider: React.FC<{ children: React.ReactNode }> = ({ children
         savingDocId,
         handleGenerateDoc,
         handleSaveDoc,
+        setBatchSelection,
     };
 
     return <RepoContext.Provider value={value}>{children}</RepoContext.Provider>;

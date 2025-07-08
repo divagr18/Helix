@@ -562,3 +562,40 @@ class Invitation(models.Model):
     def __str__(self):
         return f"Invitation for {self.email} to join {self.organization.name}"
 
+# backend/repositories/models.py
+
+class TestCoverageReport(models.Model):
+    """
+    Represents a single, uploaded coverage report for a specific commit.
+    """
+    repository = models.ForeignKey(Repository, on_delete=models.CASCADE, related_name='coverage_reports')
+    commit_hash = models.CharField(max_length=40, help_text="The commit hash this report is for.")
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+    overall_coverage = models.FloatField(help_text="Overall line rate (e.g., 0.95 for 95%).")
+
+    class Meta:
+        db_table = 'test_coverage_reports'
+        ordering = ['-uploaded_at']
+
+    def __str__(self):
+        return f"Coverage Report for {self.repository.name} at {self.commit_hash[:7]}"
+
+class FileCoverage(models.Model):
+    """
+    Stores coverage data for a single file within a report.
+    """
+    report = models.ForeignKey(TestCoverageReport, on_delete=models.CASCADE, related_name='file_coverages')
+    # Use SET_NULL so that if a file is deleted from our index, we don't lose the historical coverage data
+    code_file = models.ForeignKey(CodeFile, on_delete=models.SET_NULL, null=True, related_name='coverage_data')
+    
+    line_rate = models.FloatField(help_text="Line rate for this file (e.g., 0.80 for 80%).")
+    
+    # Store the line numbers in a JSONField for easy access and to avoid complex table structures
+    covered_lines = models.JSONField(default=list, help_text="List of line numbers that were executed.")
+    missed_lines = models.JSONField(default=list, help_text="List of line numbers that were not executed.")
+    # For branch coverage, you could add partial_lines here as well
+
+    class Meta:
+        db_table = 'test_file_coverage'
+        # A file should only appear once per report
+        unique_together = ('report', 'code_file')

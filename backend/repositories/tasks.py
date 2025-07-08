@@ -25,6 +25,9 @@ from django.db import transaction,models  # Import the transaction module
 from .models import CodeFile, CodeSymbol, CodeClass,CodeDependency,EmbeddingBatchJob,Insight,KnowledgeChunk,ModuleDocumentation
 from .models import Notification, AsyncTaskStatus # Ensure Notification is imported
 from allauth.socialaccount.models import SocialAccount
+import xml.etree.ElementTree as ET
+from django.core.files.storage import default_storage
+from .models import TestCoverageReport, FileCoverage, CodeFile, Repository
 OPENAI_EMBEDDING_BATCH_SIZE = 50
 OPENAI_EMBEDDING_BATCH_FILE_MAX_REQUESTS = 49000
 # Define the path to our compiled Rust binary INSIDE the container
@@ -692,6 +695,7 @@ def batch_generate_docstrings_task(self, code_file_id: int, user_id: int):
     try:
         # user = User.objects.get(id=user_id) # Not strictly needed if PR is separate
         code_file = CodeFile.objects.select_related('repository__user').get(id=code_file_id)
+        repo_id = code_file.repository.id
         # Basic permission check (can be enhanced if needed)
         if code_file.repository.user.id != user_id:
             print(f"Permission denied: User {user_id} does not own repository for CodeFile {code_file_id}")
@@ -757,7 +761,10 @@ def batch_generate_docstrings_task(self, code_file_id: int, user_id: int):
             failed_generations += 1
         
         time.sleep(0.1) # Basic rate limiting: 0.5 seconds between OpenAI calls
-
+    
+    print(f"BATCH_DOCS_TASK: Triggering stats recalculation for repo {repo_id} after {successful_generations} successful generations.")
+    calculate_documentation_coverage_task.delay(repo_id)
+    
     summary_message = f"Batch documentation generation for file '{code_file.file_path}': {successful_generations} successful, {failed_generations} failed."
     print(summary_message)
     
@@ -1107,7 +1114,8 @@ def batch_generate_docstrings_for_files_task(self, repo_id: int, user_id: int, f
     elif overall_failed_symbol_generations > 0:
         # Could add a "PARTIAL_SUCCESS" status if desired
         final_status = AsyncTaskStatus.TaskStatus.SUCCESS # Treat as success if at least one worked
-
+    print(f"BATCH_DOCS_TASK: Triggering stats recalculation for repo {repo_id}")
+    calculate_documentation_coverage_task.delay(repo_id)
     if task_status_obj:
         task_status_obj.status = final_status
         task_status_obj.message = final_summary_message
@@ -1399,38 +1407,31 @@ def create_pr_for_multiple_files_task(self, repo_id: int, user_id: int, file_ids
         raise # Re-raise for Celery to handle and mark as failed
 @shared_task(bind=True)
 def detect_orphan_symbols_task(self, repo_id: int, user_id: int | None = None):
+    """
+    Detects "True Orphan" symbols in a repository. A symbol is a true orphan if:
+    1. It has no incoming calls from other symbols within the repository.
+    2. It is not explicitly imported by any other file in the repository.
+    
+    This task relies on the accurate, fully-resolved import paths provided by the
+    hybrid (Rust + Python) parsing engine.
+    """
     task_id = self.request.id
-    print(f"ORPHAN_DETECT_TASK (v2): Started (ID: {task_id}) for repo_id={repo_id}")
+    print(f"ORPHAN_DETECT_TASK (v3 - Hybrid): Started for repo_id={repo_id}, Task ID: {task_id}")
 
-    # --- Initial Setup (from your original code) ---
     try:
-        repo_obj = Repository.objects.get(id=repo_id)
-        
-        if user_id:
-            user_obj = User.objects.get(id=user_id)
-        else:
-            # Fallback to the user who added the repository if no user is specified
-            user_obj = repo_obj.added_by if repo_obj.added_by else User.objects.filter(owned_organizations__repositories=repo_obj).first()
-
-        if not user_obj:
-            raise User.DoesNotExist("Could not determine a user for notifications.")
-
-    except (Repository.DoesNotExist, User.DoesNotExist) as e:
-        print(f"ORPHAN_DETECT_TASK: ERROR - Repo or User not found for task {task_id}: {e}")
+        repo = Repository.objects.get(id=repo_id)
+        initiating_user = User.objects.get(id=user_id) if user_id else repo.added_by
+    except (Repository.DoesNotExist, User.DoesNotExist):
+        print(f"ORPHAN_DETECT_TASK: ERROR - Repo or User not found for task {task_id}")
         return {"status": "error", "message": "Repository or initiating user not found."}
-    source_root = repo_obj.source_root if repo_obj.source_root != '.' else ''
-    print(f"ORPHAN_DETECT_TASK: Analyzing repository: {repo_obj.full_name}")
 
-    # --- 1. Find symbols with no incoming calls ---
-    all_symbols_in_repo = CodeSymbol.objects.filter(
+    # --- 1. Find symbols with no incoming calls (potential orphans) ---
+    all_symbol_ids = set(CodeSymbol.objects.filter(
         Q(code_file__repository_id=repo_id) | Q(code_class__code_file__repository_id=repo_id)
-    )
-    all_symbol_ids = set(all_symbols_in_repo.values_list('id', flat=True))
+    ).values_list('id', flat=True))
 
     if not all_symbol_ids:
-        print(f"ORPHAN_DETECT_TASK: No symbols found in repository {repo_obj.full_name}.")
-        repo_obj.orphan_symbol_count = 0
-        repo_obj.save(update_fields=['orphan_symbol_count'])
+        print(f"ORPHAN_DETECT_TASK: No symbols found in repository {repo.full_name}.")
         return {"status": "success", "message": "No symbols found."}
 
     called_symbol_ids = set(CodeDependency.objects.filter(
@@ -1440,106 +1441,108 @@ def detect_orphan_symbols_task(self, repo_id: int, user_id: int | None = None):
     potential_orphan_ids = all_symbol_ids - called_symbol_ids
     print(f"ORPHAN_DETECT_TASK: Found {len(potential_orphan_ids)} symbols with no internal calls.")
 
-    # --- 2. Build a set of all explicitly imported symbol paths ---
+    # --- 2. Build a set of all explicitly imported symbol paths from our new accurate data ---
     all_imported_paths = set()
-    repo_files = CodeFile.objects.filter(repository_id=repo_id)
-    for code_file in repo_files:
-        if isinstance(code_file.imports, list):
-            for imp in code_file.imports:
-                all_imported_paths.add(imp)
-    print(f"ORPHAN_DETECT_TASK: Found {len(all_imported_paths)} unique import strings across the repo.")
+    for code_file in CodeFile.objects.filter(repository_id=repo_id):
+        if code_file.imports:
+            # The imports are now fully-resolved absolute paths from the Python script
+            all_imported_paths.update(code_file.imports)
+    print(f"ORPHAN_DETECT_TASK: Found {len(all_imported_paths)} unique resolved import strings.")
 
-    # --- 3. Identify which of the potential orphans are "public" because they are imported ---
-    # We fetch all potentially orphan symbols at once for efficiency
-    symbols_to_check = CodeSymbol.objects.filter(id__in=potential_orphan_ids).select_related('code_file', 'code_class')
+    # --- 3. Identify which potential orphans are "public" because they are imported ---
+    symbols_to_check = CodeSymbol.objects.filter(
+        id__in=potential_orphan_ids
+    ).select_related('code_file', 'code_class')
     
     publicly_imported_ids = set()
     for symbol in symbols_to_check:
-        # --- THIS IS THE NEW CANONICAL PATH LOGIC ---
-        # Get the file path relative to the repo root
-        full_path = symbol.code_file.file_path
+        # Robustly get the file path
+        actual_code_file = symbol.code_file if symbol.code_file else (symbol.code_class.code_file if symbol.code_class else None)
+        if not actual_code_file:
+            continue
         
-        # Strip the source root to get the Python-relative path
-        # e.g., 'backend/src/app/views.py' with source_root 'backend/src' -> 'app/views.py'
+        # Construct the symbol's canonical Python module path
+        # This logic must perfectly mirror how Python resolves modules from the source root.
+        full_path = actual_code_file.file_path
+        source_root = repo.source_root if repo.source_root != '.' else ''
+        
+        python_path = full_path
         if source_root and full_path.startswith(source_root):
+            # Make the path relative to the source root
             python_path = os.path.relpath(full_path, source_root)
-        else:
-            python_path = full_path
 
-        # Convert file path to module path
-        # e.g., 'app/views.py' -> 'app.views'
-        module_path = python_path.replace('.py', '').replace('/', '.')
+        # Convert file path to module path (e.g., 'app/views.py' -> 'app.views')
+        # Also handle '__init__.py' files correctly, as they define the package itself.
+        if os.path.basename(python_path) == '__init__.py':
+            module_path = os.path.dirname(python_path).replace(os.path.sep, '.')
+        else:
+            module_path = python_path.replace('.py', '').replace(os.path.sep, '.')
         
+        # Construct the full canonical path for the symbol
         if symbol.code_class:
             canonical_path = f"{module_path}.{symbol.code_class.name}.{symbol.name}"
         else:
             canonical_path = f"{module_path}.{symbol.name}"
 
+        # Check if this symbol's path, or a wildcard import of its module, exists in our set
         wildcard_path = f"{module_path}.*"
         if canonical_path in all_imported_paths or wildcard_path in all_imported_paths:
             publicly_imported_ids.add(symbol.id)
-        # --- END FIX ---
 
     print(f"ORPHAN_DETECT_TASK: Identified {len(publicly_imported_ids)} potential orphans as publicly imported.")
 
-    # --- 4. Determine "True Orphans" and apply entry-point heuristics ---
-    # True orphans are those with no calls AND are not publicly imported.
+    # --- 4. Determine "True Orphans" and apply entry point heuristics ---
     true_orphan_ids = potential_orphan_ids - publicly_imported_ids
     
     final_orphan_ids_to_mark = []
-    # We already have the symbol objects, so we can iterate over them directly
-    symbols_to_check_for_entry_points = [s for s in symbols_to_check if s.id in true_orphan_ids]
-    
-    for symbol in symbols_to_check_for_entry_points:
-        # Your existing entry-point logic
-        if symbol.name not in ["__init__", "main"]: # Add other known entry points like 'app' for Flask/FastAPI
-            final_orphan_ids_to_mark.append(symbol.id)
+    # Fetch symbols to check their names for common entry points
+    symbols_for_heuristic_check = CodeSymbol.objects.filter(id__in=true_orphan_ids)
+    for symbol in symbols_for_heuristic_check:
+        # Exclude common entry points like __init__, main, Django views, Celery tasks, etc.
+        # This list can be expanded over time.
+        if symbol.name.startswith('_') or symbol.name in ['main', 'admin', 'apps']:
+            continue
+        # A simple heuristic for Django views (often end in 'View' or are in a 'views.py')
+        if 'views.py' in symbol.code_file.file_path if symbol.code_file else False:
+            continue
+        
+        final_orphan_ids_to_mark.append(symbol.id)
 
     print(f"ORPHAN_DETECT_TASK: After heuristics, {len(final_orphan_ids_to_mark)} symbols are considered true orphans.")
 
     # --- 5. Bulk update the database ---
     # Mark true orphans
-    if final_orphan_ids_to_mark:
-        CodeSymbol.objects.filter(id__in=final_orphan_ids_to_mark).update(is_orphan=True)
+    CodeSymbol.objects.filter(id__in=final_orphan_ids_to_mark).update(is_orphan=True)
     
-    # Un-mark everything else that is NOT a true orphan
-    ids_to_unmark = list(all_symbol_ids - set(final_orphan_ids_to_mark))
-    if ids_to_unmark:
-        CodeSymbol.objects.filter(id__in=ids_to_unmark).update(is_orphan=False)
+    # Un-mark everything else that is not in the final orphan list
+    ids_to_unmark = all_symbol_ids - set(final_orphan_ids_to_mark)
+    CodeSymbol.objects.filter(id__in=list(ids_to_unmark)).update(is_orphan=False)
 
-    # --- 6. Update Repo Stats and Create Notifications ---
-    actually_marked_orphan_count = len(final_orphan_ids_to_mark)
-    print(f"ORPHAN_DETECT_TASK: Marked {actually_marked_orphan_count} symbols as ORPHAN.")
-    
-    repo_obj.orphan_symbol_count = actually_marked_orphan_count
-    repo_obj.save(update_fields=['orphan_symbol_count'])
-    print(f"ORPHAN_DETECT_TASK: Repo {repo_id} orphan count updated to {actually_marked_orphan_count}")
+    # Update the repository-level count for the dashboard
+    repo.orphan_symbol_count = len(final_orphan_ids_to_mark)
+    repo.save(update_fields=['orphan_symbol_count'])
+    print(f"ORPHAN_DETECT_TASK: Repo {repo.id} orphan count updated to {len(final_orphan_ids_to_mark)}")
 
-    # Your existing notification logic (no changes needed)
-    if actually_marked_orphan_count > 0 and user_obj:
-        orphan_examples = CodeSymbol.objects.filter(id__in=final_orphan_ids_to_mark[:5]).select_related('code_file', 'code_class__code_file')
-        example_details = []
-        for orphan_sym in orphan_examples:
-            file_p = orphan_sym.code_file.file_path if orphan_sym.code_file else (orphan_sym.code_class.code_file.file_path if orphan_sym.code_class else "N/A")
-            example_details.append(f"- `{orphan_sym.name}` in `{file_p}`")
-        
-        details_msg = "\n".join(example_details)
-        if len(final_orphan_ids_to_mark) > 5:
-            details_msg += f"\n... and {len(final_orphan_ids_to_mark) - 5} more."
-
+    # --- 6. Notification Logic ---
+    if len(final_orphan_ids_to_mark) > 0 and initiating_user:
+        # Create a notification for the user
         notification_message = (
-            f"{actually_marked_orphan_count} potential orphan symbols were detected in '{repo_obj.full_name}'. "
-            "These are symbols that are not called internally and not imported by other modules.\n\nExamples:\n{details_msg}"
+            f"{len(final_orphan_ids_to_mark)} potential orphan symbol(s) "
+            f"were detected in repository '{repo.full_name}'."
         )
         Notification.objects.create(
-            user=user_obj,
-            repository=repo_obj,
+            user=initiating_user,
+            repository=repo,
             message=notification_message,
-            notification_type=Notification.NotificationType.STALENESS_ALERT # Consider adding an ORPHAN_ALERT type
+            notification_type=Notification.NotificationType.STALENESS_ALERT, # Consider adding an ORPHAN_ALERT type
+            link_url=f"/intelligence?repoId={repo.id}&tab=orphans" # A deep link to the new dashboard
         )
-        print(f"ORPHAN_DETECT_TASK: Created notification for {user_obj.username}.")
-        
-    return {"status": "success", "orphan_count": actually_marked_orphan_count}
+        print(f"ORPHAN_DETECT_TASK: Created notification for {initiating_user.username}.")
+
+    print("ORPHAN_DETECT_TASK (v3 - Hybrid): Complete.")
+    return {"status": "success", "orphan_count": len(final_orphan_ids_to_mark)}
+
+
 @shared_task
 def calculate_documentation_coverage_task(repo_id):
     """Calculates and saves the documentation coverage for a repository."""
@@ -2546,3 +2549,96 @@ def resolve_module_dependencies_task(repo_id: int):
     ModuleDependency.objects.bulk_create(dependencies_to_create, ignore_conflicts=True)
     print(f"SMART_DEPENDENCY_TASK: Created {len(dependencies_to_create)} internal module dependencies.")
     print(f"SMART_DEPENDENCY_TASK: Identified {len(external_dependencies)} unique external dependencies: {external_dependencies}")
+
+@shared_task
+def parse_coverage_report_task(repo_id: int, commit_hash: str, temp_file_path: str):
+    """
+    Parses a coverage.xml file, correlates it with database records,
+    and saves the coverage data.
+    """
+    print(f"COVERAGE_PARSE_TASK: Starting for repo {repo_id}, commit {commit_hash}")
+    try:
+        repo = Repository.objects.get(id=repo_id)
+        
+        # Read the temporary file content
+        with default_storage.open(temp_file_path, 'r') as f:
+            xml_content = f.read()
+
+        root = ET.fromstring(xml_content)
+        
+        # Get overall coverage from the root <coverage> tag
+        overall_line_rate = float(root.get('line-rate', '0.0'))
+        
+        # Create the main report object
+        report = TestCoverageReport.objects.create(
+            repository=repo,
+            commit_hash=commit_hash,
+            overall_coverage=overall_line_rate
+        )
+        print(f"COVERAGE_PARSE_TASK: Created TestCoverageReport (ID: {report.id})")
+
+        # Find all file paths from the report to do a single DB query
+        all_repo_db_files = CodeFile.objects.filter(repository=repo)
+
+        # 2. Create a map for fast lookups, but this time we'll be more flexible.
+        # We don't build a map beforehand, we'll search within the loop.
+        # This is less performant for huge repos, but more robust to path mismatches.
+        
+        file_coverage_objects = []
+        for class_node in root.findall('.//class'):
+            path_from_report = class_node.get('filename')
+            if not path_from_report:
+                continue
+
+            # 3. Find the matching database file with flexible logic.
+            found_db_file = None
+            for db_file in all_repo_db_files:
+                # Check if the database path ends with the path from the report.
+                # This handles cases like 'calculator/operations.py' (db) vs 'operations.py' (xml)
+                # or 'src/app/main.py' (db) vs 'app/main.py' (xml).
+                if db_file.file_path.endswith(path_from_report):
+                    found_db_file = db_file
+                    break # Found our match, stop searching for this file
+            
+            if not found_db_file:
+                print(f"COVERAGE_PARSE_TASK: Skipping file '{path_from_report}', no matching path found in database.")
+                continue
+            # --- END FIX ---
+
+            # Now we have the correct `found_db_file` object.
+            # The rest of the logic to parse lines and create FileCoverage objects remains the same.
+            line_rate = float(class_node.get('line-rate', '0.0'))
+            covered_lines = []
+            missed_lines = []
+            lines_node = class_node.find('lines')
+            if lines_node is not None:
+                for line_node in lines_node.findall('line'):
+                    line_number = int(line_node.get('number'))
+                    hits = int(line_node.get('hits'))
+                    if hits > 0:
+                        covered_lines.append(line_number)
+                    else:
+                        missed_lines.append(line_number)
+            
+            file_coverage_objects.append(FileCoverage(
+                report=report,
+                code_file=found_db_file, # Use the file we found
+                line_rate=line_rate,
+                covered_lines=covered_lines,
+                missed_lines=missed_lines
+            ))
+
+        FileCoverage.objects.bulk_create(file_coverage_objects)
+        print(f"COVERAGE_PARSE_TASK: Created {len(file_coverage_objects)} FileCoverage records.")
+
+
+    except Exception as e:
+        print(f"COVERAGE_PARSE_TASK: FATAL ERROR for repo {repo_id} - {e}")
+        # Optionally, update a task status model to reflect the failure
+    finally:
+        # Clean up the temporary file
+        if default_storage.exists(temp_file_path):
+            default_storage.delete(temp_file_path)
+            print(f"COVERAGE_PARSE_TASK: Cleaned up temporary file: {temp_file_path}")
+            
+    return f"Coverage report for repo {repo_id} processed."
