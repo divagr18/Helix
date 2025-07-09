@@ -15,7 +15,7 @@ export const RepoSelector = () => {
   const [repos, setRepos] = useState<Pick<Repository, 'id' | 'full_name'>[]>([]);
   const { activeRepository, setActiveRepository } = useWorkspaceStore();
   const navigate = useNavigate();
-  const location = useLocation(); 
+  const location = useLocation();
   const getCurrentMode = (): string => {
     // Example path: /repository/123/intelligence
     const pathParts = location.pathname.split('/');
@@ -27,7 +27,6 @@ export const RepoSelector = () => {
     // Default to 'code' if we can't determine the mode
     return 'code';
   };// <--- 2. Get the current location object
-
 
   useEffect(() => {
     // Fetch the list of repositories for the dropdown
@@ -43,18 +42,18 @@ export const RepoSelector = () => {
     // --- 4. Build the new URL dynamically ---
     const currentMode = getCurrentMode();
     const newPath = `/repository/${repo.id}/${currentMode}`;
-    
+
     navigate(newPath);
   };
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover open={open} onOpenChange={setOpen} >
       <PopoverTrigger asChild>
         <Button
           variant="outline"
           role="combobox"
           aria-expanded={open}
-          className="w-[250px] justify-between"
+          className="w-[250px] justify-between rounded-none"
         >
           <span className="truncate">
             {activeRepository ? activeRepository.full_name : "Select a repository..."}
@@ -62,8 +61,8 @@ export const RepoSelector = () => {
           <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
         </Button>
       </PopoverTrigger>
-      <PopoverContent className="w-[250px] p-0">
-        <Command>
+      <PopoverContent className="w-[250px] p-0 rounded-none border-[#1d1d1d] hover-bg-[#1d1d1d]">
+        <Command className="font-inter ">
           <CommandInput placeholder="Search repository..." />
           <CommandList>
             <CommandEmpty>No repository found.</CommandEmpty>
@@ -73,10 +72,14 @@ export const RepoSelector = () => {
                   key={repo.id}
                   value={repo.full_name}
                   onSelect={() => handleSelectRepo(repo)}
+                  className={cn(
+                    "py-2 mt-1",
+                    activeRepository?.id === repo.id && "bg-[#1d1d1d] "
+                  )}
                 >
                   <Check
                     className={cn(
-                      "mr-2 h-4 w-4",
+                      "mr-2 mt-0.5 h-4 w-4 text-[#00db92]",
                       activeRepository?.id === repo.id ? "opacity-100" : "opacity-0"
                     )}
                   />

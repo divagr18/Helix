@@ -36,6 +36,8 @@ from .models import ModuleDependency
 from .decorators import check_usage_limit
 from .serializers import RepositorySerializer, RepositoryDetailSerializer, RepositoryCreateSerializer
 from rest_framework import serializers
+from django.contrib.auth import get_user_model
+User = get_user_model() # <--- 2. Call the function to get the active User model
 
 REPO_CACHE_BASE_PATH = "/var/repos" # Use the same constant
 OPENAI_CLIENT_INSTANCE = OpenAIClient()
@@ -1054,7 +1056,7 @@ def generate_tests_stream(
         f"Here is its source code:\n```python\n{source_code}\n```\n\n"
         f"Instructions:\n"
         f"1. Focus on testing the 'happy path,' common edge cases (e.g., empty lists, zero, None values), and potential error conditions.\n"
-        f"2. The generated code should be a single, complete Python code block. Do not add any explanation outside of the code block.\n"
+        f"2. The generated code should be a single, complete Python code block. Do not add any explanation outside of the code block. Do not wrap it in ```python type markdown blocks.\n"
         f"3. Assume necessary imports like `pytest` are available. For the code under test, assume it can be imported (e.g., `from {symbol_file_path.replace('.py', '').replace('/', '.')} import {symbol_obj.code_class.name if symbol_obj.code_class else symbol_obj.name}`).\n"
         f"4. If the function is a method of a class, show how to instantiate the class in the test.\n"
         f"5. Use clear and descriptive test function names, like `test_{symbol_obj.name}_[condition_being_tested]`.\n"
@@ -1083,6 +1085,98 @@ def generate_tests_stream(
         error_message = f"// Helix encountered an error while generating test suggestions: {str(e)}"
         print(f"SUGGEST_TESTS_STREAM_ERROR: {error_message}")
         yield error_message
+
+
+# backend/repositories/ai_services.py
+# ... imports ...
+
+def generate_cohesive_tests_stream(
+    symbol_ids: list[int],
+    user: User,
+    openai_client: OpenAIClient
+):
+    """
+    Generates a single, cohesive pytest file for a list of symbols.
+    """
+    # 1. Fetch all symbols and perform a permission check
+    q_filter = Q(id__in=symbol_ids) & (
+        Q(code_file__repository__organization__memberships__user=user) |
+        Q(code_class__code_file__repository__organization__memberships__user=user)
+    )
+    symbols = CodeSymbol.objects.filter(q_filter).select_related('code_file', 'code_class')
+
+    if len(symbols) != len(symbol_ids):
+        yield "// Error: One or more symbols were not found or you do not have permission to access them."
+        return
+
+    # 2. Assemble the context blocks for the prompt
+    context_blocks = []
+    import_paths = set()
+    file_path = symbols[0].code_file.file_path if symbols[0].code_file else symbols[0].code_class.code_file.file_path
+
+    for symbol in symbols:
+        source_code = get_source_for_symbol_from_view(symbol)
+        if not source_code or source_code.strip().startswith("# Error:"):
+            continue # Skip symbols we can't get source for
+
+        symbol_kind = "method" if symbol.code_class else "function"
+        context_blocks.append(
+            f"--- Symbol: `{symbol.name}` ({symbol_kind}) ---\n"
+            f"Source Code:\n```python\n{source_code}\n```\n---"
+        )
+        
+        # Collect necessary imports
+        module_path = symbol.code_file.file_path.replace('.py', '').replace('/', '.') if symbol.code_file else \
+                      symbol.code_class.code_file.file_path.replace('.py', '').replace('/', '.')
+        
+        if symbol.code_class:
+            import_paths.add(f"from {module_path} import {symbol.code_class.name}")
+        else:
+            import_paths.add(f"from {module_path} import {symbol.name}")
+
+    if not context_blocks:
+        yield "// Error: Could not retrieve source code for any of the selected symbols."
+        return
+
+    # 3. Construct the final "Meta-Prompt"
+    context_str = "\n\n".join(context_blocks)
+    import_str = "\n".join(sorted(list(import_paths)))
+
+    final_prompt = (
+        "You are an expert Python QA engineer. Your task is to write a single, cohesive `pytest` test file for a collection of functions and methods.\n\n"
+        f"Here are the symbols to test, all from the file `{file_path}`:\n\n"
+        f"{context_str}\n\n"
+        "Instructions:\n"
+        "1.  Create a single Python file.\n"
+        "2.  Place all necessary imports at the top of the file. Consolidate them and do not repeat imports. The required imports for the code under test are:\n"
+        "    ```python\n"
+        "import pytest\n"
+        f"{import_str}\n"
+        "    ```\n"
+        "3.  Write 2-3 critical test cases for EACH symbol provided.\n"
+        "4.  Use clear, descriptive test function names (e.g., `test_function_name_with_specific_condition`).\n"
+        "5.  If testing multiple methods from the same class, you can group them in a `TestClassName` class if it makes sense.\n"
+        "6.  Your entire response should be ONLY the raw Python code for the test file. Do not add any explanation or markdown formatting. Do not add '```python'.\n\n"
+        "Generate the complete `pytest` file now:"
+    )
+
+
+    print(f"DEBUG_COHESIVE_TESTS_PROMPT:\n{final_prompt}\n--------------------")
+
+    # 4. Stream the response from the LLM
+    try:
+        stream = openai_client.chat.completions.create(
+            model="gpt-4.1-mini",
+            messages=[{"role": "user", "content": final_prompt}],
+            stream=True,
+            temperature=0.3
+        )
+        for chunk in stream:
+            content = chunk.choices[0].delta.content
+            if content:
+                yield content
+    except Exception as e:
+        yield f"// Helix encountered an error: {str(e)}"
 
 
 # --- NEW VIEW CLASS ---
@@ -2160,3 +2254,25 @@ class LatestCoverageReportView(APIView):
             
         serializer = TestCoverageReportSerializer(latest_report)
         return Response(serializer.data)
+    
+
+@method_decorator(csrf_exempt, name='dispatch')
+class CohesiveTestGenerationView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, *args, **kwargs):
+        symbol_ids = request.data.get('symbol_ids')
+        if not isinstance(symbol_ids, list) or not symbol_ids:
+            return Response({"error": "A list of 'symbol_ids' is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        openai_client = OPENAI_CLIENT_INSTANCE
+        if not openai_client:
+            return Response({"error": "AI service unavailable."}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+        # We will create the new service function next
+        response_stream = generate_cohesive_tests_stream(symbol_ids, request.user, openai_client)
+        
+        response = StreamingHttpResponse(response_stream, content_type='text/plain; charset=utf-8')
+        response['X-Accel-Buffering'] = 'no'
+        response['Cache-Control'] = 'no-cache'
+        return response

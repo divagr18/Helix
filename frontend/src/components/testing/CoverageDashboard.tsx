@@ -8,7 +8,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
 import type { TreeNode } from '@/utils/tree';
-import { type CoverageReport } from '@/types'; 
+import { type CoverageReport } from '@/types';
 // ... (CoverageReport interface) ...
 
 export const CoverageDashboard = () => {
@@ -50,62 +50,58 @@ export const CoverageDashboard = () => {
     }, [activeRepository]);
 
     // 1) When you deselect (selectedNode → null), clear everything:
-useEffect(() => {
-  if (!selectedNode) {
-    setFileContent(null);
-    setIsLoadingContent(false);
-    console.log("[Coverage] deselected → clearing content");
-  }
-}, [selectedNode]);
+    useEffect(() => {
+        if (!selectedNode) {
+            setFileContent(null);
+            setIsLoadingContent(false);
+            console.log("[Coverage] deselected → clearing content");
+        }
+    }, [selectedNode]);
 
-// 2) When a file node is selected AND the report is ready, fetch it:
-useEffect(() => {
-  if (selectedNode?.type !== 'file' || !report) return;
+    // 2) When a file node is selected AND the report is ready, fetch it:
+    useEffect(() => {
+        if (selectedNode?.type !== 'file' || !report) return;
 
-  const coverageInfo = report.file_coverages.find(
-    (fc) => fc.file_path === selectedNode.path
-  );
-  const fileId = coverageInfo?.code_file_id;
-  if (!fileId) {
-    setFileContent("// Could not determine file ID for this path.");
-    return;
-  }
+        const coverageInfo = report.file_coverages.find(
+            (fc) => fc.file_path === selectedNode.path
+        );
+        const fileId = coverageInfo?.code_file_id;
+        if (!fileId) {
+            setFileContent("// Could not determine file ID for this path.");
+            return;
+        }
 
-  setIsLoadingContent(true);
-  axios
-    .get(`/api/v1/files/${fileId}/content/`)
-    .then((res) => {
-      console.log("[Coverage] raw response.data:", res.data);
-      // Try to pull out the text from known shapes:
-      let text: string;
-      if (typeof res.data === "string") {
-        // API returned raw text
-        text = res.data;
-      } else if (typeof res.data.content === "string") {
-        // { content: "..." }
-        text = res.data.content;
-      } else if (res.data.file && typeof res.data.file.content === "string") {
-        // { file: { content: "..." } }
-        text = res.data.file.content;
-      } else {
-        // fallback: serialize whole object
-        text = JSON.stringify(res.data, null, 2);
-      }
-      console.log("[Coverage] extracted text length:", text.length);
-      setFileContent(text);
-    })
-    .catch((err) => {
-      console.error("[Coverage] error loading content:", err);
-      setFileContent("// Error loading file content.");
-    })
-    .finally(() => {
-      setIsLoadingContent(false);
-    });
-}, [selectedNode, report]);
-
-
-
-
+        setIsLoadingContent(true);
+        axios
+            .get(`/api/v1/files/${fileId}/content/`)
+            .then((res) => {
+                console.log("[Coverage] raw response.data:", res.data);
+                // Try to pull out the text from known shapes:
+                let text: string;
+                if (typeof res.data === "string") {
+                    // API returned raw text
+                    text = res.data;
+                } else if (typeof res.data.content === "string") {
+                    // { content: "..." }
+                    text = res.data.content;
+                } else if (res.data.file && typeof res.data.file.content === "string") {
+                    // { file: { content: "..." } }
+                    text = res.data.file.content;
+                } else {
+                    // fallback: serialize whole object
+                    text = JSON.stringify(res.data, null, 2);
+                }
+                console.log("[Coverage] extracted text length:", text.length);
+                setFileContent(text);
+            })
+            .catch((err) => {
+                console.error("[Coverage] error loading content:", err);
+                setFileContent("// Error loading file content.");
+            })
+            .finally(() => {
+                setIsLoadingContent(false);
+            });
+    }, [selectedNode, report]);
 
     useEffect(() => {
         fetchLatestReport();
@@ -117,7 +113,6 @@ useEffect(() => {
             fetchLatestReport();
         }, 3000);
     };
-    
 
     // --- REFINED RENDER LOGIC ---
     // First, handle the loading state. This is the highest priority.
@@ -156,9 +151,9 @@ useEffect(() => {
                         isLoadingContent={isLoadingContent} />
                 </div>
             ) : (
-                <div className="text-center p-8 mt-8 border-dashed border-2 rounded-lg max-w-2xl mx-auto">
+                <div className="text-center p-8 mt-40 border-dashed border-[#1d1d1d] border-2 max-w-2xl mx-auto">
                     <h3 className="text-xl font-semibold">No Coverage Report Found</h3>
-                    <p className="text-muted-foreground mt-2">
+                    <p className="text-muted-foreground mt-1 font-plex-sans">
                         Generate a `coverage.xml` report from your test suite and upload it to get started.
                     </p>
                     <FileUploadDropzone

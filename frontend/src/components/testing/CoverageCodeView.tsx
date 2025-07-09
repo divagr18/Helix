@@ -1,6 +1,7 @@
 // src/components/testing/CoverageCodeView.tsx
 import React, { useEffect, useRef } from 'react';
-import Editor, { OnMount } from '@monaco-editor/react';
+import Editor, { type OnMount } from '@monaco-editor/react';
+import * as monaco from 'monaco-editor';
 import { type editor } from 'monaco-editor';
 import { getLanguage } from '@/utils/language';
 
@@ -22,25 +23,35 @@ export const CoverageCodeView: React.FC<CoverageCodeViewProps> = ({ filePath, co
         const editor = editorRef.current;
         if (!editor || !content) return;
 
-        // Create decorations for covered and missed lines
+        const model = editor.getModel();
+        if (!model) return;
+
+        // Build decorations covering the entire width of each line:
         const decorations: editor.IModelDeltaDecoration[] = [
             ...coveredLines.map(line => ({
-                range: new monaco.Range(line, 1, line, 1),
-                options: { isWholeLine: true, className: 'bg-green-500/20', linesDecorationsClassName: 'border-l-4 border-green-500' }
+                range: new monaco.Range(line, 1, line, model.getLineMaxColumn(line)),
+                options: {
+                    isWholeLine: true,
+                    // applies across the entire text area
+                    inlineClassName: 'fullLineHighlightGreen',
+                    // gutter border:
+                    linesDecorationsClassName: 'border-l-4 border-green-500',
+                }
             })),
             ...missedLines.map(line => ({
-                range: new monaco.Range(line, 1, line, 1),
-                options: { isWholeLine: true, className: 'bg-red-500/20', linesDecorationsClassName: 'border-l-4 border-red-500' }
+                range: new monaco.Range(line, 1, line, model.getLineMaxColumn(line)),
+                options: {
+                    isWholeLine: true,
+                    inlineClassName: 'fullLineHighlightRed',
+                    linesDecorationsClassName: 'border-l-4 border-red-500',
+                }
             })),
         ];
 
-        // Apply the decorations to the editor
-        const decorationIds = editor.createDecorationsCollection(decorations);
+        // Apply them:
+        const decorationCollection = editor.createDecorationsCollection(decorations);
 
-        // Clean up decorations when the component unmounts or props change
-        return () => {
-            decorationIds.clear();
-        };
+        return () => decorationCollection.clear();
     }, [content, coveredLines, missedLines]);
 
     if (content === null) return <div>Loading code...</div>;
@@ -55,7 +66,7 @@ export const CoverageCodeView: React.FC<CoverageCodeViewProps> = ({ filePath, co
             value={content}
             onMount={handleEditorDidMount}
             theme="vs-dark"
-            options={{ readOnly: true, minimap: { enabled: false } }}
+            options={{ readOnly: true, minimap: { enabled: false }, glyphMargin: true }}
         />
     );
 };

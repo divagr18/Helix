@@ -57,7 +57,7 @@ export const FileUploadDropzone: React.FC<FileUploadDropzoneProps> = ({ repoId, 
 
     if (file) {
         return (
-            <div className="p-6 mt-4 border rounded-lg bg-card">
+            <div className="p-6 mt-4 bg-card">
                 <div className="flex items-center justify-between">
                     <div className="flex items-center gap-3">
                         <FileText className="h-8 w-8 text-muted-foreground" />
@@ -85,11 +85,11 @@ export const FileUploadDropzone: React.FC<FileUploadDropzoneProps> = ({ repoId, 
     }
 
     return (
-        <div {...getRootProps()} className={`mt-4 p-8 border-dashed border-2 rounded-lg cursor-pointer transition-colors ${isDragActive ? 'border-primary bg-primary/10' : 'hover:border-primary/50'}`}>
+        <div {...getRootProps()} className={`mt-4 p-8 border-dashed border-2 cursor-pointer border-[#1d1d1d] transition-colors ${isDragActive ? 'border-[#1d1d1d]' : 'hover:border-primary/50'}`}>
             <input {...getInputProps()} />
             <div className="text-center">
                 <UploadCloud className="mx-auto h-12 w-12 text-muted-foreground" />
-                <p className="mt-2 font-semibold">Drag & drop your coverage.xml here</p>
+                <p className="mt-2 font-regular">Drag & drop your coverage.xml here</p>
                 <p className="text-sm text-muted-foreground">or click to select a file</p>
             </div>
         </div>

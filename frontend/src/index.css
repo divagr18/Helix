@@ -229,7 +229,8 @@ html {
     --destructive-foreground: oklch(0.984 0.003 247.858);
     /* Light text */
 
-    --border: oklch(1 0 0 / 10%);
+    --border: #1d1d1d;
+    --border-subtle: rgba(204, 204, 204, 0.6);
     /* White with 10% alpha for subtle border */
     --input: oklch(1 0 0 / 15%);
     /* White with 15% alpha for input background */
@@ -260,7 +261,7 @@ html {
     background-color: var(--background);
     /* USE VARIABLE DIRECTLY */
     color: var(--foreground);
-    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+    font-family: 'IBM Plex Mono', monospace;
     line-height: 1.5;
     font-weight: 400;
     color-scheme: light dark;
@@ -380,8 +381,67 @@ html {
   background-color: rgba(255, 255, 255, 0.8) !important;
 }
 
+/* in your app’s CSS */
+.monaco-editor .fullLineHighlightGreen {
+  background-color: rgba(34, 197, 94, 0.2);
+}
+
+.monaco-editor .fullLineHighlightRed {
+  background-color: rgba(239, 68, 68, 0.2);
+}
+
 html,
 body,
 #root {
   @apply h-full;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  font-family: 'IBM Plex Mono', monospace;
+  font-weight: 400;
+  /* Example weight */
+  text-transform: uppercase;
+}
+
+.font-plex-sans {
+  font-family: 'IBM Plex Sans', sans-serif;
+}
+
+.font-inter {
+  font-family: 'Inter', sans-serif;
+}
+
+/* Add this to your global CSS or component CSS */
+.monaco-editor,
+.monaco-diff-editor,
+.monaco-component {
+  --vscode-editor-background: #080808 !important;
+  --vscode-editorGutter-background: #080808 !important;
+  --vscode-editor-foreground: #FFFFFF !important;
+  --vscode-editorLineNumber-foreground: #858585 !important;
+  --vscode-editorLineNumber-activeForeground: #FFFFFF !important;
+  --vscode-editor-selectionBackground: #264F78 !important;
+  --vscode-editor-inactiveSelectionBackground: #3A3D41 !important;
+  --vscode-editorCursor-foreground: #AEAFAD !important;
+  --vscode-editorWhitespace-foreground: #404040 !important;
+  --vscode-scrollbarSlider-background: #79797966 !important;
+  --vscode-scrollbarSlider-hoverBackground: #646464B3 !important;
+  --vscode-scrollbarSlider-activeBackground: #BFBFBF99 !important;
+}
+
+.monaco-editor-container .monaco-editor {
+  background-color: #080808 !important;
+}
+
+.monaco-editor-container .monaco-editor .margin {
+  background-color: #080808 !important;
+}
+
+.monaco-editor-container .monaco-editor .monaco-editor-background {
+  background-color: #080808 !important;
 }

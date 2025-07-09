@@ -1,7 +1,7 @@
 # backend/config/api_router.py
 
 from rest_framework.routers import DefaultRouter
-from repositories.views import BatchDocumentModuleView, ChatView, ComplexityHotspotsView, CoverageUploadView, LatestCoverageReportView, OrganizationDetailView, OrganizationListView, OrphanSymbolsView, RepositorySelectorListView, RepositoryViewSet,GithubReposView,FileContentView,GenerateDocstringView, CodeSymbolDetailView, ValidateInviteCodeView, set_csrf_cookie
+from repositories.views import BatchDocumentModuleView, ChatView, CohesiveTestGenerationView, ComplexityHotspotsView, CoverageUploadView, LatestCoverageReportView, OrganizationDetailView, OrganizationListView, OrphanSymbolsView, RepositorySelectorListView, RepositoryViewSet,GithubReposView,FileContentView,GenerateDocstringView, CodeSymbolDetailView, ValidateInviteCodeView, set_csrf_cookie
 
 router = DefaultRouter()
 from django.urls import path # Make sure path is imported
@@ -101,6 +101,8 @@ urlpatterns += [
 
     path('repositories/<int:repo_id>/coverage/upload/', CoverageUploadView.as_view(), name='coverage-upload'),
     path('repositories/<int:repo_id>/coverage/latest/', LatestCoverageReportView.as_view(), name='coverage-latest'),
+    path('generate-cohesive-tests/', CohesiveTestGenerationView.as_view(), name='generate-cohesive-tests'),
+
 
 
 ]
