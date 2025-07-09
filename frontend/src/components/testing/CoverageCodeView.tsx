@@ -47,6 +47,9 @@ export const CoverageCodeView: React.FC<CoverageCodeViewProps> = ({ filePath, co
 
     return (
         <Editor
+            // --- THIS IS THE FIX ---
+            key={filePath} // Force re-mount when the file path changes
+            // --- END FIX ---
             height="100%"
             language={getLanguage(filePath)}
             value={content}

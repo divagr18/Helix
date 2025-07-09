@@ -64,8 +64,9 @@ export const CoverageVisualizer: React.FC<CoverageVisualizerProps> = ({
                         <CoverageCodeView
                             filePath={selectedNode.path}
                             content={fileContent}
-                            coveredLines={selectedCoverage.covered_lines}
-                            missedLines={selectedCoverage.missed_lines}
+                            // Pass the line number arrays down to the code view
+                            coveredLines={selectedCoverage.covered_lines || []}
+                            missedLines={selectedCoverage.missed_lines || []}
                         />
                     ) : (
                         <div className="flex items-center justify-center h-full">

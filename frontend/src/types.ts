@@ -153,3 +153,19 @@ export interface DetailedOrganization extends Organization {
 export interface GeneratedDoc {
   markdown: string;
 }
+export interface FileCoverageData {
+  id: number;
+  file_path: string;
+  code_file_id: number;
+  line_rate: number;
+  covered_lines: number[];
+  missed_lines: number[];
+}
+
+export interface CoverageReport {
+  id: number;
+  commit_hash: string;
+  uploaded_at: string;
+  overall_coverage: number;
+  file_coverages: FileCoverageData[];
+}

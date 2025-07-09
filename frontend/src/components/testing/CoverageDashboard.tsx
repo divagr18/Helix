@@ -8,29 +8,21 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
 import type { TreeNode } from '@/utils/tree';
-
-// Define a more specific type for the report data for better type safety
-interface CoverageReport {
-    id: number;
-    commit_hash: string;
-    uploaded_at: string;
-    overall_coverage: number;
-    file_coverages: any[]; // Define this more strictly if you can
-}
+import { type CoverageReport } from '@/types'; 
+// ... (CoverageReport interface) ...
 
 export const CoverageDashboard = () => {
-    const [isLoadingReport, setIsLoadingReport] = useState(true);
-
-    const [selectedNode, setSelectedNode] = useState<TreeNode | null>(null);
-    const [fileContent, setFileContent] = useState<string | null>(null);
-    const [isLoadingContent, setIsLoadingContent] = useState(false);
     const { activeRepository } = useWorkspaceStore();
     const [report, setReport] = useState<CoverageReport | null>(null);
     const [isLoading, setIsLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
+    const [selectedNode, setSelectedNode] = useState<TreeNode | null>(null);
+    const [fileContent, setFileContent] = useState<string | null>(null);
+    const [isLoadingContent, setIsLoadingContent] = useState(false);
 
-    // Use useCallback to memoize the fetching function
     const fetchLatestReport = useCallback(() => {
+        // --- THIS IS THE FIX ---
+        // We must handle the case where there is no active repository.
         if (activeRepository) {
             setIsLoading(true);
             setError(null);
@@ -39,7 +31,6 @@ export const CoverageDashboard = () => {
                     setReport(response.data);
                 })
                 .catch(err => {
-                    // If the error is a 404, it just means no report exists, which is fine.
                     if (err.response && err.response.status === 404) {
                         setReport(null);
                     } else {
@@ -50,61 +41,125 @@ export const CoverageDashboard = () => {
                 .finally(() => {
                     setIsLoading(false);
                 });
+        } else {
+            // If there's no repo, we are not loading anything.
+            setIsLoading(false);
+            setReport(null); // Ensure no old report data is shown
         }
+        // --- END FIX ---
     }, [activeRepository]);
 
-    // Fetch the report when the component mounts or the active repo changes
+    // 1) When you deselect (selectedNode → null), clear everything:
+useEffect(() => {
+  if (!selectedNode) {
+    setFileContent(null);
+    setIsLoadingContent(false);
+    console.log("[Coverage] deselected → clearing content");
+  }
+}, [selectedNode]);
+
+// 2) When a file node is selected AND the report is ready, fetch it:
+useEffect(() => {
+  if (selectedNode?.type !== 'file' || !report) return;
+
+  const coverageInfo = report.file_coverages.find(
+    (fc) => fc.file_path === selectedNode.path
+  );
+  const fileId = coverageInfo?.code_file_id;
+  if (!fileId) {
+    setFileContent("// Could not determine file ID for this path.");
+    return;
+  }
+
+  setIsLoadingContent(true);
+  axios
+    .get(`/api/v1/files/${fileId}/content/`)
+    .then((res) => {
+      console.log("[Coverage] raw response.data:", res.data);
+      // Try to pull out the text from known shapes:
+      let text: string;
+      if (typeof res.data === "string") {
+        // API returned raw text
+        text = res.data;
+      } else if (typeof res.data.content === "string") {
+        // { content: "..." }
+        text = res.data.content;
+      } else if (res.data.file && typeof res.data.file.content === "string") {
+        // { file: { content: "..." } }
+        text = res.data.file.content;
+      } else {
+        // fallback: serialize whole object
+        text = JSON.stringify(res.data, null, 2);
+      }
+      console.log("[Coverage] extracted text length:", text.length);
+      setFileContent(text);
+    })
+    .catch((err) => {
+      console.error("[Coverage] error loading content:", err);
+      setFileContent("// Error loading file content.");
+    })
+    .finally(() => {
+      setIsLoadingContent(false);
+    });
+}, [selectedNode, report]);
+
+
+
+
+
     useEffect(() => {
         fetchLatestReport();
     }, [fetchLatestReport]);
-    useEffect(() => {
-        if (selectedNode && selectedNode.type === 'file' && report) {
-            const coverageInfo = report.file_coverages.find(fc => fc.file_path === selectedNode.path);
-            const fileId = coverageInfo?.code_file_id;
 
-            if (fileId) {
-                setIsLoadingContent(true);
-                setFileContent(null);
-                axios.get(`/api/v1/files/${fileId}/content/`)
-                    .then(response => setFileContent(response.data.content))
-                    .catch(() => setFileContent("// Error loading file content."))
-                    .finally(() => setIsLoadingContent(false));
-            }
-        }
-    }, [selectedNode, report]);
-    // This function will be passed to the dropzone to trigger a refresh after a successful upload
     const handleUploadSuccess = () => {
-        // Give the backend a moment to process before refetching
         toast.info("Processing report...", { description: "The dashboard will refresh automatically." });
         setTimeout(() => {
             fetchLatestReport();
-        }, 3000); // 3-second delay as a simple polling mechanism
+        }, 3000);
     };
-    if (isLoadingReport) return <Skeleton className="h-[80vh] w-full" />;
-    if (error) return <p>{error}</p>;
+    
 
-    // --- Render Logic ---
+    // --- REFINED RENDER LOGIC ---
+    // First, handle the loading state. This is the highest priority.
+    if (isLoading) {
+        return <Skeleton className="h-[80vh] w-full m-6" />;
+    }
 
-    // If we have a report, show the visualizer. Otherwise, show the uploader.
+    // After loading, if there's no active repo, show a clear message.
+    if (!activeRepository) {
+        return (
+            <div className="flex items-center justify-center h-full">
+                <p className="text-muted-foreground">Please select a repository from the header to view its test coverage.</p>
+            </div>
+        );
+    }
+
+    // After loading, if there was an error, show it.
+    if (error) {
+        return (
+            <div className="flex flex-col items-center justify-center h-full text-center">
+                <p className="text-destructive">{error}</p>
+                <Button onClick={fetchLatestReport} variant="outline" className="mt-4">Try Again</Button>
+            </div>
+        );
+    }
+
+    // If we are done loading and have a repo, render the main content.
     return (
         <div className="h-full flex flex-col">
             {report ? (
                 <div className="flex-grow min-h-0">
-                    <CoverageVisualizer
-                        report={report}
-                        onUploadNew={fetchLatestReport}
-                        // Pass down the state and the setter function
-                        selectedNode={selectedNode}
+                    {/* Pass fetchLatestReport as the onUploadNew handler */}
+                    <CoverageVisualizer report={report} onUploadNew={fetchLatestReport} selectedNode={selectedNode}
                         onSelectNode={setSelectedNode}
                         fileContent={fileContent}
-                        isLoadingContent={isLoadingContent}
-                    />
+                        isLoadingContent={isLoadingContent} />
                 </div>
             ) : (
                 <div className="text-center p-8 mt-8 border-dashed border-2 rounded-lg max-w-2xl mx-auto">
                     <h3 className="text-xl font-semibold">No Coverage Report Found</h3>
                     <p className="text-muted-foreground mt-2">
-                        Generate a `coverage.xml` report from your test suite (e.g., using `pytest-cov`) and upload it to get started.
+                        Generate a `coverage.xml` report from your test suite and upload it to get started.
                     </p>
                     <FileUploadDropzone
                         repoId={activeRepository.id}

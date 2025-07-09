@@ -2072,8 +2072,7 @@ class RepositorySelectorListView(APIView):
         serializer = RepositorySelectorSerializer(repos, many=True)
         return Response(serializer.data)
     
-# backend/repositories/views.py
-# ... imports ...
+
 from .serializers import OrphanSymbolSerializer
 
 class OrphanSymbolsView(APIView):
@@ -2139,7 +2138,6 @@ class CoverageUploadView(APIView):
 
         return Response({"message": "Coverage report uploaded and is being processed."}, status=status.HTTP_202_ACCEPTED)
 
-# The LatestCoverageReportView already uses the correct pattern, so no changes are needed there.
 class LatestCoverageReportView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
