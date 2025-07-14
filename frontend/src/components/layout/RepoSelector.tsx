@@ -55,7 +55,7 @@ export const RepoSelector = () => {
           aria-expanded={open}
           className="w-[250px] justify-between rounded-none"
         >
-          <span className="truncate">
+          <span className="truncate font-plex-sans">
             {activeRepository ? activeRepository.full_name : "Select a repository..."}
           </span>
           <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />

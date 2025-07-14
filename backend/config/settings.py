@@ -34,6 +34,7 @@ ALLOWED_HOSTS = ['*']
 READONLY_DB_USER = os.environ.get('READONLY_POSTGRES_USER')
 READONLY_DB_PASSWORD = os.environ.get('READONLY_POSTGRES_PASSWORD')
 # Application definition
+E2B_API_KEY = os.getenv('E2B_API_KEY')
 
 INSTALLED_APPS = [
     "django.contrib.admin",

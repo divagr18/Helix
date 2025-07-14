@@ -5,7 +5,6 @@ import axios from 'axios';
 import { toast } from 'sonner';
 import { useWorkspaceStore } from '@/stores/workspaceStore'; // <--- 1. Import the store
 
-
 // Lucide Icons
 import { Github, RefreshCw, Loader2, ShieldCheck, ShieldAlert, Clock, BookOpen } from 'lucide-react';
 
@@ -62,7 +61,7 @@ const getStatusInfo = (status: string): { variant: "default" | "secondary" | "de
     }
 };
 
-export const RepositoryCard: React.FC<RepositoryCardProps> = ({ repo, onSyncStarted,onRepoDeleted }) => {
+export const RepositoryCard: React.FC<RepositoryCardProps> = ({ repo, onSyncStarted, onRepoDeleted }) => {
     // This local state is just for the instant feedback when the button is clicked,
     // before the parent's data refresh shows the new repo.status.
     const [isRequestingSync, setIsRequestingSync] = useState(false);
@@ -75,7 +74,7 @@ export const RepositoryCard: React.FC<RepositoryCardProps> = ({ repo, onSyncStar
         // This sets the clicked repository as the globally active one
         setActiveRepository(repo);
     };
-    
+
     const handleDelete = async () => {
         setIsDeleting(true);
         toast.info(`Deleting ${repo.full_name}...`);
@@ -133,16 +132,16 @@ export const RepositoryCard: React.FC<RepositoryCardProps> = ({ repo, onSyncStar
 
     return (
         <>
-            <Card className="flex flex-col border border-border bg-card/95 backdrop-blur-sm shadow-lg hover:shadow-primary/10 transition-shadow duration-300">
+            <Card className="flex flex-col rounded-none border border-border bg-card/95 backdrop-blur-sm shadow-lg hover:shadow-primary/10 transition-shadow duration-300">
                 <CardHeader className="pb-4">
                     <div className="flex items-start justify-between gap-4">
                         {/* Left side: Title and Description */}
                         <div className="flex-grow min-w-0">
-                            <CardTitle className="text-lg font-semibold flex items-center gap-2 truncate">
+                            <CardTitle className="text-lg font-semibold flex items-center gap-2 truncate font-plex-sans ">
                                 <Github className="h-5 w-5 text-muted-foreground flex-shrink-0" />
                                 <Link
                                     // --- THIS IS THE CORRECT URL STRUCTURE ---
-                                    to={`/repository/${repo.id}/code`} 
+                                    to={`/repository/${repo.id}/code`}
                                     onClick={handleNavigateToRepo}
                                     className="hover:text-primary hover:underline truncate"
                                     title={repo.full_name}
@@ -150,7 +149,7 @@ export const RepositoryCard: React.FC<RepositoryCardProps> = ({ repo, onSyncStar
                                     {repo.full_name}
                                 </Link>
                             </CardTitle>
-                            <CardDescription className="pt-2 text-xs flex items-center text-muted-foreground">
+                            <CardDescription className="pt-2 text-xs flex items-center text-muted-foreground font-inter">
                                 <Clock className="h-3 w-3 mr-1.5" />
                                 Last synced: {repo.last_processed ? new Date(repo.last_processed).toLocaleString() : 'Never'}
                             </CardDescription>
@@ -158,9 +157,9 @@ export const RepositoryCard: React.FC<RepositoryCardProps> = ({ repo, onSyncStar
 
                         {/* Right side: Status Badge and Actions Dropdown */}
                         <div className="flex items-center gap-2 flex-shrink-0">
-                            <Badge variant={statusInfo.variant}>{statusInfo.text}</Badge>
-                            <DropdownMenu>
-                                <DropdownMenuTrigger asChild>
+                            <Badge className="" variant={statusInfo.variant}>{statusInfo.text}</Badge>
+                            <DropdownMenu >
+                                <DropdownMenuTrigger asChild className="">
                                     <Button variant="ghost" size="icon" className="h-8 w-8">
                                         <span className="sr-only">Open repository actions</span>
                                         <MoreHorizontal className="h-4 w-4" />
@@ -191,16 +190,16 @@ export const RepositoryCard: React.FC<RepositoryCardProps> = ({ repo, onSyncStar
 
                 <CardContent className="flex-grow">
                     {/* --- USE REAL DATA INSTEAD OF PLACEHOLDERS --- */}
-                    <div className="text-sm text-muted-foreground space-y-2">
+                    <div className="text-sm text-muted-foreground space-y-2 ">
                         <div className="flex items-center gap-2">
-                            <BookOpen className={`h-4 w-4 ${repo.documentation_coverage >= 80 ? 'text-green-500' : repo.documentation_coverage >= 50 ? 'text-yellow-500' : 'text-orange-500'}`} />
-                            <span>{repo.documentation_coverage.toFixed(1)}% Doc Coverage</span>
+                            <BookOpen className={`h-4 w-4 font-plex-sans ${repo.documentation_coverage >= 80 ? 'text-green-500' : repo.documentation_coverage >= 50 ? 'text-yellow-500' : 'text-orange-500'}`} />
+                            <span className='font-inter'>{repo.documentation_coverage.toFixed(1)}% Doc Coverage</span>
                         </div>
 
                         {/* Conditionally render the orphan count */}
                         <div className="flex items-center gap-2">
                             <ShieldAlert className={`h-4 w-4 ${repo.orphan_symbol_count > 0 ? 'text-red-500' : 'text-muted-foreground'}`} />
-                            <span>{repo.orphan_symbol_count} Orphan Symbol{repo.orphan_symbol_count !== 1 ? 's' : ''}</span>
+                            <span className='font-inter'>{repo.orphan_symbol_count} Orphan Symbol{repo.orphan_symbol_count !== 1 ? 's' : ''}</span>
                         </div>
                     </div>
                 </CardContent>
@@ -209,11 +208,11 @@ export const RepositoryCard: React.FC<RepositoryCardProps> = ({ repo, onSyncStar
                     <TooltipProvider delayDuration={100}>
                         <Tooltip>
                             <TooltipTrigger asChild>
-                                <span className="w-full" tabIndex={isProcessing ? -1 : undefined}>
+                                <span className="w-full font-inter" tabIndex={isProcessing ? -1 : undefined}>
                                     <Button
                                         variant="secondary"
                                         size="sm"
-                                        className="w-full"
+                                        className="w-full text-white border border-transparent hover:border-[#2a2a2a] transition-colors"
                                         onClick={handleReProcess}
                                         disabled={isProcessing}
                                     >
@@ -226,7 +225,7 @@ export const RepositoryCard: React.FC<RepositoryCardProps> = ({ repo, onSyncStar
                                     </Button>
                                 </span>
                             </TooltipTrigger>
-                            <TooltipContent side="bottom">
+                            <TooltipContent className='font-inter' side="bottom">
                                 <p>Pull latest changes and re-analyze repository.</p>
                             </TooltipContent>
                         </Tooltip>

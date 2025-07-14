@@ -2276,3 +2276,23 @@ class CohesiveTestGenerationView(APIView):
         response['X-Accel-Buffering'] = 'no'
         response['Cache-Control'] = 'no-cache'
         return response
+    
+from .tasks import run_tests_in_sandbox_task # Import our new task
+
+class RunTestsInSandboxView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, *args, **kwargs):
+        source_code = request.data.get('source_code')
+        test_code = request.data.get('test_code')
+
+        if not source_code or not test_code:
+            return Response(
+                {"error": "Both 'source_code' and 'test_code' are required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Dispatch the task and return its ID for polling
+        task = run_tests_in_sandbox_task.delay(source_code, test_code)
+        
+        return Response({"task_id": task.id}, status=status.HTTP_202_ACCEPTED)

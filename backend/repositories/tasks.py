@@ -2642,3 +2642,152 @@ def parse_coverage_report_task(repo_id: int, commit_hash: str, temp_file_path: s
             print(f"COVERAGE_PARSE_TASK: Cleaned up temporary file: {temp_file_path}")
             
     return f"Coverage report for repo {repo_id} processed."
+
+
+from celery import shared_task
+from django.conf import settings
+from e2b_code_interpreter import Sandbox
+import re
+import tempfile
+import os
+import modulefinder
+
+@shared_task(bind=True)
+def run_tests_in_sandbox_task(self, source_code: str, test_code: str):
+    """
+    Runs generated test code against source code in a secure E2B cloud sandbox.
+    It intelligently handles both single-file modules and multi-level packages
+    by parsing the test code's import statements. It automatically installs
+    missing system dependencies (like for OpenCV) and pip packages, and
+    always returns a dict with exit_code, stdout, stderr, coverage_xml, and junit_xml.
+    """
+    task_id = self.request.id
+    print(f"E2B_TASK[{task_id}]: Starting")
+
+    if not settings.E2B_API_KEY:
+        print("E2B_TASK: ERROR - E2B_API_KEY is not configured.")
+        return {"error": "Test execution service is not configured."}
+
+    # The 'base' template is a minimal Debian environment.
+    sandbox = Sandbox(template="base", api_key=settings.E2B_API_KEY)
+    try:
+        # STAGE 1: SETUP LOCAL MODULE/PACKAGE STRUCTURE
+        # Assume the first 'from ... import ...' in the test file refers to the local code.
+        # This is the key assumption that distinguishes the code-under-test from pip dependencies.
+        m = re.search(r'^\s*from\s+([a-zA-Z0-9_.]+)\s+import',
+                      test_code, re.MULTILINE)
+        
+        full_module_path = m.group(1) if m else "app"
+        print(f"E2B_TASK: Detected module path '{full_module_path}' from test code.")
+
+        path_parts = full_module_path.split('.')
+        cov_target = path_parts[0]  # The top-level package/module for coverage
+        source_file_path = f"{'/'.join(path_parts)}.py"
+
+        # If the path suggests a package (e.g., 'calculator.operations'), create the structure.
+        if len(path_parts) > 1:
+            dir_path = "/".join(path_parts[:-1])
+            print(f"E2B_TASK: Creating package structure: mkdir -p {dir_path}")
+            sandbox.commands.run(f"mkdir -p {dir_path}")
+            
+            # Create __init__.py in each directory to make it a valid Python package.
+            current_path = ""
+            for part in path_parts[:-1]:
+                current_path = f"{current_path}{part}/" if current_path else f"{part}/"
+                sandbox.files.write(f"{current_path}__init__.py", "")
+
+        print(f"E2B_TASK: Writing source to '{source_file_path}' and tests to 'test_app.py'")
+        sandbox.files.write(source_file_path, source_code)
+        sandbox.files.write("test_app.py", test_code)
+        print("E2B_TASK: Wrote source and test files.")
+
+        # STAGE 2: BOOTSTRAP INSTALLATIONS
+        # Install common system dependencies and the core Python testing tools in one go.
+        print("E2B_TASK: Installing system dependencies and base Python packages...")
+        bootstrap_cmd = (
+            "apt-get update && apt-get install -y libgl1-mesa-glx && "
+            "pip install pytest pytest-cov pillow numpy opencv-python"
+        )
+        bootstrap_proc = sandbox.commands.run(bootstrap_cmd, timeout=180)
+        if bootstrap_proc.exit_code != 0:
+            print(f"E2B_TASK: ERROR - Bootstrap install failed:\n{bootstrap_proc.stderr}")
+            return {
+                "exit_code": bootstrap_proc.exit_code, "stdout": bootstrap_proc.stdout,
+                "stderr": bootstrap_proc.stderr, "coverage_xml": None, "junit_xml": None,
+            }
+
+        # STAGE 3: PYTEST EXECUTION WITH AUTO-INSTALL RETRY LOOP
+        # This loop handles missing pip dependencies that were not in the bootstrap list.
+        pytest_cmd = (
+            f"python -m pytest --cov={cov_target} "
+            f"--cov-report=xml:coverage.xml --junitxml=results.xml"
+        )
+        exit_code = stdout = stderr = None
+
+        for attempt in range(1, 7): # Allow up to 6 attempts (1 initial + 5 for installs)
+            print(f"E2B_TASK: Pytest attempt {attempt}")
+            try:
+                result = sandbox.commands.run(pytest_cmd, timeout=120)
+                exit_code, stdout, stderr = result.exit_code, result.stdout, result.stderr
+                print(f"E2B_TASK: Pytest exited with code {exit_code}")
+            except Exception as e:
+                exit_code = getattr(e, "exit_code", -1)
+                stdout    = getattr(e, "stdout", "")
+                stderr    = getattr(e, "stderr", str(e))
+                print(f"E2B_TASK: Pytest raised an exception (code {exit_code}):\n{stderr}")
+
+            # If tests passed or we're on the last attempt, break the loop.
+            if exit_code == 0 or attempt == 6:
+                break
+
+            # If tests failed, look for a missing module error to auto-install.
+            m = re.search(r"ModuleNotFoundError: No module named ['\"]([^'\"]+)['\"]", stderr)
+            if not m:
+                print("E2B_TASK: Pytest failed for a reason other than a missing module. Breaking.")
+                break
+
+            missing_module = m.group(1)
+            print(f"E2B_TASK: Installing missing dependency '{missing_module}'")
+            install_proc = sandbox.commands.run(f"pip install {missing_module}", timeout=120)
+            if install_proc.exit_code != 0:
+                print(f"E2B_TASK: WARNING - Failed to install '{missing_module}':\n{install_proc.stderr}")
+                # We break here because if pip fails, we can't proceed.
+                break
+            else:
+                print(f"E2B_TASK: Successfully installed '{missing_module}'. Retrying tests.")
+
+        # STAGE 4: COLLECT RESULTS
+        coverage_xml = None
+        try:
+            coverage_xml = sandbox.files.read("coverage.xml")
+            print("E2B_TASK: Read coverage.xml")
+        except Exception as e:
+            print(f"E2B_TASK: WARNING - coverage.xml missing: {e}")
+
+        junit_xml = None
+        try:
+            junit_xml = sandbox.files.read("results.xml")
+            print("E2B_TASK: Read results.xml")
+        except Exception as e:
+            print(f"E2B_TASK: WARNING - results.xml missing: {e}")
+
+        return {
+            "exit_code":    exit_code,
+            "stdout":       stdout,
+            "stderr":       stderr,
+            "coverage_xml": coverage_xml,
+            "junit_xml":    junit_xml,
+        }
+
+    except Exception as e:
+        # Catch any other unexpected errors during the setup process.
+        print(f"E2B_TASK: ERROR - Unexpected failure in sandbox task: {e}")
+        return {"error": f"Unexpected error during sandbox execution: {e}"}
+
+    finally:
+        # Always ensure the sandbox is closed to prevent resource leaks.
+        try:
+            sandbox.kill()
+            print("E2B_TASK: Sandbox closed")
+        except Exception as e:
+            print(f"E2B_TASK: WARNING - Error closing sandbox: {e}")

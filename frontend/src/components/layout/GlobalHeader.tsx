@@ -21,14 +21,14 @@ export const GlobalHeader = () => {
 
     return (
         <header className="h-16 flex items-center px-6 border-b border-border bg-card flex-shrink-0">
-            <div className="flex items-center gap-2 text-lg font-bold">
+            <div className="flex items-center gap-2 text-lg font-bold font-plex-sans">
                 {/* Logo placeholder */}
                 <p>Helix</p>
             </div>
             <div className="flex items-center ml-6">
                 {/* Workspace Selector Placeholder */}
-                <span className="font-semibold">{activeWorkspaceName}</span>
-                <ChevronRight className="h-4 w-4 mx-1 text-muted-foreground" />
+                <span className="font-medium font-plex-sans">{activeWorkspaceName}</span>
+                <ChevronRight className="h-4 w-4 mx-1 text-muted-foreground font-plex-sans" />
                 <RepoSelector />
             </div>
             <div className="ml-auto">

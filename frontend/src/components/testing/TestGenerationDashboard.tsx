@@ -1,16 +1,40 @@
 // src/components/testing/TestGenerationDashboard.tsx
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useRepo } from '@/contexts/RepoContext';
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { FileTreePanel } from '@/components/repo-detail/FileTreePanel'; // We can reuse this!
 import { SymbolTestGeneratorPanel } from './SymbolTestGeneratorPanel';
 import type { CodeFile } from '@/types';
+import axios from 'axios';
 
 export const TestGenerationDashboard = () => {
     const { repo } = useRepo(); // We only need the repo object to pass to the file tree
 
     // This local state will track which file is selected *within this dashboard*
     const [selectedFile, setSelectedFile] = useState<CodeFile | null>(null);
+    const [sourceCode, setSourceCode] = useState<string | null>(null);
+    const [isLoadingContent, setIsLoadingContent] = useState(false);
+    useEffect(() => {
+        console.log("TGD: selectedFile changed to:", selectedFile?.file_path);
+        if (selectedFile) {
+            setIsLoadingContent(true);
+            setSourceCode(null);
+            axios.get(`/api/v1/files/${selectedFile.id}/content/`)
+                .then(response => {
+                    console.log("TGD: API call successful. Received content.");
+                    setSourceCode(response.data);
+                })
+                .catch(err => {
+                    console.error("Failed to fetch source code for test generation:", err);
+                    setSourceCode("// Error: Could not load source code.");
+                })
+                .finally(() => {
+                    setIsLoadingContent(false);
+                });
+        } else {
+            setSourceCode(null); // Clear content if no file is selected
+        }
+    }, [selectedFile]);
 
     if (!repo) {
         return (
@@ -52,7 +76,7 @@ export const TestGenerationDashboard = () => {
             {/* Right Panel: Symbol Selector and Test Display */}
             <ResizablePanel defaultSize={70} minSize={30}>
                 {selectedFile ? (
-                    <SymbolTestGeneratorPanel file={selectedFile} />
+                    <SymbolTestGeneratorPanel file={selectedFile} sourceCode={sourceCode} />
                 ) : (
                     <div className="flex items-center justify-center h-full">
                         <p className="text-muted-foreground">Select a file to see its functions and methods.</p>

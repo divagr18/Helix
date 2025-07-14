@@ -175,13 +175,13 @@ export function DashboardPage() {
 
     return (
         <div className="p-4 md:p-6 lg:p-8">
-            <div className="flex items-center justify-between mb-6">
+            <div className="flex items-center justify-between mb-2 ml-3">
                 <h1 className="text-2xl md:text-3xl font-bold tracking-tight">Dashboard</h1>
                 <Dialog open={isAddRepoDialogOpen} onOpenChange={setIsAddRepoDialogOpen}>
                     <DialogTrigger asChild>
                         <Button onClick={handleFetchGithubRepos}>
                             <PlusCircle className="mr-2 h-4 w-4" />
-                            Add Repository
+                            <span className="font-plex-sans">Add Repository</span>
                         </Button>
                     </DialogTrigger>
                     <DialogContent className="sm:max-w-[625px]">
@@ -224,7 +224,7 @@ export function DashboardPage() {
                 </Dialog>
             </div>
 
-            <h2 className="text-xl font-semibold mb-4 text-muted-foreground">Tracked Repositories</h2>
+            <h2 className="text-xl font-semibold mb-4 text-muted-foreground ml-3">Tracked Repositories</h2>
             {trackedLoading ? (
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 md:gap-6">
                     {renderSkeletonCards()}
@@ -236,7 +236,7 @@ export function DashboardPage() {
                         <p className="text-sm text-muted-foreground mt-1">Click "Add Repository" to get started.</p>
                     </div>
                 ) : (
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 md:gap-6">
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 mt-6 xl:grid-cols-4 gap-4 md:gap-6 ml-2">
                         {trackedRepos.map(repo => (
                             <RepositoryCard
                                 key={repo.id}
