@@ -92,6 +92,24 @@ class Repository(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     documentation_coverage = models.FloatField(default=0.0)
+    primary_language = models.CharField(
+        max_length=50, 
+        null=True, 
+        blank=True, 
+        help_text="The dominant programming language of the repository."
+    )
+    size_kb = models.PositiveIntegerField(
+        default=0, 
+        help_text="The size of the repository on disk in kilobytes."
+    )
+    commit_count = models.PositiveIntegerField(
+        default=0, 
+        help_text="The total number of commits in the default branch."
+    )
+    contributor_count = models.PositiveIntegerField(
+        default=0, 
+        help_text="The number of unique contributors to the repository."
+    )
     orphan_symbol_count = models.IntegerField(default=0)
     source_root = models.CharField(
         max_length=255,

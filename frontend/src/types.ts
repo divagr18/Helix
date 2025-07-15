@@ -169,3 +169,28 @@ export interface CoverageReport {
   overall_coverage: number;
   file_coverages: FileCoverageData[];
 }
+
+export interface GraphLinkData {
+  source: number; // ID of the caller symbol
+  target: number; // ID of the callee symbol
+}
+
+// The data structure for the entire graph API response
+export interface ComplexityGraphData {
+  nodes: CodeSymbol[];
+  links: GraphLinkData[];
+}
+
+// The internal representation of a node for D3 simulation
+export interface GraphNode extends d3.SimulationNodeDatum {
+  id: number;
+  name: string;
+  complexity: number;
+  radius: number;
+}
+
+// The internal representation of a link for D3 simulation
+export interface GraphLink extends d3.SimulationLinkDatum<GraphNode> {
+  source: number | GraphNode; // D3 populates this
+  target: number | GraphNode; // D3 populates this
+}

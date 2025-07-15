@@ -63,3 +63,4 @@ def handle_new_user_signup(request, user, **kwargs):
         print(f"SIGNAL: ERROR - Invite code '{code_str}' from session was not found in the database.")
     except Exception as e:
         print(f"SIGNAL: ERROR - An unexpected error occurred while burning invite code '{code_str}': {e}")
+

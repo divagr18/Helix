@@ -332,3 +332,21 @@ class TestCoverageReportSerializer(serializers.ModelSerializer):
     class Meta:
         model = TestCoverageReport
         fields = ['id', 'repository', 'commit_hash', 'uploaded_at', 'overall_coverage', 'file_coverages']
+
+class GraphLinkSerializer(serializers.ModelSerializer):
+    source = serializers.IntegerField(source='caller.id')
+    target = serializers.IntegerField(source='callee.id')
+
+    class Meta:
+        model = CodeDependency
+        fields = ['source', 'target']
+
+class DashboardRepositorySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Repository
+        fields = [
+            'id', 'full_name', 'status', 'last_processed',
+            'documentation_coverage', 'orphan_symbol_count',
+            # New fields
+            'primary_language', 'size_kb', 'commit_count', 'contributor_count'
+        ]

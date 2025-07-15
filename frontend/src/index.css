@@ -189,7 +189,7 @@ html {
     --foreground: oklch(0.984 0.003 247.858);
     /* Light text (off-white) */
 
-    --card: oklch(0.1467 0 6.35);
+    --card: #0C0C0E;
     /* Slightly lighter dark blue/gray */
     --card-foreground: oklch(0.984 0.003 247.858);
     /* Light text */
@@ -199,10 +199,6 @@ html {
     --popover-foreground: oklch(0.984 0.003 247.858);
     /* Light text */
 
-    /* Accent Colors (Dark Mode) - REVIEW THESE CAREFULLY */
-    /* The oklch primary `oklch(0.929 0.013 255.508)` is very light for a dark theme primary. */
-    /* Consider your HSL blue: `217 91% 60%` or a dark theme appropriate oklch value. */
-    /* For example, a dark theme primary might be: oklch(0.7 0.15 265) (a noticeable blue) */
     --primary: oklch(0.929 0.013 255.508);
     /* Current: Very Light Blue/Off-white */
     --primary-foreground: #272727;
@@ -244,6 +240,17 @@ html {
     --chart-3: oklch(0.769 0.188 70.08);
     --chart-4: oklch(0.627 0.265 303.9);
     --chart-5: oklch(0.645 0.246 16.439);
+    --complexity-high: #f87171;
+    /* hsl(3.7, 95.1%, 69.2%) for #f87171 */
+    --complexity-medium: #fb923c;
+    /* hsl(22.3, 95.6%, 62.2%) for #fb923c */
+    --complexity-low: #4ade80;
+
+    --coverage-high: 142.1 70.6% 45.3%;
+    /* #4ade80 */
+    --coverage-medium: 22.3 95.6% 62.2%;
+    /* #fb923c */
+    --coverage-low: 3.7 95.1% 69.2%;
 
     /* Sidebar Colors (Dark Mode) */
     --sidebar: oklch(0.208 0.042 265.755);
@@ -261,7 +268,7 @@ html {
     background-color: var(--background);
     /* USE VARIABLE DIRECTLY */
     color: var(--foreground);
-    font-family: 'IBM Plex Mono', monospace;
+    font-family: 'Inter', sans-serif;
     line-height: 1.5;
     font-weight: 400;
     color-scheme: light dark;
@@ -271,6 +278,7 @@ html {
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     font-feature-settings: "rlig" 1, "calt" 1;
+    font-family: 'IBM Plex Sans', sans-serif;
     /* Recommended by shadcn/ui */
 
     /* Body layout - if for global centering, keep. Otherwise, scope to app container. */
@@ -394,22 +402,6 @@ html,
 body,
 #root {
   @apply h-full;
-}
-
-h1,
-h2,
-h3,
-h4,
-h5,
-h6 {
-  font-family: 'IBM Plex Mono', monospace;
-  font-weight: 400;
-  /* Example weight */
-  text-transform: uppercase;
-}
-
-.font-plex-sans {
-  font-family: 'IBM Plex Sans', sans-serif;
 }
 
 .font-inter {

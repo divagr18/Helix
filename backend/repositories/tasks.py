@@ -1,4 +1,5 @@
 # backend/repositories/tasks.py
+from collections import Counter
 from pathlib import Path
 from config.celery import app
 from .models import Repository,AsyncTaskStatus
@@ -18,7 +19,6 @@ import time
 from github import Github, GithubException, UnknownObjectException
 from django.contrib.auth import get_user_model
 import datetime
-from itertools import takewhile
 import tempfile
 from django.utils import timezone
 from django.db import transaction,models  # Import the transaction module
@@ -27,6 +27,8 @@ from .models import Notification, AsyncTaskStatus # Ensure Notification is impor
 from allauth.socialaccount.models import SocialAccount
 import xml.etree.ElementTree as ET
 from django.core.files.storage import default_storage
+from git import Repo, GitCommandError # <--- Import GitPython
+
 from .models import TestCoverageReport, FileCoverage, CodeFile, Repository
 OPENAI_EMBEDDING_BATCH_SIZE = 50
 OPENAI_EMBEDDING_BATCH_FILE_MAX_REQUESTS = 49000
@@ -96,6 +98,38 @@ def process_repository(repo_id):
         else:
             # Cloning new repo
             subprocess.run(['git', 'clone', clone_url, repo_path], check=True, capture_output=True, timeout=300)
+        try:
+            git_repo = Repo(repo_path)
+            
+            # 1. Get Commit and Contributor Count
+            commit_count = git_repo.rev_parse('HEAD').count()
+            contributors = {commit.author.email for commit in git_repo.iter_commits('HEAD')}
+            contributor_count = len(contributors)
+
+            # 2. Get Repo Size
+            total_size = 0
+            for dirpath, dirnames, filenames in os.walk(repo_path):
+                if '.git' in dirnames:
+                    dirnames.remove('.git')
+                for f in filenames:
+                    fp = os.path.join(dirpath, f)
+                    if not os.path.islink(fp):
+                        total_size += os.path.getsize(fp)
+            size_kb = total_size // 1024
+
+            # 3. Save metrics to the database model
+            repo.commit_count = commit_count
+            repo.contributor_count = contributor_count
+            repo.size_kb = size_kb
+            # We will save primary_language after file analysis
+            repo.save(update_fields=['commit_count', 'contributor_count', 'size_kb'])
+            print(f"PROCESS_REPO_TASK: Saved Git metrics for repo {repo.id}.")
+
+        except GitCommandError as e:
+            print(f"Git command failed for repo {repo_id}: {e}")
+        except Exception as e:
+            print(f"Error gathering git metrics for repo {repo_id}: {e}")
+
 
         # Get commit hash AFTER pull
         try:
@@ -360,7 +394,20 @@ def process_repository(repo_id):
                     notification_type=Notification.NotificationType.STALENESS_ALERT
                 )
             # --- END Staleness Detection ---
-
+            lang_counter = Counter()
+            file_extensions = {
+                'py': 'Python', 'js': 'JavaScript', 'ts': 'TypeScript',
+                'java': 'Java', 'go': 'Go', 'rb': 'Ruby', 'rs': 'Rust', 'html': 'HTML', 'css': 'CSS'
+            }
+            # This assumes you have access to the file list from the analysis
+            for file_data in repo_analysis_data.get('files', []):
+                ext = file_data.get('path', '').split('.')[-1]
+                if ext in file_extensions:
+                    lang_counter[file_extensions[ext]] += 1
+            
+            primary_language = lang_counter.most_common(1)[0][0] if lang_counter else None
+            repo.primary_language = primary_language
+            
             repo.root_merkle_hash = repo_analysis_data.get('root_merkle_hash')
             repo.status = Repository.Status.COMPLETED
             repo.last_processed = timezone.now() # Added timezone

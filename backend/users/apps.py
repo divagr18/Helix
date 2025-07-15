@@ -6,7 +6,10 @@ class UsersConfig(AppConfig):
     name = 'users'
 
     def ready(self):
-        # Import signals here to register them
+        """
+        This method is called when the app is ready.
+        We import our signals here to ensure they are registered.
+        """
         try:
             import users.signals
         except ImportError:

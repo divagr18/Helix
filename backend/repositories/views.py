@@ -14,7 +14,7 @@ from .models import CodeFile, CodeSymbol as CodeFunction, Repository, CodeSymbol
 from .ai_services import generate_class_summary_stream, generate_module_readme_stream,generate_refactor_stream # 03c03c03c NEW IMPORT
 from .tasks import process_repository # Import the Celery task
 import json
-from .serializers import CodeSymbolSerializer, DetailedOrganizationSerializer, RepositorySerializer,RepositoryDetailSerializer,NotificationSerializer, TestCoverageReportSerializer
+from .serializers import CodeSymbolSerializer, DashboardRepositorySerializer, DetailedOrganizationSerializer, GraphLinkSerializer, RepositorySerializer,RepositoryDetailSerializer,NotificationSerializer, TestCoverageReportSerializer
 from rest_framework.views import APIView
 from django.views.decorators.csrf import csrf_exempt
 from rest_framework.response import Response
@@ -42,7 +42,8 @@ User = get_user_model() # <--- 2. Call the function to get the active User model
 REPO_CACHE_BASE_PATH = "/var/repos" # Use the same constant
 OPENAI_CLIENT_INSTANCE = OpenAIClient()
 OPENAI_EMBEDDING_MODEL_FOR_SEARCH = "text-embedding-3-small"
-@method_decorator(csrf_exempt, name="dispatch")
+from django.db import connection  # For debugging SQL queries
+
 @method_decorator(csrf_exempt, name="dispatch")
 class RepositoryViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated, IsMemberOfOrganization]
@@ -91,26 +92,48 @@ class RepositoryViewSet(viewsets.ModelViewSet):
         This method is called by `create` after validation.
         It handles the security checks and saving the object.
         """
-        # 1. Get the organization_id from the validated data of our CreateSerializer
-        organization_id = serializer.validated_data.pop('organization_id')
+        organization_id = serializer.validated_data.get('organization_id')
+        if not organization_id:
+            raise serializers.ValidationError({"organization_id": "This field is required."})
 
-        # 2. Check if the user is a member of that organization
+        # --- DEBUGGING BLOCK ---
+        print("\n--- HELIX DEBUG: CHECKING MEMBERSHIP ---")
+        print(f"Attempting to verify membership for user_id='{self.request.user.id}' in organization_id='{organization_id}'")
+
+        # 2. Perform the existence check
+        membership_queryset = OrganizationMember.objects.filter(
+            organization_id=organization_id,
+            user_id=self.request.user.id
+        )
+        is_member = membership_queryset.exists()
+
+        # 3. Print the last executed SQL query
+        # Note: connection.queries is only populated if DEBUG=True in settings.py
         try:
-            membership = OrganizationMember.objects.get(organization_id=organization_id, user=self.request.user)
-        except OrganizationMember.DoesNotExist:
-            # This security check is crucial.
+            last_query = connection.queries[-1]
+            print(f"SQL Query Executed: {last_query['sql']}")
+            print(f"Query Parameters: {last_query['params']}")
+            print(f"Query Time: {last_query['time']}s")
+        except (IndexError, KeyError):
+            print("SQL Query: Could not be retrieved. Ensure DEBUG=True in your Django settings.")
+        
+        print(f"Query Result (is_member): {is_member}")
+        print("--- END HELIX DEBUG ---\n")
+        # --- END DEBUGGING BLOCK ---
+
+        if not is_member:
             raise serializers.ValidationError({"detail": "You are not a member of this workspace."})
 
-        # 3. Save the new repository with the correct context.
-        # The `serializer.save()` method will call `Repository.objects.create()` with the
-        # remaining validated data, plus the extra arguments we provide here.
-        # This is where the `organization` object is correctly passed to the model.
+        # ... The rest of your logic to save the repository ...
+        try:
+            organization_obj = Organization.objects.get(id=organization_id)
+        except Organization.DoesNotExist:
+            raise serializers.ValidationError({"detail": "Workspace not found."})
+
         repo = serializer.save(
-            organization=membership.organization,
+            organization=organization_obj,
             added_by=self.request.user
         )
-        
-        # The post_save signal on the `repo` object will now trigger the Celery task correctly.
 
     # The perform_destroy method you have is already correct and doesn't need changes.
     def perform_destroy(self, instance):
@@ -2296,3 +2319,88 @@ class RunTestsInSandboxView(APIView):
         task = run_tests_in_sandbox_task.delay(source_code, test_code)
         
         return Response({"task_id": task.id}, status=status.HTTP_202_ACCEPTED)
+
+from django.db.models import Avg, Sum, Count
+
+
+class ComplexityGraphView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, repo_id, *args, **kwargs):
+        # ... (permission check) ...
+
+        # 1. Get the top N most complex symbols as our "hotspot" nodes
+        hotspot_symbols = CodeSymbol.objects.filter(
+            Q(code_file__repository_id=repo_id) | Q(code_class__code_file__repository_id=repo_id),
+            cyclomatic_complexity__isnull=False
+        ).order_by('-cyclomatic_complexity')[:25] # Limit to 25 for performance
+
+        hotspot_ids = [s.id for s in hotspot_symbols]
+
+        # 2. Find all dependencies where BOTH the caller and callee are in our hotspot list
+        links = CodeDependency.objects.filter(
+            caller_id__in=hotspot_ids,
+            callee_id__in=hotspot_ids
+        )
+
+        # 3. Serialize the data
+        node_serializer = CodeSymbolSerializer(hotspot_symbols, many=True)
+        link_serializer = GraphLinkSerializer(links, many=True)
+
+        return Response({
+            "nodes": node_serializer.data,
+            "links": link_serializer.data,
+        })
+    
+class DashboardSummaryView(generics.ListAPIView):
+    """
+    Provides a summary for the main dashboard, including aggregate stats
+    and a list of repositories accessible by the authenticated user.
+    """
+    serializer_class = DashboardRepositorySerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        """
+        This logic is correct and remains unchanged. It fetches all repositories
+        belonging to the organizations the current user is a member of.
+        """
+        user = self.request.user
+        organization_ids = OrganizationMember.objects.filter(user=user).values_list('organization_id', flat=True)
+        return Repository.objects.filter(organization_id__in=organization_ids).order_by('-updated_at')
+
+    def list(self, request, *args, **kwargs):
+        """
+        Overrides the default list action to add aggregate stats to the response.
+        """
+        # 1. Get the queryset of repositories using your existing correct logic.
+        queryset = self.get_queryset()
+
+        # 2. Calculate aggregate stats based on this specific queryset.
+        stats = queryset.aggregate(
+            total_repos=Count('id'),
+            avg_coverage=Avg('documentation_coverage'),
+            total_orphans=Sum('orphan_symbol_count')
+        )
+        
+        # 3. Calculate "Needs Attention" count (example logic).
+        needs_attention_count = queryset.filter(
+            Q(status='FAILED') | Q(orphan_symbol_count__gt=10)
+        ).count()
+
+        # 4. Serialize the list of repositories.
+        repo_serializer = self.get_serializer(queryset, many=True)
+
+        # 5. Construct the final response payload.
+        response_data = {
+            "stats": {
+                "total_repositories": stats.get('total_repos') or 0,
+                # Convert to percentage and handle null case
+                "avg_coverage": (stats.get('avg_coverage') or 0),
+                "total_orphans": stats.get('total_orphans') or 0,
+                "needs_attention": needs_attention_count,
+            },
+            "repositories": repo_serializer.data
+        }
+        
+        return Response(response_data)  

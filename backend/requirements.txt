@@ -21,5 +21,6 @@ astor
 ruff
 django-celery-beat
 e2b_code_interpreter
+GitPython
 agno
 psycopg[binary]
