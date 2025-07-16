@@ -20,7 +20,13 @@ export const RefactoringDashboard = () => {
         const resizeObserver = new ResizeObserver(entries => {
             if (entries[0]) {
                 const { width, height } = entries[0].contentRect;
-                setGraphSize({ width, height: height > 0 ? height : 400 });
+                // Ensure minimum dimensions and account for padding/borders
+                const paddedWidth = Math.max(width - 32, 200); // Account for container padding
+                const paddedHeight = Math.max(height - 32, 150); // Account for container padding
+                setGraphSize({
+                    width: paddedWidth,
+                    height: paddedHeight
+                });
             }
         });
         if (graphContainerRef.current) {
@@ -34,38 +40,40 @@ export const RefactoringDashboard = () => {
         if (activeRepository) {
             setIsLoading(true);
             axios.get(`/api/v1/repositories/${activeRepository.id}/intelligence/complexity-graph/`)
-                .then(response => {
-                    setGraphData(response.data);
-                })
+                .then(resp => setGraphData(resp.data))
                 .catch(err => console.error("Failed to fetch complexity graph", err))
                 .finally(() => setIsLoading(false));
         }
     }, [activeRepository]);
 
     if (!activeRepository) return <p>Please select a repository.</p>;
-    if (isLoading) return <p>Loading complexity hotspots...</p>;
 
     return (
-        <div className="h-full grid grid-cols-1 lg:grid-cols-[minmax(0,_2fr)_minmax(0,_1fr)] gap-6">
-            {/* Left Column: Visualization */}
-            <div className="bg-card border border-border rounded-lg p-4 flex flex-col">
-                <div className="flex-shrink-0">
+        /* Fixed: use h-full since parent now properly constrains height */
+        <div className="h-full max-h-full grid grid-cols-1 lg:grid-cols-[2fr_1fr] gap-6 overflow-hidden">
+            {/* Left: graph */}
+            <div className="flex flex-col bg-card border border-border rounded-lg p-4 min-h-0 overflow-hidden">
+                <div className="flex-shrink-0 mb-4">
                     <h3 className="font-semibold">Complexity Call Graph</h3>
-                    <p className="text-sm text-muted-foreground mb-4">
-                        Nodes are sized by complexity. Lines represent function calls.
+                    <p className="text-sm text-muted-foreground">
+                        Nodes sized by complexity. Edges = calls.
                     </p>
                 </div>
-                <div ref={graphContainerRef} className="flex-grow w-full h-full flex justify-center items-center min-h-[400px]">
+                <div
+                    ref={graphContainerRef}
+                    className="flex-grow w-full h-full overflow-hidden flex justify-center items-center min-h-0"
+                    style={{ maxWidth: '100%', maxHeight: '100%' }}
+                >
                     {isLoading ? (
                         <Skeleton className="w-full h-full" />
-                    ) : graphData && graphData.nodes.length > 0 ? (
+                    ) : graphData?.nodes.length ? (
                         <ComplexityGraph
                             nodesData={graphData.nodes}
                             linksData={graphData.links}
                             onNodeHover={setHighlightedSymbolId}
                             highlightedNodeId={highlightedSymbolId}
-                            width={graphSize.width}
-                            height={graphSize.height}
+                            width={Math.min(graphSize.width, graphSize.width)}
+                            height={Math.min(graphSize.height, graphSize.height)}
                         />
                     ) : (
                         <p>No complexity data to display.</p>
@@ -73,8 +81,8 @@ export const RefactoringDashboard = () => {
                 </div>
             </div>
 
-            {/* Right Column: Details List */}
-            <div className="h-full">
+            {/* Right: details list */}
+            <div className="min-h-0 overflow-hidden">
                 <FunctionDetailList
                     symbols={graphData?.nodes || []}
                     onSymbolHover={setHighlightedSymbolId}

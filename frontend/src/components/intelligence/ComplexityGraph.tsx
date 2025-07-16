@@ -26,7 +26,6 @@ export const ComplexityGraph: React.FC<ComplexityGraphProps> = ({
     const [nodes, setNodes] = useState<GraphNode[]>([]);
     const [links, setLinks] = useState<GraphLink[]>([]);
 
-    // --- Scaling and Coloring Logic ---
     const complexityDomain = useMemo(() => {
         if (nodesData.length === 0) return [1, 1];
         const complexities = nodesData.map(s => s.cyclomatic_complexity || 1);
@@ -34,90 +33,106 @@ export const ComplexityGraph: React.FC<ComplexityGraphProps> = ({
     }, [nodesData]);
 
     const radiusScale = useMemo(() =>
-        scaleSqrt().domain(complexityDomain).range([8, 40]), // Smaller min, larger max for better visual range
+        scaleSqrt().domain(complexityDomain).range([6, 30]),
         [complexityDomain]
     );
 
     const getColorClass = (complexity: number): string => {
-        if (complexity >= 5) return 'fill-[hsl(var(--complexity-high))]';
-        if (complexity >= 3) return 'fill-[hsl(var(--complexity-medium))]';
-        return 'fill-[hsl(var(--complexity-low))]';
+        if (complexity >= 10) return 'fill-red-500';
+        if (complexity >= 5) return 'fill-orange-500';
+        return 'fill-green-500';
     };
 
     // --- D3 Simulation Effect ---
     useEffect(() => {
-        if (!nodesData || nodesData.length === 0) return;
+        if (!nodesData || nodesData.length === 0 || width === 0 || height === 0) return;
 
-        const initialNodes: GraphNode[] = nodesData.map(d => ({
+        // Create copies to prevent mutation of props
+        const nodesCopy: GraphNode[] = JSON.parse(JSON.stringify(nodesData)).map((d: CodeSymbol) => ({
             id: d.id,
             name: d.name,
             complexity: d.cyclomatic_complexity || 1,
             radius: radiusScale(d.cyclomatic_complexity || 1),
-            x: width / 2, // Start nodes in the center
-            y: height / 2,
         }));
+        const linksCopy: GraphLinkData[] = JSON.parse(JSON.stringify(linksData));
 
-        const simulation = d3.forceSimulation(initialNodes)
-            .force('link', d3.forceLink<GraphNode, GraphLinkData>(linksData).id(d => d.id).strength(0.1).distance(90))
-            .force('charge', d3.forceManyBody().strength(-100))
+        const simulation = d3.forceSimulation(nodesCopy)
+            .force('link', d3.forceLink<GraphNode, GraphLinkData>(linksCopy).id(d => d.id).strength(0.1).distance(60))
+            .force('charge', d3.forceManyBody().strength(-80))
             .force('center', d3.forceCenter(width / 2, height / 2))
-            .force('collision', d3.forceCollide<GraphNode>().radius(d => d.radius + 4).strength(0.8))
+            .force('collision', d3.forceCollide<GraphNode>().radius(d => d.radius + 3).strength(0.8))
+            // Expanded boundary force - give nodes more space to move
+            .force('bounds', () => {
+                nodesCopy.forEach(node => {
+                    if (node.x && node.y) {
+                        const padding = 5; // Minimal padding
+                        const minX = node.radius + padding;
+                        const maxX = width - node.radius - padding;
+                        const minY = node.radius + padding;
+                        const maxY = height - node.radius - padding;
+
+                        // Keep nodes within bounds but with more room to breathe
+                        node.x = Math.max(minX, Math.min(maxX, node.x));
+                        node.y = Math.max(minY, Math.min(maxY, node.y));
+                    }
+                });
+            })
             .on('tick', () => {
-                setNodes([...initialNodes]);
-                // D3 mutates the linksData array to replace number IDs with node objects
-                setLinks([...linksData] as GraphLink[]);
+                setNodes([...nodesCopy]);
+                setLinks([...linksCopy] as GraphLink[]);
             });
 
         return () => simulation.stop();
     }, [nodesData, linksData, radiusScale, width, height]);
 
     return (
-        <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`}>
-            {/* Define an arrowhead marker */}
+        <svg
+            width="100%"
+            height="100%"
+            viewBox={`0 0 ${width} ${height}`}
+            className="w-full h-full max-h-[600px] border border-border/20"
+            style={{ display: 'block' }}
+        >
             <defs>
-                <marker
-                    id="arrowhead"
-                    viewBox="0 0 10 10"
-                    refX="5"
-                    refY="5"
-                    markerWidth="6"
-                    markerHeight="6"
-                    orient="auto-start-reverse"
-                >
-                    <path d="M 0 0 L 10 5 L 0 10 z" className="fill-muted-foreground/50" />
+                <marker id="arrowhead" viewBox="-0 -5 10 10" refX="18" refY="0" markerWidth="8" markerHeight="8" orient="auto">
+                    <path d="M0,-5L10,0L0,5" className="fill-muted-foreground/50"></path>
                 </marker>
             </defs>
 
-            {/* Render Links */}
             <g className="links">
                 {links.map((link, i) => {
                     const sourceNode = link.source as GraphNode;
                     const targetNode = link.target as GraphNode;
-                    if (!sourceNode.x || !targetNode.x) return null; // D3 might not have placed them yet
+
+                    if (typeof sourceNode.x !== 'number' || typeof targetNode.x !== 'number') {
+                        return null;
+                    }
 
                     return (
                         <motion.line
-                            key={i}
+                            key={`${sourceNode.id}-${targetNode.id}-${i}`}
                             x1={sourceNode.x}
                             y1={sourceNode.y}
                             x2={targetNode.x}
                             y2={targetNode.y}
                             className="stroke-muted-foreground/40"
-                            strokeWidth="1.5"
+                            strokeWidth="1"
                             markerEnd="url(#arrowhead)"
                             initial={{ opacity: 0 }}
                             animate={{ opacity: 1 }}
+                            transition={{ duration: 0.5 }}
                         />
                     );
                 })}
             </g>
 
-            {/* Render Nodes */}
             <g className="nodes">
                 {nodes.map(node => (
                     <motion.g
                         key={node.id}
-                        transform={`translate(${node.x || 0}, ${node.y || 0})`}
+                        initial={{ x: width / 2, y: height / 2 }}
+                        animate={{ x: node.x || 0, y: node.y || 0 }}
+                        transition={{ type: "spring", stiffness: 100, damping: 15 }}
                         onMouseEnter={() => onNodeHover(node.id)}
                         onMouseLeave={() => onNodeHover(null)}
                         className="cursor-pointer group"
@@ -127,16 +142,15 @@ export const ComplexityGraph: React.FC<ComplexityGraphProps> = ({
                             className={cn(
                                 getColorClass(node.complexity),
                                 "transition-all duration-200 ease-in-out",
-                                "group-hover:stroke-primary group-hover:stroke-2",
-                                highlightedNodeId === node.id ? "stroke-primary stroke-2" : "stroke-card stroke-1"
+                                "group-hover:stroke-primary group-hover:stroke-[3px]",
+                                highlightedNodeId === node.id ? "stroke-primary stroke-[3px]" : "stroke-card/50 stroke-1"
                             )}
                         />
-                        {/* Show label on hover or if it's a large node */}
                         {(node.radius > 20 || highlightedNodeId === node.id) && (
                             <text
                                 textAnchor="middle"
                                 y={node.radius + 14}
-                                className="text-xs fill-foreground pointer-events-none select-none"
+                                className="text-[10px] fill-foreground pointer-events-none select-none font-medium"
                             >
                                 {node.name}
                             </text>
