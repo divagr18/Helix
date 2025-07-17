@@ -5,6 +5,8 @@ import { scaleSqrt } from 'd3-scale';
 import { motion } from 'framer-motion';
 import { cn } from '@/lib/utils';
 import { type CodeSymbol, type GraphLinkData, type GraphNode, type GraphLink } from '@/types';
+import { useWorkspaceStore } from '@/stores/workspaceStore';
+import { useNavigate } from 'react-router-dom';
 
 interface ComplexityGraphProps {
     nodesData: CodeSymbol[];
@@ -25,6 +27,8 @@ export const ComplexityGraph: React.FC<ComplexityGraphProps> = ({
 }) => {
     const [nodes, setNodes] = useState<GraphNode[]>([]);
     const [links, setLinks] = useState<GraphLink[]>([]);
+    const navigate = useNavigate(); // <--- 2. Initialize the navigate function
+    const { activeRepository } = useWorkspaceStore();
 
     const complexityDomain = useMemo(() => {
         if (nodesData.length === 0) return [1, 1];
@@ -41,6 +45,13 @@ export const ComplexityGraph: React.FC<ComplexityGraphProps> = ({
         if (complexity >= 10) return 'fill-red-500';
         if (complexity >= 5) return 'fill-orange-500';
         return 'fill-green-500';
+    };
+    const handleNodeClick = (nodeId: number) => {
+        if (activeRepository) {
+            // Navigate to a new, dedicated refactoring page for this symbol
+            const destination = `/repository/${activeRepository.id}/refactor/symbol/${nodeId}`;
+            navigate(destination);
+        }
     };
 
     // --- D3 Simulation Effect ---
@@ -135,6 +146,7 @@ export const ComplexityGraph: React.FC<ComplexityGraphProps> = ({
                         transition={{ type: "spring", stiffness: 100, damping: 15 }}
                         onMouseEnter={() => onNodeHover(node.id)}
                         onMouseLeave={() => onNodeHover(null)}
+                        onClick={() => handleNodeClick(node.id)}
                         className="cursor-pointer group"
                     >
                         <circle

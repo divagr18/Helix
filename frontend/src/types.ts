@@ -194,3 +194,19 @@ export interface GraphLink extends d3.SimulationLinkDatum<GraphNode> {
   source: number | GraphNode; // D3 populates this
   target: number | GraphNode; // D3 populates this
 }
+// src/types.ts
+
+export interface RefactoringSuggestion {
+  title: string;
+  description: string;
+  type: string;
+  severity: "low" | "medium" | "high";
+  complexity_reduction: number;
+  current_code_snippet: string;
+  refactored_code_snippet: string;
+}
+
+export interface SymbolAnalysisData {
+  symbol: CodeSymbol; // Your existing detailed CodeSymbol type
+  refactoring_suggestions: RefactoringSuggestion[];
+}

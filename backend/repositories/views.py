@@ -11,10 +11,10 @@ from .tasks import calculate_documentation_coverage_task, create_documentation_p
 from django.utils.decorators import method_decorator
 from rest_framework import viewsets
 from .models import CodeFile, CodeSymbol as CodeFunction, Repository, CodeSymbol,CodeDependency,AsyncTaskStatus, Notification,CodeClass,Insight, TestCoverageReport
-from .ai_services import generate_class_summary_stream, generate_module_readme_stream,generate_refactor_stream # 03c03c03c NEW IMPORT
+from .ai_services import generate_class_summary_stream, generate_module_readme_stream,generate_refactor_stream, generate_refactoring_suggestions # 03c03c03c NEW IMPORT
 from .tasks import process_repository # Import the Celery task
 import json
-from .serializers import CodeSymbolSerializer, DashboardRepositorySerializer, DetailedOrganizationSerializer, GraphLinkSerializer, RepositorySerializer,RepositoryDetailSerializer,NotificationSerializer, TestCoverageReportSerializer
+from .serializers import CodeSymbolSerializer, DashboardRepositorySerializer, DetailedOrganizationSerializer, GraphLinkSerializer, RepositorySerializer,RepositoryDetailSerializer,NotificationSerializer, SymbolAnalysisSerializer, TestCoverageReportSerializer
 from rest_framework.views import APIView
 from django.views.decorators.csrf import csrf_exempt
 from rest_framework.response import Response
@@ -1427,54 +1427,7 @@ class CommitHistoryView(APIView):
             print(f"VIEW_COMMIT_HISTORY: ERROR - {error_message}")
             return Response({"error": error_message}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
-@method_decorator(csrf_exempt, name='dispatch')
-class SuggestRefactorsView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
 
-    def post(self, request, symbol_id, *args, **kwargs):
-        print(f"VIEW_SUGGEST_REFACTORS: Request for symbol_id: {symbol_id} by user: {request.user.username}")
-
-        openai_client = OPENAI_CLIENT_INSTANCE
-
-        
-        if not openai_client:
-            return Response(
-                {"error": "Helix's AI service is currently unavailable."}, 
-                status=status.HTTP_503_SERVICE_UNAVAILABLE
-            )
-
-        try:
-            # --- THIS IS THE FIX ---
-            # We construct a query that checks for membership in the symbol's organization.
-            # This query ensures that the symbol exists AND the user has permission to see it.
-            
-            # This checks symbols that are directly in a file
-            q_for_file_symbols = Q(
-                code_file__repository__organization__memberships__user=request.user
-            )
-            
-            # This checks symbols that are inside a class
-            q_for_class_symbols = Q(
-                code_class__code_file__repository__organization__memberships__user=request.user
-            )
-
-            # We find the CodeSymbol with the given ID, AND it must satisfy one of the permission checks.
-            symbol_obj = CodeSymbol.objects.get(
-                Q(id=symbol_id) & (q_for_file_symbols | q_for_class_symbols)
-            )
-        except CodeSymbol.DoesNotExist:
-            return Response(
-                {"error": "Symbol not found or permission denied."}, 
-                status=status.HTTP_404_NOT_FOUND
-            )
-        
-        # Call the new service function to get the streaming generator
-        response_stream = generate_refactor_stream(symbol_obj, openai_client)
-        
-        response = StreamingHttpResponse(response_stream, content_type='text/plain; charset=utf-8')
-        response['X-Accel-Buffering'] = 'no'
-        response['Cache-Control'] = 'no-cache'
-        return response
     
 from .ai_services import handle_chat_query_stream
 
@@ -2266,7 +2219,6 @@ class LatestCoverageReportView(APIView):
         ).first()
 
         if not repo:
-            print("Bruh")
             return Response({"error": "Repository not found or permission denied."}, status=status.HTTP_404_NOT_FOUND)
         
         latest_report = TestCoverageReport.objects.filter(repository=repo).order_by('-uploaded_at').first()
@@ -2404,3 +2356,70 @@ class DashboardSummaryView(generics.ListAPIView):
         }
         
         return Response(response_data)  
+    
+
+class SymbolAnalysisView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, symbol_id, *args, **kwargs):
+        openai_client = OPENAI_CLIENT_INSTANCE
+        try:
+            # build one combined Q object: id must match, AND the user must belong to one of the two orgs
+            lookup = (
+                Q(id=symbol_id) &
+                (
+                    Q(code_file__repository__organization__memberships__user=request.user) |
+                    Q(code_class__code_file__repository__organization__memberships__user=request.user)
+                )
+            )
+
+            symbol = CodeSymbol.objects.select_related(
+                'code_file__repository__organization',
+                'code_class__code_file__repository__organization'
+            ).get(lookup)
+
+        except CodeSymbol.DoesNotExist:
+            return Response(
+                {"error": "Symbol not found or you do not have permission."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        # 4. Serialize and return
+        serializer = CodeSymbolSerializer(symbol) # Use the standard symbol serializer
+        return Response(serializer.data)
+    
+
+class SuggestRefactorsView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, symbol_id, *args, **kwargs):
+        try:
+            # build one combined Q object: id must match, AND the user must belong to one of the two orgs
+            lookup = (
+                Q(id=symbol_id) &
+                (
+                    Q(code_file__repository__organization__memberships__user=request.user) |
+                    Q(code_class__code_file__repository__organization__memberships__user=request.user)
+                )
+            )
+
+            symbol = CodeSymbol.objects.select_related(
+                'code_file__repository__organization',
+                'code_class__code_file__repository__organization'
+            ).get(lookup)
+
+        except CodeSymbol.DoesNotExist:
+            return Response(
+                {"error": "Symbol not found or you do not have permission."},
+                status=status.HTTP_404_NOT_FOUND)
+
+        # Get the OpenAI client
+        client = OPENAI_CLIENT_INSTANCE # Or however you get your client
+        if not client:
+            return Response({"error": "AI service not configured."}, status=503)
+
+        # Use your existing streaming function
+        stream = generate_refactor_stream(symbol, client)
+        
+        # Return the generator as a streaming HTTP response
+        return StreamingHttpResponse(stream, content_type='text/plain; charset=utf-8')

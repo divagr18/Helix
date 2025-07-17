@@ -1,7 +1,7 @@
 # backend/config/api_router.py
 
 from rest_framework.routers import DefaultRouter
-from repositories.views import BatchDocumentModuleView, ChatView, CohesiveTestGenerationView, ComplexityGraphView, ComplexityHotspotsView, CoverageUploadView, DashboardSummaryView, LatestCoverageReportView, OrganizationDetailView, OrganizationListView, OrphanSymbolsView, RepositorySelectorListView, RepositoryViewSet,GithubReposView,FileContentView,GenerateDocstringView, CodeSymbolDetailView, RunTestsInSandboxView, ValidateInviteCodeView, set_csrf_cookie
+from repositories.views import BatchDocumentModuleView, ChatView, CohesiveTestGenerationView, ComplexityGraphView, ComplexityHotspotsView, CoverageUploadView, DashboardSummaryView, LatestCoverageReportView, OrganizationDetailView, OrganizationListView, OrphanSymbolsView, RepositorySelectorListView, RepositoryViewSet,GithubReposView,FileContentView,GenerateDocstringView, CodeSymbolDetailView, RunTestsInSandboxView, SymbolAnalysisView, ValidateInviteCodeView, set_csrf_cookie
 
 router = DefaultRouter()
 from django.urls import path # Make sure path is imported
@@ -106,6 +106,10 @@ urlpatterns += [
 
     path('repositories/<int:repo_id>/intelligence/complexity-graph/', ComplexityGraphView.as_view(), name='repository-complexity-graph'),
     path('dashboard/summary/', DashboardSummaryView.as_view(), name='dashboard-summary'),
+    path('symbols/<int:symbol_id>/analysis/', SymbolAnalysisView.as_view(), name='symbol-analysis'),
+    path('symbols/<int:symbol_id>/suggest-refactors/', SuggestRefactorsView.as_view(), name='symbol-suggest-refactors'),
+
+
 
 
 

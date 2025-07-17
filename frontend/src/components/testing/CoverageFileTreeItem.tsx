@@ -1,7 +1,7 @@
 // src/components/testing/CoverageFileTreeItem.tsx
 import React, { useState } from 'react';
 import { type TreeNode } from '@/utils/tree';
-import { Folder, File as FileIcon, ChevronRight, ChevronDown } from 'lucide-react';
+import { Folder, File as FileIcon, ChevronRight, ChevronDown, FolderOpen } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';
 
@@ -33,73 +33,58 @@ export const CoverageFileTreeItem: React.FC<CoverageFileTreeItemProps> = ({
     selectedPath,
     coverageData,
 }) => {
-    const [isOpen, setIsOpen] = useState(true); // Default to open for better visibility
-
+    const [isOpen, setIsOpen] = useState(true);
     const isFolder = node.type === 'folder';
     const isSelected = selectedPath === node.path;
-
-    // Get the coverage for this specific node from the pre-calculated data
     const coverageInfo = coverageData[node.path];
     const coveragePercent = coverageInfo ? coverageInfo.line_rate * 100 : null;
+
     const handleRowClick = () => {
-        // This console.log is your primary debugging tool.
-        // If you see this, the click is being registered.
-        console.log("Row clicked:", node.path);
-
-        // Call the onSelect function passed from the parent.
         onSelect(node);
-
-        // Also, toggle the folder state if it's a folder.
-        if (isFolder) {
-            setIsOpen(prev => !prev);
-        }
+        if (isFolder) setIsOpen(prev => !prev);
     };
+
     const handleToggleClick = (e: React.MouseEvent) => {
-        e.stopPropagation(); // Stop the click from bubbling up to the main div
-        if (isFolder) {
-            setIsOpen(prev => !prev);
-        }
+        e.stopPropagation();
+        if (isFolder) setIsOpen(prev => !prev);
     };
 
     return (
-        <div className="text-sm">
+        <div>
             <div
                 className={cn(
-                    "flex items-center py-1.5 px-2 rounded-md hover:bg-muted cursor-pointer",
-                    isSelected && "bg-accent text-accent-foreground"
+                    "flex items-center px-2 py-1.5 rounded-md cursor-pointer text-sm transition-colors",
+                    isSelected
+                        ? "bg-blue-600/20 text-blue-400"
+                        : "text-zinc-300 hover:bg-zinc-800/60"
                 )}
-                onClick={handleRowClick} // Use the new, robust handler
+                onClick={handleRowClick}
             >
-                {/* Toggle Icon with its own specific handler */}
                 {isFolder ? (
-                    <div onClick={handleToggleClick} className="p-0.5 mr-1 text-muted-foreground hover:text-foreground">
-                        {isOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                    <div onClick={handleToggleClick} className="mr-1 p-0.5">
+                        {isOpen ? <ChevronDown className="w-3 h-3 text-zinc-500" /> : <ChevronRight className="w-3 h-3 text-zinc-500" />}
                     </div>
                 ) : (
-                    <div className="w-[22px]"></div>
+                    <div className="w-4 mr-1.5"></div> // Placeholder for alignment
                 )}
 
-                {/* File/Folder Icon */}
                 {isFolder ? (
-                    <Folder size={16} className="mr-2 text-blue-400 flex-shrink-0" />
+                    isOpen ? <FolderOpen className="w-3.5 h-3.5 mr-2 text-zinc-500" /> : <Folder className="w-3.5 h-3.5 mr-2 text-zinc-500" />
                 ) : (
-                    <FileIcon size={16} className="mr-2 text-gray-400 flex-shrink-0" />
+                    <FileIcon className="w-3.5 h-3.5 mr-2 text-zinc-500" />
                 )}
 
-                {/* Name */}
-                <span className="flex-grow truncate" title={node.name}>{node.name}</span>
+                <span className="truncate font-mono flex-grow">{node.name}</span>
 
-                {/* Coverage Badge */}
                 {coveragePercent !== null && (
-                    <Badge variant={getCoverageBadgeVariant(coveragePercent)} className="ml-2 flex-shrink-0">
+                    <Badge variant={getCoverageBadgeVariant(coveragePercent)} className="ml-2 flex-shrink-0 text-xs font-mono">
                         {coveragePercent.toFixed(1)}%
                     </Badge>
                 )}
             </div>
 
-            {/* Recursive Rendering for Children */}
             {isFolder && isOpen && (
-                <div className="pl-4 border-l border-border/50 ml-[15px]">
+                <div className="pl-4">
                     {node.children?.map(child => (
                         <CoverageFileTreeItem
                             key={child.path}

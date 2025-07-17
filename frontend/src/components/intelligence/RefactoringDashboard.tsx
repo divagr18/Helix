@@ -56,7 +56,7 @@ export const RefactoringDashboard = () => {
                 <div className="flex-shrink-0 mb-4">
                     <h3 className="font-semibold">Complexity Call Graph</h3>
                     <p className="text-sm text-muted-foreground">
-                        Nodes sized by complexity. Edges = calls.
+                        Nodes sized by complexity. Edges = calls. Click on a node to refactor.
                     </p>
                 </div>
                 <div

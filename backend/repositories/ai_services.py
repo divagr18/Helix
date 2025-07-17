@@ -1,10 +1,13 @@
 # backend/repositories/ai_services.py
+import json
 import re
 from typing import Generator,Optional
 from django.conf import settings
 from openai import OpenAI as OpenAIClient
 from agno.tools import tool
+import logging
 
+logger = logging.getLogger(__name__)
 from .models import CodeClass, CodeSymbol, CodeDependency,KnowledgeChunk,CodeClass,CodeFile,ModuleDocumentation 
 from pgvector.django import L2Distance
 def generate_class_summary_stream(
@@ -477,3 +480,86 @@ def generate_module_readme_stream(
     except Exception as e:
         print(f"MODULE_README_SERVICE: FATAL - LLM streaming failed: {e}")
         yield f"// Helix encountered an error while generating the README."
+
+def generate_refactoring_suggestions(symbol_obj: CodeSymbol, openai_client: OpenAIClient) -> list:
+    """
+    Uses an LLM to analyze a CodeSymbol and generate a list of
+    structured refactoring suggestions in JSON format.
+    """
+    source_code = symbol_obj.source_code
+    if not source_code or source_code.strip().startswith("# Error:"):
+        logger.error(f"AI_REFACTOR: Invalid source code for symbol {symbol_obj.id}.")
+        return []
+
+    symbol_kind = "method" if symbol_obj.code_class else "function"
+    
+    # --- Context Injection (re-used from your existing function) ---
+    context_parts = [
+        f"The {symbol_kind} is named `{symbol_obj.name}`."
+    ]
+    if symbol_obj.loc is not None and symbol_obj.cyclomatic_complexity is not None:
+        context_parts.append(
+            f"**Code Metrics:** It has a Lines of Code (LOC) of `{symbol_obj.loc}` and a Cyclomatic Complexity of `{symbol_obj.cyclomatic_complexity}`."
+        )
+        if symbol_obj.cyclomatic_complexity > 10:
+            context_parts.append("The complexity is high, so pay special attention to simplifying conditional logic.")
+    
+    context_str = "\n".join(context_parts)
+
+    # --- NEW, JSON-FOCUSED PROMPT ---
+    # This prompt is adapted from yours to request a specific JSON structure.
+    prompt = (
+        f"You are an expert software architect. Your task is to analyze the provided Python code and identify actionable refactoring opportunities.\n\n"
+        f"--- Context ---\n"
+        f"{context_str}\n\n"
+        f"--- Original Source Code ---\n"
+        f"```python\n{source_code}\n```\n\n"
+        f"--- INSTRUCTIONS ---\n"
+        f"Analyze the code and return a JSON object containing a single key: 'suggestions'.\n"
+        f"The value of 'suggestions' MUST be an array of JSON objects, where each object represents one distinct refactoring opportunity.\n"
+        f"Each suggestion object MUST have the following keys:\n"
+        f"- \"title\": A short, descriptive title (e.g., \"Extract Method: Input Validation\").\n"
+        f"- \"description\": A brief explanation of why this refactoring is beneficial.\n"
+        f"- \"type\": A string describing the type of fix, example list: [\"extract_method\", \"simplify_conditional\", \"remove_duplication\", \"rename_variable\", \"improve_loop\"].\n"
+        f"- \"severity\": A string from this exact list: [\"low\", \"medium\", \"high\"].\n"
+        f"- \"complexity_reduction\": An integer representing the estimated reduction in cyclomatic complexity (e.g., -2).\n"
+        f"- \"current_code_snippet\": A string containing the exact lines from the original code that should be refactored.\n"
+        f"- \"refactored_code_snippet\": A string containing the new code that would replace the original snippet.\n\n"
+        f"If you find no refactoring opportunities, return an object with an empty array: {{\"suggestions\": []}}."
+    )
+
+    # --- LLM Call (Non-streaming, JSON mode) ---
+    try:
+        logger.info(f"AI_REFACTOR: Requesting refactoring suggestions for symbol {symbol_obj.id}.")
+        response = openai_client.chat.completions.create(
+            model="gpt-4.1-mini", # Or your preferred model that supports JSON mode
+            response_format={"type": "json_object"}, # Enable JSON mode
+            messages=[
+                {"role": "system", "content": "You are a helpful AI code quality analyst that provides refactoring suggestions in a structured JSON format."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.2,
+        )
+        
+        content = response.choices[0].message.content
+        if not content:
+            logger.warning(f"AI_REFACTOR: LLM returned empty content for symbol {symbol_obj.id}.")
+            return []
+
+        # Parse the JSON string and extract the 'suggestions' array
+        suggestions_data = json.loads(content)
+        
+        if isinstance(suggestions_data, dict) and "suggestions" in suggestions_data:
+            # Validate that the result is a list before returning
+            if isinstance(suggestions_data["suggestions"], list):
+                return suggestions_data["suggestions"]
+            else:
+                logger.warning(f"AI_REFACTOR: 'suggestions' key is not a list for symbol {symbol_obj.id}.")
+                return []
+        else:
+            logger.warning(f"AI_REFACTOR: LLM returned unexpected JSON structure for symbol {symbol_obj.id}.")
+            return []
+
+    except Exception as e:
+        logger.exception(f"AI_REFACTOR: An exception occurred during LLM call for symbol {symbol_obj.id}: {e}")
+        return []

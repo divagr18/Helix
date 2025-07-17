@@ -350,3 +350,35 @@ class DashboardRepositorySerializer(serializers.ModelSerializer):
             # New fields
             'primary_language', 'size_kb', 'commit_count', 'contributor_count'
         ]
+
+class RefactoringSuggestionSerializer(serializers.Serializer):
+    """
+    A read-only serializer to structure the AI-generated refactoring suggestions.
+    This ensures the data sent to the frontend is in a consistent format.
+    """
+    title = serializers.CharField()
+    description = serializers.CharField()
+    type = serializers.CharField()
+    severity = serializers.ChoiceField(choices=["low", "medium", "high"])
+    complexity_reduction = serializers.IntegerField()
+    current_code_snippet = serializers.CharField()
+    refactored_code_snippet = serializers.CharField()
+
+    # We don't need a create or update method as this is for serialization only.
+
+
+class SymbolAnalysisSerializer(serializers.ModelSerializer):
+    """
+    The main serializer for the Symbol Analysis page.
+    It combines the detailed symbol data with a list of refactoring suggestions.
+    """
+    # --- THIS IS THE FIX ---
+    # Remove `source='*'` and let the field name 'symbol' automatically
+    # look for the key 'symbol' in the instance data.
+    symbol = CodeSymbolSerializer(read_only=True) 
+    
+    refactoring_suggestions = RefactoringSuggestionSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = CodeSymbol # The Meta model doesn't matter as much here since we define all fields
+        fields = ['symbol', 'refactoring_suggestions']

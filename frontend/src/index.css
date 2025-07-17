@@ -50,12 +50,6 @@
   /* any other theme values you need (fonts, keyframes, etc.) */
 }
 
-html,
-body,
-#root {
-  height: 100%;
-}
-
 html {
   font-size: 14px;
   /* Try 14px or 15px as a base */
@@ -404,7 +398,6 @@ body,
   height: 100%;
   margin: 0;
   padding: 0;
-  overflow: hidden;
   /* Tailwind helpers if you prefer: */
   /* @apply h-full overflow-hidden m-0 p-0; */
 }

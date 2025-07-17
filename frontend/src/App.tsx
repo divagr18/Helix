@@ -25,6 +25,7 @@ import { SettingsLayout } from './pages/settings/SettingsLayout';
 import { BetaInvitePage } from './pages/BetaInvitePage';
 import { AcceptInvitePage } from './pages/AcceptInvitePage';
 import { RepoContextLoader } from './pages/modes/RepoContextLoader';
+import { RefactorSymbolPage } from './pages/RefactorSymbolPage';
 
 // Set global Axios defaults
 axios.defaults.xsrfCookieName = 'csrftoken';
@@ -49,7 +50,7 @@ function AppRoutes() {
                 // The MainAppLayout is now the single entry point for the entire
                 // authenticated application. It provides the persistent master sidebar.
                 <Route path="/" element={<MainAppLayout />}>
-                    
+
                     {/* The Dashboard is the default page */}
                     <Route index element={<Navigate to="/dashboard" replace />} />
                     <Route path="dashboard" element={<DashboardPage />} />
@@ -71,6 +72,8 @@ function AppRoutes() {
 
                     {/* A general catch-all for any other path sends the user to their dashboard */}
                     <Route path="*" element={<Navigate to="/dashboard" replace />} />
+                    <Route path="repository/:repoId/refactor/symbol/:symbolId" element={<RefactorSymbolPage />} />
+
                 </Route>
             ) : (
                 // --- UNAUTHENTICATED ROUTES ---

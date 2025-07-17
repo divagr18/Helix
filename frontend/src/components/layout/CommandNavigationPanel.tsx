@@ -1,5 +1,3 @@
-// src/components/layout/CommandNavigationPanel.tsx
-import React from 'react';
 import { useRepo } from '@/contexts/RepoContext';
 import { FileTreePanel } from '@/components/repo-detail/FileTreePanel';
 import { BatchActionsPanel } from '@/components/repo-detail/BatchActionsPanel';
@@ -7,6 +5,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Input } from '@/components/ui/input';
 import { Search, MoreHorizontal } from 'lucide-react';
 import { Button } from '../ui/button';
+import { Link } from 'react-router-dom';
 
 export const CommandNavigationPanel = () => {
     const { repo, isLoadingRepo } = useRepo();
@@ -22,8 +21,14 @@ export const CommandNavigationPanel = () => {
         <aside className="bg-background border-r border-border flex flex-col overflow-y-hidden">
             <div className="p-3 border-b border-border flex-shrink-0">
                 <div className="flex items-center justify-between">
-                    <h3 className="text-sm font-semibold truncate">Dashboard {repo.full_name.split('/')[1]}</h3>
-                    <Button variant="ghost" size="icon" className="h-7 w-7"><MoreHorizontal className="h-4 w-4" /></Button>
+                    <div className="text-lg font-semibold truncate">
+                        <Link to="/dashboard" className="hover:underline text-primary">Dashboard</Link>
+                        <span className="mx-2 text-muted-foreground">{'>'}</span>
+                        <span className="text-muted-foreground">{repo.full_name.split('/')[1]}</span>
+                    </div>
+                    <Button variant="ghost" size="icon" className="h-7 w-7">
+                        <MoreHorizontal className="h-4 w-4" />
+                    </Button>
                 </div>
                 <div className="relative mt-3">
                     <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
