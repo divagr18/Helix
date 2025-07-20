@@ -163,13 +163,27 @@ export function DashboardPage() {
     };
 
     const handleSyncRequest = async (repoId: number) => {
-        setSyncingRepoId(repoId);
+        setSyncingRepoId(repoId); // Set loading state for the specific card
+        toast.info("Requesting sync for repository...");
         try {
-            toast.success("Sync request sent. The status will update shortly.");
-            setTimeout(() => fetchDashboardData(false), 3000);
+            await axios.post(
+                `/api/v1/repositories/${repoId}/reprocess/`,
+                {}, // Empty body for the POST request
+                { headers: { 'X-CSRFToken': getCookie('csrftoken') } }
+            );
+            toast.success("Sync request sent successfully.", {
+                description: "The repository status will update shortly.",
+            });
+            // After sending the request, we can trigger a background refresh
+            // to see the status change to "Pending" or "Indexing".
+            setTimeout(() => fetchDashboardData(false), 2000); // Refresh after 2 seconds
         } catch (error) {
-            toast.error("Failed to start sync.");
+            toast.error("Failed to start sync.", {
+                description: "Please try again later.",
+            });
         } finally {
+            // We can clear the syncing state here, as the card's disabled
+            // state will now be controlled by the repo.status from the API.
             setSyncingRepoId(null);
         }
     };

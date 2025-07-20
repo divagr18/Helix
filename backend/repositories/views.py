@@ -531,7 +531,6 @@ class SemanticSearchView(generics.ListAPIView):
             )
             query_embedding = response.data[0].embedding
 
-
             user_repos = Repository.objects.filter(user=self.request.user)
 
             similar_symbols = CodeSymbol.objects.filter(
@@ -545,7 +544,6 @@ class SemanticSearchView(generics.ListAPIView):
         except Exception as e:
             print(f"Error during semantic search: {e}")
             return CodeSymbol.objects.none()
-
 
 from .tasks import create_documentation_pr_task
 from django.core.exceptions import PermissionDenied
@@ -622,7 +620,6 @@ class GenerateArchitectureDiagramView(APIView):
         except Exception as e:
             print(f"VIEW_GEN_DIAGRAM: Error fetching symbol {symbol_id}: {e}")
             return Response({"error": "Server error fetching symbol."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
 
         # Fetch direct incoming calls (callers)
         # Ensure we select related 'caller' to get the full CodeSymbol object for the caller
@@ -776,7 +773,6 @@ class BatchGenerateDocsForSelectedFilesView(APIView):
             print(f"VIEW_BATCH_DOCS: Error dispatching Celery task for repo {repo_id}: {e}")
             return Response({"error": "Failed to initiate batch documentation generation task."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-
 @method_decorator(csrf_exempt, name='dispatch')
 class CreateBatchPRForSelectedFilesView(APIView):
     permission_classes = [permissions.IsAuthenticated]
@@ -851,7 +847,6 @@ class TaskStatusView(APIView):
             print(f"VIEW_TASK_STATUS: Error fetching task status for task_id={task_id}: {e}")
             return Response({"error": "An error occurred while fetching task status."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)   
         
-
 @method_decorator(csrf_exempt, name='dispatch')
 class ApproveDocstringView(APIView):
     permission_classes = [permissions.IsAuthenticated]
@@ -891,7 +886,6 @@ class ApproveDocstringView(APIView):
             symbol.documentation_hash = hasher.hexdigest()
             symbol.documentation_status = CodeSymbol.DocStatus.HUMAN_EDITED_PENDING_PR
             print(f"VIEW_APPROVE_DOC: Warning - Symbol {symbol.id} has no content_hash. Hashing doc text itself.")
-
 
         try:
             symbol.save(update_fields=['documentation', 'documentation_hash', 'documentation_status'])
@@ -995,7 +989,6 @@ def generate_explanation_stream(
         # Or handle more gracefully if frontend expects structured errors
         yield error_message
 
-
 @method_decorator(csrf_exempt, name='dispatch') # If using SessionAuth and POST
 class ExplainCodeView(APIView):
     permission_classes = [permissions.IsAuthenticated]
@@ -1005,7 +998,6 @@ class ExplainCodeView(APIView):
 
         openai_client = OPENAI_CLIENT_INSTANCE
 
-        
         if not openai_client:
             # Return a non-streaming error if client setup fails
             return Response(
@@ -1039,7 +1031,6 @@ class ExplainCodeView(APIView):
              print(f"VIEW_EXPLAIN_CODE: Source code retrieval failed: {source_code} for symbol {symbol_obj.name}")
              return Response({"error": f"Helix could not retrieve valid source code: {source_code}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-
         response_stream = generate_explanation_stream(symbol_obj, source_code, openai_client)
         
         # It's good practice to set appropriate headers for streaming
@@ -1048,8 +1039,6 @@ class ExplainCodeView(APIView):
         response['Cache-Control'] = 'no-cache'
         return response
     
-
-
 def generate_tests_stream(
     symbol_obj: CodeSymbol,
     source_code: str,
@@ -1108,7 +1097,6 @@ def generate_tests_stream(
         error_message = f"// Helix encountered an error while generating test suggestions: {str(e)}"
         print(f"SUGGEST_TESTS_STREAM_ERROR: {error_message}")
         yield error_message
-
 
 # backend/repositories/ai_services.py
 # ... imports ...
@@ -1183,7 +1171,6 @@ def generate_cohesive_tests_stream(
         "Generate the complete `pytest` file now:"
     )
 
-
     print(f"DEBUG_COHESIVE_TESTS_PROMPT:\n{final_prompt}\n--------------------")
 
     # 4. Stream the response from the LLM
@@ -1200,7 +1187,6 @@ def generate_cohesive_tests_stream(
                 yield content
     except Exception as e:
         yield f"// Helix encountered an error: {str(e)}"
-
 
 # --- NEW VIEW CLASS ---
 @method_decorator(csrf_exempt, name='dispatch')
@@ -1255,7 +1241,6 @@ class ClassSummaryView(APIView):
 
         openai_client = OPENAI_CLIENT_INSTANCE
 
-        
         if not openai_client:
             return Response({"error": "Helix's AI service is currently unavailable."}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
@@ -1427,10 +1412,7 @@ class CommitHistoryView(APIView):
             print(f"VIEW_COMMIT_HISTORY: ERROR - {error_message}")
             return Response({"error": error_message}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
-
-    
 from .ai_services import handle_chat_query_stream
-
 
 @method_decorator(csrf_exempt, name='dispatch')
 class ChatView(APIView):
@@ -1481,7 +1463,6 @@ class ChatView(APIView):
         response['Cache-Control'] = 'no-cache'
         return response
     
-
 from .tasks import create_pr_with_changes_task # 03c03c03c NEW IMPORT
 import time
 @method_decorator(csrf_exempt, name='dispatch')
@@ -1617,7 +1598,6 @@ class ModuleCoverageView(APIView):
         base_query = CodeSymbol.objects.filter(
             Q(code_file__repository_id=repo_id) | Q(code_class__code_file__repository_id=repo_id)
         )
-
 
         if module_path:
             base_query = base_query.filter(
@@ -1894,8 +1874,6 @@ class OrganizationDetailView(APIView):
             return Response(OrganizationSerializer(org).data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-
-
 import shutil
 class OrganizationDetailView(APIView):
     permission_classes = [permissions.IsAuthenticated]
@@ -2062,7 +2040,6 @@ class AcceptInviteView(APIView):
 
         return Response(OrganizationSerializer(invitation.organization).data, status=status.HTTP_200_OK)
     
-
 from users.models import BetaInviteCode
 
 class ValidateInviteCodeView(APIView):
@@ -2089,14 +2066,12 @@ class ValidateInviteCodeView(APIView):
         except BetaInviteCode.DoesNotExist:
             return Response({"error": "Invalid invite code."}, status=status.HTTP_404_NOT_FOUND)
         
-
 from django.http import JsonResponse
 from django.views.decorators.csrf import ensure_csrf_cookie
 
 @ensure_csrf_cookie
 def set_csrf_cookie(request):
     return JsonResponse({"detail": "CSRF cookie set."})
-
 
 class ComplexityHotspotsView(APIView):
     permission_classes = [permissions.IsAuthenticated]
@@ -2142,7 +2117,6 @@ class RepositorySelectorListView(APIView):
         serializer = RepositorySelectorSerializer(repos, many=True)
         return Response(serializer.data)
     
-
 from .serializers import OrphanSymbolSerializer
 
 class OrphanSymbolsView(APIView):
@@ -2171,7 +2145,6 @@ class OrphanSymbolsView(APIView):
         serializer = OrphanSymbolSerializer(orphan_symbols, many=True)
         return Response(serializer.data)
     
-
 class CoverageUploadView(APIView):
     permission_classes = [permissions.IsAuthenticated]
     parser_classes = (MultiPartParser, FormParser)
@@ -2230,7 +2203,6 @@ class LatestCoverageReportView(APIView):
         serializer = TestCoverageReportSerializer(latest_report)
         return Response(serializer.data)
     
-
 @method_decorator(csrf_exempt, name='dispatch')
 class CohesiveTestGenerationView(APIView):
     permission_classes = [permissions.IsAuthenticated]
@@ -2273,7 +2245,6 @@ class RunTestsInSandboxView(APIView):
         return Response({"task_id": task.id}, status=status.HTTP_202_ACCEPTED)
 
 from django.db.models import Avg, Sum, Count
-
 
 class ComplexityGraphView(APIView):
     permission_classes = [permissions.IsAuthenticated]
@@ -2337,7 +2308,9 @@ class DashboardSummaryView(generics.ListAPIView):
         
         # 3. Calculate "Needs Attention" count (example logic).
         needs_attention_count = queryset.filter(
-            Q(status='FAILED') | Q(orphan_symbol_count__gt=10)
+            Q(status='FAILED') | 
+            Q(orphan_symbol_count__gt=10) |
+            Q(documentation_coverage__lt=50.0) # Add the new coverage condition
         ).count()
 
         # 4. Serialize the list of repositories.
@@ -2357,7 +2330,6 @@ class DashboardSummaryView(generics.ListAPIView):
         
         return Response(response_data)  
     
-
 class SymbolAnalysisView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -2388,7 +2360,6 @@ class SymbolAnalysisView(APIView):
         serializer = CodeSymbolSerializer(symbol) # Use the standard symbol serializer
         return Response(serializer.data)
     
-
 class SuggestRefactorsView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -2423,3 +2394,71 @@ class SuggestRefactorsView(APIView):
         
         # Return the generator as a streaming HTTP response
         return StreamingHttpResponse(stream, content_type='text/plain; charset=utf-8')
+    
+from django.db.models import  FloatField
+from django.db.models.functions import Cast
+from .serializers import DocActionItemSerializer, FileCoverageStatSerializer
+
+class DocumentationSummaryView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, repo_id, *args, **kwargs):
+        try:
+            repo = Repository.objects.get(id=repo_id, organization__memberships__user=request.user)
+        except Repository.DoesNotExist:
+            return Response({"error": "Repository not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        # 1. Get all relevant symbols for the repository
+        all_symbols = CodeSymbol.objects.filter(
+            (Q(code_file__repository_id=repo_id) | Q(code_class__code_file__repository_id=repo_id)),
+            code_file__isnull=False 
+        ).select_related('code_file')
+
+        if not all_symbols.exists():
+            return Response({"error": "No symbols found for analysis."}, status=status.HTTP_404_NOT_FOUND)
+
+        # 2. Calculate Summary Stats
+        total_symbols = all_symbols.count()
+        documented_symbols = all_symbols.filter(documentation_status='DOCUMENTED').count()
+        stale_docstrings = all_symbols.filter(documentation_status='STALE').count()
+        missing_docstrings = all_symbols.filter(documentation_status='MISSING').count()
+        overall_coverage = (documented_symbols / total_symbols) * 100 if total_symbols > 0 else 0
+
+        summary_stats = {
+            "overallCoverage": overall_coverage,
+            "documentedSymbols": documented_symbols,
+            "totalSymbols": total_symbols,
+            "staleDocs": stale_docstrings,
+            "missingDocs": missing_docstrings,
+        }
+
+        # 3. Calculate Coverage Hotspots (by file)
+        file_stats = all_symbols.values('code_file__file_path').annotate(
+            total=Count('id'),
+            # Use .exclude() here as well for the count of documented symbols per file.
+            documented=Count('id', filter=~Q(documentation_status=CodeSymbol.DocStatus.NONE)),
+            coverage=Cast('documented', FloatField()) / Cast('total', FloatField()) * 100
+        ).order_by('coverage')
+
+        hotspots = {
+            "needs_improvement": FileCoverageStatSerializer([
+                {'name': os.path.basename(f['code_file__file_path']), 'path': f['code_file__file_path'], 'coverage': f['coverage']}
+                for f in file_stats[:5] # Top 5 worst
+            ], many=True).data,
+            "well_documented": FileCoverageStatSerializer([
+                {'name': os.path.basename(f['code_file__file_path']), 'path': f['code_file__file_path'], 'coverage': f['coverage']}
+                for f in file_stats.reverse()[:5] # Top 5 best
+            ], many=True).data,
+        }
+
+        # 4. Serialize the full list of action items
+        action_items = DocActionItemSerializer(all_symbols, many=True).data
+
+        # 5. Construct the final response
+        response_data = {
+            "summary_stats": summary_stats,
+            "hotspots": hotspots,
+            "action_items": action_items,
+        }
+
+        return Response(response_data)

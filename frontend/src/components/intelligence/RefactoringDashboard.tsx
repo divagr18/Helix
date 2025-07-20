@@ -82,12 +82,16 @@ export const RefactoringDashboard = () => {
             </div>
 
             {/* Right: details list */}
-            <div className="min-h-0 overflow-hidden">
-                <FunctionDetailList
-                    symbols={graphData?.nodes || []}
-                    onSymbolHover={setHighlightedSymbolId}
-                    highlightedSymbolId={highlightedSymbolId}
-                />
+            <div className="min-h-0 overflow-hidden flex flex-col">
+                {isLoading ? (
+                    <Skeleton className="w-full h-full" />
+                ) : (
+                    <FunctionDetailList
+                        symbols={graphData?.nodes || []}
+                        onSymbolHover={setHighlightedSymbolId}
+                        highlightedSymbolId={highlightedSymbolId}
+                    />
+                )}
             </div>
         </div>
     );

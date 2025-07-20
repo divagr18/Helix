@@ -254,6 +254,10 @@ export const RepoProvider: React.FC<{ children: React.ReactNode }> = ({ children
                                 action: prUrl ? { label: "View PR", onClick: () => window.open(prUrl, '_blank') } : undefined,
                             });
                             if (taskData.task_name === 'BATCH_GENERATE_DOCS') refetchRepoDetails();
+                            setTimeout(() => {
+                                if (activeDocGenTaskId === activeTaskId) setActiveDocGenTaskId(null);
+                                if (activePRCreationTaskId === activeTaskId) setActivePRCreationTaskId(null);
+                            }, 4000);
 
                             // --- THIS IS THE KEY ---
                             // We do NOT clear the active task ID immediately.

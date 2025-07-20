@@ -1,4 +1,5 @@
 # backend/repositories/ai_services.py
+from collections import Counter
 import json
 import re
 from typing import Generator,Optional
@@ -372,91 +373,114 @@ def generate_module_readme_stream(
     openai_client: OpenAIClient
 ) -> Generator[str, None, None]:
     """
-    Generates a README.md for a given module/directory by creating a "summary of summaries"
-    from its contained classes, functions, and dependencies.
+    Generates an in-depth, architectural README.md for a module by synthesizing
+    semantic data from KnowledgeChunks and structural data from CodeDependencies.
     """
-    print(f"MODULE_README_SERVICE: Generating README for repo {repo_id}, path '{module_path}'")
+    print(f"MODULE_README_SERVICE (v2): Starting architectural analysis for repo {repo_id}, path '{module_path}'")
 
-    # 1. Gather all relevant files and their contents from the database
-    # We use `startswith` to get all files within the specified directory path
-    files_in_module = CodeFile.objects.filter(
-        repository_id=repo_id,
-        file_path__startswith=module_path
-    ).prefetch_related(
-        'classes', 
-        'symbols'
-    )
-
-    if not files_in_module.exists():
+    # --- Step 1: Scoping ---
+    # Find all files and symbols that belong to the target module.
+    files_in_module = CodeFile.objects.filter(repository_id=repo_id, file_path__startswith=module_path)
+    file_ids_in_module = list(files_in_module.values_list('id', flat=True))
+    
+    if not file_ids_in_module:
         yield "Could not find any files in the specified module path to generate a README."
         return
 
-    # 2. Assemble the "Smart Context" from the gathered data
-    class_summaries = []
-    public_functions = []
-    all_imports = set()
+    all_symbols_in_module = CodeSymbol.objects.filter(code_file_id__in=file_ids_in_module)
+    symbol_ids_in_module = list(all_symbols_in_module.values_list('id', flat=True))
+    print(f"MODULE_README_SERVICE: Found {len(file_ids_in_module)} files and {len(symbol_ids_in_module)} symbols in module.")
 
-    for file in files_in_module:
-        # Collect class summaries (using the short 'summary' field for the prompt)
-        for code_class in file.classes.all():
-            if code_class.summary:
-                class_summaries.append(f"- **{code_class.name}**: {code_class.summary}")
+    # --- Step 2: Prong 1 - Gather Semantic Layer (The "What") from KnowledgeChunks ---
+    chunks = KnowledgeChunk.objects.filter(
+        related_file_id__in=file_ids_in_module,
+        chunk_type__in=[KnowledgeChunk.ChunkType.CLASS_SUMMARY, KnowledgeChunk.ChunkType.SYMBOL_DOCSTRING]
+    ).select_related('related_class', 'related_symbol')
 
-        # Collect public function summaries from their docstrings
-        for symbol in file.symbols.filter(code_class__isnull=True): # Top-level functions only
-            if not symbol.name.startswith('_') and symbol.documentation:
-                # Get the first line of the docstring as a summary
-                docstring_summary = symbol.documentation.strip().split('\n')[0]
-                public_functions.append(f"- `def {symbol.name}(...)`: {docstring_summary}")
-        
-        # Collect imports
-        if file.imports:
-            # Assuming file.imports is a list of strings
-            all_imports.update(file.imports)
+    class_summaries_map = {chunk.related_class.id: chunk.content for chunk in chunks if chunk.chunk_type == 'CLASS_SUMMARY'}
+    symbol_doc_summaries_map = {chunk.related_symbol.id: chunk.content.strip().split('\n')[0] for chunk in chunks if chunk.chunk_type == 'SYMBOL_DOCSTRING'}
+    print(f"MODULE_README_SERVICE: Gathered {len(class_summaries_map)} class summaries and {len(symbol_doc_summaries_map)} docstrings.")
 
-    # 3. Construct the Final Prompt
+    # --- Step 3: Prong 2 - Gather Structural Layer (The "How") from CodeDependencies ---
+    # Internal Workflow
+    internal_deps = CodeDependency.objects.filter(
+        caller_id__in=symbol_ids_in_module, callee_id__in=symbol_ids_in_module
+    ).select_related('caller', 'callee')
+    internal_workflow = [f"- `{dep.caller.name}` calls `{dep.callee.name}`" for dep in internal_deps[:10]] # Limit for brevity
+
+    # External Dependencies (Outgoing)
+    outgoing_deps = CodeDependency.objects.filter(
+        caller_id__in=symbol_ids_in_module
+    ).exclude(
+        callee_id__in=symbol_ids_in_module
+    ).select_related('callee__code_file')
+    external_dependencies = sorted(list(set(
+        dep.callee.code_file.file_path.replace('/', '.').replace('.py', '') for dep in outgoing_deps if dep.callee.code_file
+    )))
+
+    # External Consumers (Incoming) & Key Entrypoints
+    incoming_deps = CodeDependency.objects.filter(
+        callee_id__in=symbol_ids_in_module
+    ).exclude(
+        caller_id__in=symbol_ids_in_module
+    ).select_related('callee', 'caller__code_file')
+    
+    external_consumers = sorted(list(set(
+        dep.caller.code_file.file_path.replace('/', '.').replace('.py', '') for dep in incoming_deps if dep.caller.code_file
+    )))
+
+    entrypoint_counts = Counter(dep.callee_id for dep in incoming_deps)
+    top_entrypoint_ids = [item[0] for item in entrypoint_counts.most_common(5)]
+    key_entrypoints = CodeSymbol.objects.filter(id__in=top_entrypoint_ids).select_related('code_class')
+    print(f"MODULE_README_SERVICE: Analysis complete. Found {len(external_dependencies)} outgoing dependencies, {len(external_consumers)} incoming consumers.")
+
+    # --- Step 4: Synthesize and Construct the "Architectural Dossier" Prompt ---
     prompt_parts = [
-        "You are an expert software architect tasked with writing a clear and concise `README.md` file for a software module.",
-        "Based *only* on the provided summary of its contents and dependencies, generate a helpful README.",
-        f"\n--- Module Context ---",
-        f"**Module Path:** `{module_path}`"
+        "You are an expert Staff Engineer writing a comprehensive, in-depth architectural README.md for a software module.",
+        "Based *only* on the architectural analysis provided below, generate a detailed and insightful README.",
+        "\n--- ARCHITECTURAL ANALYSIS DOSSIER ---",
+        f"**Module Path:** `{module_path or 'Repository Root'}`"
     ]
 
-    if class_summaries:
-        prompt_parts.append("\n**Contained Classes:**")
-        prompt_parts.extend(class_summaries)
-    
-    if public_functions:
-        prompt_parts.append("\n**Exported Public Functions:**")
-        prompt_parts.extend(public_functions)
-        
-    if all_imports:
-        # Show a reasonable number of key dependencies
-        key_imports = sorted(list(all_imports))[:15]
-        prompt_parts.append("\n**Key Dependencies (Imports):**")
-        prompt_parts.append(f"`{', '.join(key_imports)}`")
+    if key_entrypoints:
+        prompt_parts.append("\n**Key Public-Facing Components (Most Used Externally):**")
+        for symbol in key_entrypoints:
+            summary = symbol_doc_summaries_map.get(symbol.id, "No summary available.")
+            prompt_parts.append(f"- `def {symbol.name}(...)`: {summary}")
+
+    if internal_workflow:
+        prompt_parts.append("\n**Internal Workflow Summary:**")
+        prompt_parts.extend(internal_workflow)
+
+    if external_dependencies:
+        prompt_parts.append("\n**External Dependencies (What this module relies on):**")
+        prompt_parts.extend([f"- `{dep}`" for dep in external_dependencies[:10]])
+
+    if external_consumers:
+        prompt_parts.append("\n**External Consumers (Who uses this module):**")
+        prompt_parts.extend([f"- `{consumer}`" for consumer in external_consumers[:10]])
 
     prompt_parts.extend([
-        "\n--- Task ---",
-        "Generate the `README.md` now. The README should be well-structured and include the following sections:",
-        "1.  **## Purpose**: A high-level, one or two-sentence explanation of the module's primary role and responsibility in the broader application.",
-        "2.  **## Key Components**: A brief, bulleted list describing the most important classes and functions and what they do.",
-        "3.  **## Usage**: (Optional but encouraged) If possible, infer a brief conceptual code snippet showing how this module might be imported and used.",
-        "\nYour response should be only the raw Markdown content of the README file, starting with a level-1 heading for the module name (e.g., `# My Module`)."
+        "\n--- TASK ---",
+        "Generate the `README.md` now. It must be well-structured and include the following sections:",
+        "1.  **## Overview**: A detailed paragraph explaining the module's role and primary responsibilities.",
+        "2.  **## Core Abstractions**: A description of the key public-facing classes and functions.",
+        "3.  **## Interactions & Dependencies**: Explain how this module fits into the larger system (dependencies and consumers).",
+        "4.  **## Usage Example**: A conceptual code snippet showing how an external consumer might use this module's public API.",
+        "\nYour response must be only the raw Markdown content of the README file."
     ])
     
     final_prompt = "\n".join(prompt_parts)
-    
-    print(f"MODULE_README_SERVICE: Sending final prompt to LLM. Prompt length: {len(final_prompt)}")
+    print(f"MODULE_README_SERVICE: Sending final prompt to LLM. Length: {len(final_prompt)}")
 
-    # 4. Stream the LLM Response
+    # --- Step 5: Stream to LLM and Save ---
     full_response_text = ""
     try:
         stream = openai_client.chat.completions.create(
-            model="gpt-4.1-mini",  # Use a model suitable for text generation       
+            model="gpt-4.1-mini", # Use a powerful model for this complex task
             messages=[{"role": "user", "content": final_prompt}],
             stream=True,
-            temperature=0.4,
+            temperature=0.3,
         )
         for chunk in stream:
             content = chunk.choices[0].delta.content
@@ -466,15 +490,11 @@ def generate_module_readme_stream(
                 
         if full_response_text:
             cleaned_readme = full_response_text.strip()
-            
-            # Use update_or_create to either create a new README or update an existing one
-            # for the same module path.
             module_doc, created = ModuleDocumentation.objects.update_or_create(
                 repository_id=repo_id,
                 module_path=module_path,
                 defaults={'content_md': cleaned_readme}
             )
-            
             action = "created" if created else "updated"
             print(f"MODULE_README_SERVICE: Successfully {action} ModuleDocumentation for repo {repo_id}, path '{module_path}'.")
     except Exception as e:

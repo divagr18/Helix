@@ -24,6 +24,7 @@ struct MethodInfo {
     cyclomatic_complexity: usize,
     docstring: Option<String>,
     signature_end_location: Location,
+    documentation_hash: Option<String>,
 }
 
 #[derive(Serialize, Debug, Clone)]
@@ -212,27 +213,13 @@ fn parse_function_node(
     file_path: &str,
     containing_class_name: Option<&str>,
 ) -> Option<MethodInfo> {
+    // This logic correctly finds the actual function definition inside a decorator
     let actual_function_node = if node.kind() == "decorated_definition" {
-        let mut cursor = node.walk();
-
-        let primary_find_result: Option<tree_sitter::Node> = {
-            let mut children_iter = node.children(&mut cursor);
-            children_iter.find(|child| {
+        node.children(&mut node.walk())
+            .find(|child| {
                 child.kind() == "function_definition" || child.kind() == "async_function_definition"
             })
-        };
-
-        let option_node = primary_find_result.or_else(|| {
-            let mut fallback_cursor = node.walk();
-            let fallback_find_result: Option<tree_sitter::Node> = {
-                let mut fallback_children_iter = node.children(&mut fallback_cursor);
-                fallback_children_iter.find(|child| child.kind().ends_with("definition"))
-            };
-
-            fallback_find_result
-        });
-
-        option_node.unwrap_or(*node)
+            .unwrap_or(*node)
     } else {
         *node
     };
@@ -242,7 +229,6 @@ fn parse_function_node(
             .utf8_text(code.as_bytes())
             .unwrap_or("")
             .to_string();
-
         let unique_id = format!(
             "{}:{}{}",
             file_path,
@@ -252,45 +238,92 @@ fn parse_function_node(
             name
         );
 
-        let function_full_text = node.utf8_text(code.as_bytes()).unwrap_or("").to_string();
-        let mut hasher = Sha256::new();
-        hasher.update(function_full_text.as_bytes());
-        let content_hash = format!("{:x}", hasher.finalize());
+        // --- NEW, MORE PRECISE HASHING AND EXTRACTION LOGIC ---
 
-        let mut calls: Vec<String> = Vec::new();
-        if let Some(body_node) = actual_function_node.child_by_field_name("body") {
+        let mut content_hasher = Sha256::new();
+        let mut doc_hasher = Sha256::new();
+        let mut docstring: Option<String> = None;
+        let mut documentation_hash: Option<String> = None;
+
+        // Get the function's body node
+        let body_node_option = actual_function_node.child_by_field_name("body");
+
+        // 1. Hash the function signature (from start of function to start of body)
+        let signature_end_byte = body_node_option
+            .map(|n| n.start_byte())
+            .unwrap_or(actual_function_node.end_byte());
+        let signature_text = &code[actual_function_node.start_byte()..signature_end_byte];
+        content_hasher.update(signature_text.as_bytes());
+
+        if let Some(body_node) = body_node_option {
+            // 2. Extract the docstring from the body
+            docstring = extract_docstring(&body_node, code);
+            if let Some(ref ds) = docstring {
+                doc_hasher.update(ds.as_bytes());
+                documentation_hash = Some(format!("{:x}", doc_hasher.finalize()));
+            }
+
+            // 3. Get the text of the body *without* the docstring for content hashing
+            let body_text_without_doc = if let Some(first_child) = body_node.child(0) {
+                // Check if the first statement in the body is the docstring
+                if first_child.kind() == "expression_statement" {
+                    if let Some(string_node) = first_child.child(0) {
+                        if string_node.kind() == "string" {
+                            // It is a docstring. Get the text from the end of the docstring
+                            // to the end of the body.
+                            &code[string_node.end_byte()..body_node.end_byte()]
+                        } else {
+                            // Not a docstring, hash the whole body
+                            body_node.utf8_text(code.as_bytes()).unwrap_or("")
+                        }
+                    } else {
+                        body_node.utf8_text(code.as_bytes()).unwrap_or("")
+                    }
+                } else {
+                    body_node.utf8_text(code.as_bytes()).unwrap_or("")
+                }
+            } else {
+                "" // Empty body
+            };
+            content_hasher.update(body_text_without_doc.as_bytes());
+
+            // --- The rest of the analysis remains the same ---
+            let mut calls: Vec<String> = Vec::new();
             find_calls_recursive(&body_node, code, &mut calls);
+
             let function_node_text_for_loc = actual_function_node
                 .utf8_text(code.as_bytes())
                 .unwrap_or("");
             let loc = calculate_loc(function_node_text_for_loc);
             let cyclomatic_complexity = calculate_cyclomatic_complexity(&body_node);
-            let docstring = extract_docstring(&body_node, code);
 
-            // The signature ends at the colon ':'
             let colon_node = actual_function_node
                 .children(&mut actual_function_node.walk())
                 .find(|n| n.kind() == ":")
-                .unwrap_or(actual_function_node); // Fallback
+                .unwrap_or(actual_function_node);
             let end_pos: Point = colon_node.end_position();
             let signature_end_location = Location {
                 line: end_pos.row + 1,
                 column: end_pos.column + 1,
             };
+
             return Some(MethodInfo {
                 name,
                 unique_id,
                 start_line: node.start_position().row + 1,
                 end_line: node.end_position().row + 1,
-                content_hash,
+                content_hash: format!("{:x}", content_hasher.finalize()),
+                documentation_hash, // Pass the new hash
                 calls,
                 loc,
                 cyclomatic_complexity,
-                docstring, // Add to struct
+                docstring,
                 signature_end_location,
             });
         } else {
-            // Handle functions with no body (e.g., in abstract classes)
+            // Handle functions with no body (e.g., in abstract classes, stubs)
+            let function_full_text = node.utf8_text(code.as_bytes()).unwrap_or("").to_string();
+            content_hasher.update(function_full_text.as_bytes());
             let loc = calculate_loc(&function_full_text);
             let signature_end_location = Location {
                 line: node.end_position().row + 1,
@@ -301,8 +334,9 @@ fn parse_function_node(
                 unique_id,
                 start_line: node.start_position().row + 1,
                 end_line: node.end_position().row + 1,
-                content_hash,
-                calls, // Will be empty
+                content_hash: format!("{:x}", content_hasher.finalize()),
+                documentation_hash: None, // No body, so no docstring
+                calls: Vec::new(),
                 loc,
                 cyclomatic_complexity: 1,
                 docstring: None,

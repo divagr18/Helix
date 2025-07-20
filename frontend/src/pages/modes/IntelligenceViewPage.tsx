@@ -3,13 +3,13 @@ import React from 'react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { RefactoringDashboard } from '@/components/intelligence/RefactoringDashboard';
 import { OrphansDashboard } from '@/components/intelligence/OrphanDashboard';
-import DocumentationHealthDashboard from "@/components/intelligence/DocumentationReport"
+import { DocumentationReport } from "@/components/intelligence/DocumentationReport"
 
 // A new component for the documentation report page
 
 export const IntelligenceViewPage = () => {
   return (
-    <div className="h-screen max-h-screen overflow-hidden flex flex-col">
+    <div className="h-full flex flex-col">
       <Tabs defaultValue="refactoring" className="flex-grow flex flex-col overflow-hidden">
         {/* Header */}
         <div className="flex items-center justify-between p-6 border-b border-border flex-shrink-0">
@@ -47,16 +47,18 @@ export const IntelligenceViewPage = () => {
         </div>
 
         {/* Content */}
-        <div className="flex-grow min-h-0 overflow-hidden">
-          <TabsContent value="refactoring" className="h-full p-6 overflow-hidden">
-            <RefactoringDashboard />
-          </TabsContent>
-          <TabsContent value="documentation" className="h-full p-6 overflow-hidden">
-            <DocumentationHealthDashboard />
-          </TabsContent>
-          <TabsContent value="orphans" className="h-full p-6 overflow-hidden">
-            <OrphansDashboard />
-          </TabsContent>
+        <div className="flex-grow min-h-0 overflow-y-auto">
+          <div className="p-6 h-full"> {/* Add h-full here */}
+            <TabsContent value="refactoring" className="h-full p-6 overflow-hidden">
+              <RefactoringDashboard />
+            </TabsContent>
+            <TabsContent value="documentation" className="h-full p-6 overflow-hidden">
+              <DocumentationReport />
+            </TabsContent>
+            <TabsContent value="orphans" className="h-full p-6 overflow-hidden">
+              <OrphansDashboard />
+            </TabsContent>
+          </div>
         </div>
       </Tabs>
     </div>

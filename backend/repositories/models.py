@@ -228,8 +228,7 @@ class CodeSymbol(models.Model):
 
     def __str__(self):
         parent = self.code_class.name if self.code_class else self.code_file.file_path
-        return f"{self.name} in {parent}"
-    
+        return f"{self.name} in {parent}"    
 class CodeDependency(models.Model):
     # The symbol that is making the call
     caller = models.ForeignKey(CodeSymbol, on_delete=models.CASCADE, related_name='outgoing_calls')
@@ -325,7 +324,9 @@ class EmbeddingBatchJob(models.Model):
     # OpenAI specific IDs
     batch_id = models.CharField(
         max_length=100, 
-        unique=True,  # OpenAI batch IDs are unique
+        unique=True,
+        null=True, # <--- ADD THIS
+        blank=True,  # OpenAI batch IDs are unique
         db_index=True, # Good for querying by batch_id
         help_text="OpenAI Batch API Job ID"
     )
