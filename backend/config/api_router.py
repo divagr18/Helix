@@ -5,7 +5,7 @@ from repositories.views import BatchDocumentModuleView, ChatView, CohesiveTestGe
 
 router = DefaultRouter()
 from django.urls import path # Make sure path is imported
-from users.views import AuthCheckView, LogoutView
+from users.views import AuthCheckView, LogoutView, SignUpView
 from users.views import UserMeView # Import the new view
 
 from repositories.views import UserNotificationsView, MarkNotificationReadView
@@ -109,6 +109,8 @@ urlpatterns += [
     path('symbols/<int:symbol_id>/analysis/', SymbolAnalysisView.as_view(), name='symbol-analysis'),
     path('symbols/<int:symbol_id>/suggest-refactors/', SuggestRefactorsView.as_view(), name='symbol-suggest-refactors'),
     path('repositories/<int:repo_id>/documentation/summary/', DocumentationSummaryView.as_view(), name='repository-doc-summary'),
+    path('auth/signup/', SignUpView.as_view(), name='auth-signup'),
+
 
 
 

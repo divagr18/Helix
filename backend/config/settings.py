@@ -22,7 +22,7 @@ import os
 # See https://docs.djangoproject.com/en/5.0/howto/deployment/checklist/
 env = environ.Env()
 environ.Env.read_env(BASE_DIR.parent / '.env')
-
+FRONTEND_URL="http://localhost:5173"
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = "django-insecure-3l^=!j%afy9=rvlems%tqa_4y*19d3+$k#_0gg)v8830c*s0zp"
 
