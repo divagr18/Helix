@@ -161,6 +161,15 @@ SOCIALACCOUNT_PROVIDERS = {
         'SCOPE': [
             'repo', # Ask for permission to read repositories
         ],
+    },
+    'google': {
+        'SCOPE': [
+            'profile',
+            'email',
+        ],
+        'AUTH_PARAMS': {
+            'access_type': 'online',
+        }
     }
 }
 CORS_ALLOWED_ORIGINS = [

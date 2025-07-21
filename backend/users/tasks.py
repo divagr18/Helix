@@ -21,3 +21,15 @@ def send_verification_email_task(user_email: str, token: str):
     # with a nice HTML template containing the verification_url.
     
     return f"Verification email task dispatched for {user_email}"
+@shared_task
+def send_password_reset_email_task(user_email: str, token: str):
+    """Sends the password reset link to the user."""
+    reset_url = f"{settings.FRONTEND_URL}/reset-password?token={token}"
+    
+    print("--- SENDING PASSWORD RESET EMAIL ---")
+    print(f"To: {user_email}")
+    print(f"URL: {reset_url}")
+    print("-----------------------------------")
+    # AWS SES logic would go here
+    
+    return f"Password reset email task dispatched for {user_email}"

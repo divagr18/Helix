@@ -13,21 +13,17 @@ interface MetricsGridProps {
 export const MetricsGrid: React.FC<MetricsGridProps> = ({ symbol }) => {
     // Mock data for metrics not yet in our model
     const performanceScore = 6.2;
-    const securityScore = 8.5;
     const maintainabilityIndex = 65;
-    const technicalDebt = "2.5 hours";
     const bugPotential = "Medium";
     const testCoverage = 78; // Assuming this will come from the symbol or a related model
 
     return (
-        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-4">
+        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
             <MetricCard title="Complexity" value={symbol.cyclomatic_complexity || 0} icon={TrendingUp} valueColor="text-red-400" />
             <MetricCard title="Lines" value={symbol.loc || 0} icon={FileText} />
             <MetricCard title="Coverage" value={`${testCoverage}%`} icon={TestTube} valueColor="text-yellow-400" />
             <MetricCard title="Performance" value={performanceScore} icon={Activity} valueColor="text-orange-400" />
-            <MetricCard title="Security" value={securityScore} icon={Shield} valueColor="text-green-400" />
             <MetricCard title="Maintainability" value={maintainabilityIndex} icon={Gauge} valueColor="text-blue-400" />
-            <MetricCard title="Tech Debt" value={technicalDebt} icon={Clock} valueColor="text-red-400" />
             <MetricCard title="Bug Risk" value={bugPotential} icon={AlertTriangle} valueColor="text-yellow-400" />
         </div>
     );

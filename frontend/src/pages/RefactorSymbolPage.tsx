@@ -66,7 +66,7 @@ export const RefactorSymbolPage = () => {
 
     // If we reach here, `symbol` is guaranteed to be a valid CodeSymbol object.
     return (
-        <div className="p-6 space-y-6">
+        <div className="p-6 space-y-6 mt-4">
             <SymbolHeader symbol={symbol} />
             <MetricsGrid symbol={symbol} />
             <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">

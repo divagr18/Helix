@@ -15,7 +15,7 @@ export const MetricCard: React.FC<MetricCardProps> = ({ title, value, icon: Icon
     return (
         <Card className="bg-zinc-900/20 border-zinc-900/50">
             <CardContent className="px-4 py-2 -mt-2 -mb-2"> {/* horizontal padding added, vertical reduced */}
-                <div className="flex items-center justify-between">
+                <div className="flex items-center justify-between pl-5 pr-5">
                     <div>
                         <div className="text-xs text-zinc-500 mb-0.5">{title}</div> {/* tighter bottom margin */}
                         <div className={cn("text-lg font-semibold", valueColor || 'text-zinc-200')}>

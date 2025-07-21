@@ -2,7 +2,7 @@
 from django.contrib.auth import get_user_model
 from rest_framework import serializers
 
-from backend.users.models import BetaInviteCode
+from .models import BetaInviteCode
 
 User = get_user_model()
 
@@ -61,3 +61,17 @@ class SignUpSerializer(serializers.ModelSerializer):
             is_active=False  # <-- User is inactive until email is verified
         )
         return user
+    
+class TokenVerificationSerializer(serializers.Serializer):
+    """
+    A simple serializer to validate that a token is provided.
+    """
+    token = serializers.UUIDField()
+
+    class Meta:
+        fields = ('token',)
+class ResendVerificationSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+
+    class Meta:
+        fields = ('email',)

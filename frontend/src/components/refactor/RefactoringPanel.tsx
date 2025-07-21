@@ -1,7 +1,8 @@
 "use client"
 
 import type React from "react"
-import { useState } from "react"
+// --- NEW: Import useEffect and useRef ---
+import { useState, useEffect, useRef } from "react"
 import type { CodeSymbol } from "@/types"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -9,7 +10,7 @@ import { Bot, RefreshCw, Wand2 } from "lucide-react"
 import ReactMarkdown from "react-markdown"
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter"
 import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism"
-import { cn } from "@/lib/utils" // Import cn for conditional class names
+import { cn } from "@/lib/utils"
 
 interface RefactoringPanelProps {
     symbol: CodeSymbol
@@ -18,6 +19,19 @@ interface RefactoringPanelProps {
 export const RefactoringPanel: React.FC<RefactoringPanelProps> = ({ symbol }) => {
     const [isAnalyzing, setIsAnalyzing] = useState(false)
     const [analysisResult, setAnalysisResult] = useState<string>("")
+    // --- NEW: Create a ref for the scrollable content area ---
+    const contentRef = useRef<HTMLDivElement | null>(null)
+
+    // --- NEW: Add an effect to auto-scroll when content changes ---
+    useEffect(() => {
+        if (contentRef.current) {
+            // Use smooth behavior for a better user experience
+            contentRef.current.scrollTo({
+                top: contentRef.current.scrollHeight,
+                behavior: 'smooth',
+            });
+        }
+    }, [analysisResult]) // This effect runs every time analysisResult is updated
 
     const handleAnalyze = async () => {
         setIsAnalyzing(true)
@@ -43,10 +57,10 @@ export const RefactoringPanel: React.FC<RefactoringPanelProps> = ({ symbol }) =>
     return (
         <Card className="bg-zinc-900/20 border-zinc-900/50">
             <CardHeader className="pb-3 px-4 pt-4">
-                <div className="flex items-center justify-between">
-                    <CardTitle className="text-sm font-medium text-white flex items-center">
-                        <Bot className="w-4 h-4 mr-2 text-purple-400" />
-                        AI Refactoring Analysis
+                <div className="flex items-center justify-between -mt-4 pl-4 pr-4">
+                    <CardTitle className="text-base font-medium text-white flex items-center">
+                        <Bot className="w-4 h-4 mr-2 mb-0.5 text-purple-400" />
+                        Helix Refactoring Analysis
                     </CardTitle>
                     <Button
                         className="bg-orange-500 hover:bg-orange-600 text-black text-xs h-7 px-3"
@@ -54,33 +68,34 @@ export const RefactoringPanel: React.FC<RefactoringPanelProps> = ({ symbol }) =>
                         disabled={isAnalyzing}
                     >
                         {isAnalyzing ? <RefreshCw className="w-3 h-3 mr-1.5 animate-spin" /> : <Wand2 className="w-3 h-3 mr-1.5" />}
-                        {analysisResult ? "Re-analyze" : "Analyze with AI"}
+                        {analysisResult ? "Re-analyze" : "Analyze with Helix"}
                     </Button>
                 </div>
             </CardHeader>
-            <CardContent className="px-4 pb-4">
+            {/* --- UPDATED: Added ref and CSS classes for scrolling --- */}
+            <CardContent
+                ref={contentRef}
+                className="px-4 pb-4 -mt-8 max-h-[500px] overflow-y-auto pl-4"
+            >
                 {analysisResult ? (
-                    <div className="prose prose-invert prose-sm max-w-none">
+                    <div className="prose prose-invert prose-sm max-w-none pl-6 pr-6 -mt-2">
                         <ReactMarkdown
                             components={{
                                 h1: ({ node, ...props }) => <h3 className="text-lg font-bold text-white mt-4 mb-2" {...props} />,
                                 h2: ({ node, ...props }) => <h3 className="text-lg font-bold text-white mt-4 mb-2" {...props} />,
                                 h3: ({ node, ...props }) => <h3 className="text-lg font-bold text-white mt-4 mb-2" {...props} />,
-                                // Custom rendering for unordered lists to ensure bullet points are visible
                                 ul: ({ node, children, ...props }) => (
                                     <ul className="list-disc list-outside pl-5" {...props}>
                                         {children}
                                     </ul>
                                 ),
-                                // Custom rendering for list items to add more spacing
                                 li: ({ node, children, ...props }) => (
                                     <li className="mb-4 text-sm text-zinc-200 leading-relaxed" {...props}>
                                         {children}
                                     </li>
                                 ),
-                                p: ({ node, ...props }) => <p className="text-sm text-zinc-200 mb-2 leading-relaxed" {...props} />, // Default paragraph styling
+                                p: ({ node, ...props }) => <p className="text-sm text-zinc-200 mb-2 leading-relaxed" {...props} />,
                                 strong: ({ node, children, ...props }) => {
-                                    // Ensure "Reasoning:" is bold and white
                                     if (typeof children === "string" && children.includes("Reasoning:")) {
                                         return (
                                             <strong className="font-bold text-white" {...props}>
@@ -88,7 +103,6 @@ export const RefactoringPanel: React.FC<RefactoringPanelProps> = ({ symbol }) =>
                                             </strong>
                                         )
                                     }
-                                    // Other bold text (e.g., action description) is semibold and white
                                     return (
                                         <strong className="font-semibold text-white" {...props}>
                                             {children}

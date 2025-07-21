@@ -5,7 +5,7 @@ from repositories.views import BatchDocumentModuleView, ChatView, CohesiveTestGe
 
 router = DefaultRouter()
 from django.urls import path # Make sure path is imported
-from users.views import AuthCheckView, LogoutView, SignUpView
+from users.views import AuthCheckView, LoginView, LogoutView, PasswordResetConfirmView, PasswordResetRequestView, ResendVerificationView, SignUpView, VerifyEmailView
 from users.views import UserMeView # Import the new view
 
 from repositories.views import UserNotificationsView, MarkNotificationReadView
@@ -110,6 +110,13 @@ urlpatterns += [
     path('symbols/<int:symbol_id>/suggest-refactors/', SuggestRefactorsView.as_view(), name='symbol-suggest-refactors'),
     path('repositories/<int:repo_id>/documentation/summary/', DocumentationSummaryView.as_view(), name='repository-doc-summary'),
     path('auth/signup/', SignUpView.as_view(), name='auth-signup'),
+    path('auth/verify-email/', VerifyEmailView.as_view(), name='auth-verify-email'),
+    path('auth/resend-verification/', ResendVerificationView.as_view(), name='auth-resend-verification'),
+    path('auth/login/', LoginView.as_view(), name='auth-login'),
+    path('auth/logout/', LogoutView.as_view(), name='auth-logout'),
+    path('auth/password-reset/request/', PasswordResetRequestView.as_view(), name='auth-password-reset-request'),
+    path('auth/password-reset/confirm/', PasswordResetConfirmView.as_view(), name='auth-password-reset-confirm'),
+
 
 
 
