@@ -89,7 +89,7 @@ export const RepositoryCard: React.FC<RepositoryCardProps> = ({ repo, onNavigate
                 onClick={() => onNavigate(repo)}
                 className="bg-zinc-900/20 border-zinc-900/50 hover:bg-zinc-900/30 transition-all duration-200 cursor-pointer group flex flex-col"
             >
-                <CardHeader className="-mt-2 px-4 pb-0">
+                <CardHeader className="-mt-2 px-4 pb-0 pl-5 pr-5">
                     <div className="flex items-center justify-between">
                         <CardTitle className="text-base font-medium text-zinc-300 tracking-tight truncate">
                             <GitBranch className="w-3.5 h-3.5 inline mr-1.5 text-zinc-500" />
@@ -124,7 +124,7 @@ export const RepositoryCard: React.FC<RepositoryCardProps> = ({ repo, onNavigate
                         )}
                     </div>
                 </CardHeader>
-                <CardContent className="px-4 pb-2 -mt-8 flex-grow flex flex-col justify-between">
+                <CardContent className="px-4 pb-2 -mt-8 flex-grow flex flex-col justify-between pl-5 pr-5">
                     <div className="space-y-3 pt-5">
                         <div className="flex items-center justify-between text-sm">
                             <span className="text-zinc-500">Last synced:</span>

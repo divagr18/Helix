@@ -7,6 +7,7 @@ from django.conf import settings
 from openai import OpenAI as OpenAIClient
 from agno.tools import tool
 import logging
+from django.db.models import Q
 
 logger = logging.getLogger(__name__)
 from .models import CodeClass, CodeSymbol, CodeDependency,KnowledgeChunk,CodeClass,CodeFile,ModuleDocumentation 
@@ -376,84 +377,102 @@ def generate_module_readme_stream(
     Generates an in-depth, architectural README.md for a module by synthesizing
     semantic data from KnowledgeChunks and structural data from CodeDependencies.
     """
-    print(f"MODULE_README_SERVICE (v2): Starting architectural analysis for repo {repo_id}, path '{module_path}'")
+    print(f"MODULE_README_SERVICE (v3): Starting hyper-contextual analysis for repo {repo_id}, path '{module_path}'")
 
-    # --- Step 1: Scoping ---
-    # Find all files and symbols that belong to the target module.
-    files_in_module = CodeFile.objects.filter(repository_id=repo_id, file_path__startswith=module_path)
-    file_ids_in_module = list(files_in_module.values_list('id', flat=True))
+    # --- Step 1: Scoping & Initial Data Gathering ---
+    files_in_module = CodeFile.objects.filter(
+        repository_id=repo_id, file_path__startswith=module_path
+    ).prefetch_related('classes', 'symbols')
     
-    if not file_ids_in_module:
+    if not files_in_module.exists():
         yield "Could not find any files in the specified module path to generate a README."
         return
 
+    file_ids_in_module = [f.id for f in files_in_module]
     all_symbols_in_module = CodeSymbol.objects.filter(code_file_id__in=file_ids_in_module)
-    symbol_ids_in_module = list(all_symbols_in_module.values_list('id', flat=True))
-    print(f"MODULE_README_SERVICE: Found {len(file_ids_in_module)} files and {len(symbol_ids_in_module)} symbols in module.")
+    symbol_ids_in_module = [s.id for s in all_symbols_in_module]
+    print(f"MODULE_README_SERVICE: Found {len(file_ids_in_module)} files and {len(symbol_ids_in_module)} symbols.")
 
-    # --- Step 2: Prong 1 - Gather Semantic Layer (The "What") from KnowledgeChunks ---
+    # --- Step 2: Build the "Module Content Manifest" and Infer Ecosystem ---
+    file_content_map = {}
+    all_module_imports = set()
+    for file in files_in_module:
+        file_content_map[file.file_path] = {
+            "classes": [c.name for c in file.classes.all()],
+            "functions": [s.name for s in file.symbols.filter(code_class__isnull=True)],
+            "imports": file.imports or []
+        }
+        all_module_imports.update(file.imports or [])
+
+    inferred_ecosystem = []
+    if any('django' in imp for imp in all_module_imports): inferred_ecosystem.append('Django')
+    if any('pandas' in imp or 'numpy' in imp for imp in all_module_imports): inferred_ecosystem.append('Data Science (Pandas/NumPy)')
+    if any('react' in imp for imp in all_module_imports): inferred_ecosystem.append('React')
+    if any('fastapi' in imp for imp in all_module_imports): inferred_ecosystem.append('FastAPI')
+    print(f"MODULE_README_SERVICE: Inferred ecosystem: {inferred_ecosystem}")
+
+    # --- Step 3: Gather Semantic Layer (from KnowledgeChunks) ---
     chunks = KnowledgeChunk.objects.filter(
         related_file_id__in=file_ids_in_module,
         chunk_type__in=[KnowledgeChunk.ChunkType.CLASS_SUMMARY, KnowledgeChunk.ChunkType.SYMBOL_DOCSTRING]
     ).select_related('related_class', 'related_symbol')
-
     class_summaries_map = {chunk.related_class.id: chunk.content for chunk in chunks if chunk.chunk_type == 'CLASS_SUMMARY'}
     symbol_doc_summaries_map = {chunk.related_symbol.id: chunk.content.strip().split('\n')[0] for chunk in chunks if chunk.chunk_type == 'SYMBOL_DOCSTRING'}
-    print(f"MODULE_README_SERVICE: Gathered {len(class_summaries_map)} class summaries and {len(symbol_doc_summaries_map)} docstrings.")
 
-    # --- Step 3: Prong 2 - Gather Structural Layer (The "How") from CodeDependencies ---
-    # Internal Workflow
-    internal_deps = CodeDependency.objects.filter(
-        caller_id__in=symbol_ids_in_module, callee_id__in=symbol_ids_in_module
-    ).select_related('caller', 'callee')
-    internal_workflow = [f"- `{dep.caller.name}` calls `{dep.callee.name}`" for dep in internal_deps[:10]] # Limit for brevity
-
-    # External Dependencies (Outgoing)
-    outgoing_deps = CodeDependency.objects.filter(
-        caller_id__in=symbol_ids_in_module
-    ).exclude(
-        callee_id__in=symbol_ids_in_module
-    ).select_related('callee__code_file')
-    external_dependencies = sorted(list(set(
-        dep.callee.code_file.file_path.replace('/', '.').replace('.py', '') for dep in outgoing_deps if dep.callee.code_file
-    )))
-
-    # External Consumers (Incoming) & Key Entrypoints
-    incoming_deps = CodeDependency.objects.filter(
-        callee_id__in=symbol_ids_in_module
-    ).exclude(
-        caller_id__in=symbol_ids_in_module
-    ).select_related('callee', 'caller__code_file')
+    # --- Step 4: Gather Structural & Quality Layers ---
+    # Dependencies & Consumers
+    incoming_deps = CodeDependency.objects.filter(callee_id__in=symbol_ids_in_module).exclude(caller_id__in=symbol_ids_in_module).select_related('caller__code_file', 'callee')
+    outgoing_deps = CodeDependency.objects.filter(caller_id__in=symbol_ids_in_module).exclude(callee_id__in=symbol_ids_in_module).select_related('callee__code_file')
     
-    external_consumers = sorted(list(set(
-        dep.caller.code_file.file_path.replace('/', '.').replace('.py', '') for dep in incoming_deps if dep.caller.code_file
-    )))
+    external_consumers = sorted(list(set(dep.caller.code_file.file_path.replace('/', '.').replace('.py', '') for dep in incoming_deps if dep.caller.code_file)))
+    external_dependencies = sorted(list(set(dep.callee.code_file.file_path.replace('/', '.').replace('.py', '') for dep in outgoing_deps if dep.callee.code_file)))
 
-    entrypoint_counts = Counter(dep.callee_id for dep in incoming_deps)
-    top_entrypoint_ids = [item[0] for item in entrypoint_counts.most_common(5)]
-    key_entrypoints = CodeSymbol.objects.filter(id__in=top_entrypoint_ids).select_related('code_class')
-    print(f"MODULE_README_SERVICE: Analysis complete. Found {len(external_dependencies)} outgoing dependencies, {len(external_consumers)} incoming consumers.")
+    # Key Entrypoints (weighted by call count)
+    entrypoint_counts = Counter(dep.callee for dep in incoming_deps)
+    key_entrypoints = [item[0] for item in entrypoint_counts.most_common(5)]
 
-    # --- Step 4: Synthesize and Construct the "Architectural Dossier" Prompt ---
+    # Code Health Summary
+    health_symbols = all_symbols_in_module.filter(
+        Q(cyclomatic_complexity__gte=10) | Q(loc__gte=100) | Q(is_orphan=True)
+    ).order_by('-cyclomatic_complexity', '-loc')[:5] # Top 5 health concerns
+
+    # --- Step 5: Construct the Hyper-Contextualized Prompt ---
     prompt_parts = [
         "You are an expert Staff Engineer writing a comprehensive, in-depth architectural README.md for a software module.",
         "Based *only* on the architectural analysis provided below, generate a detailed and insightful README.",
-        "\n--- ARCHITECTURAL ANALYSIS DOSSIER ---",
-        f"**Module Path:** `{module_path or 'Repository Root'}`"
+        "\n--- ARCHITECTURAL ANALYSIS DOSSIER ---"
     ]
+    if inferred_ecosystem:
+        prompt_parts.append(f"**Project Ecosystem:** {', '.join(inferred_ecosystem)}")
+    prompt_parts.append(f"**Module Path:** `{module_path or 'Repository Root'}`")
+
+    if file_content_map:
+        prompt_parts.append("\n**Module Content Manifest:**")
+        for file_path, contents in sorted(file_content_map.items())[:10]: # Limit files for brevity
+            prompt_parts.append(f"- **File:** `{file_path}`")
+            if contents["classes"]: prompt_parts.append(f"  - **Classes:** {', '.join([f'`{c}`' for c in contents['classes']])}")
+            if contents["functions"]: prompt_parts.append(f"  - **Functions:** {', '.join([f'`{f}()`' for f in contents['functions']])}")
+            if contents["imports"]: prompt_parts.append(f"  - **Imports:** {', '.join([f'`{i}`' for i in contents['imports'][:5]])}")
 
     if key_entrypoints:
         prompt_parts.append("\n**Key Public-Facing Components (Most Used Externally):**")
         for symbol in key_entrypoints:
             summary = symbol_doc_summaries_map.get(symbol.id, "No summary available.")
-            prompt_parts.append(f"- `def {symbol.name}(...)`: {summary}")
+            count = entrypoint_counts[symbol]
+            prompt_parts.append(f"- `def {symbol.name}(...)` (called {count} times externally): {summary}")
 
-    if internal_workflow:
-        prompt_parts.append("\n**Internal Workflow Summary:**")
-        prompt_parts.extend(internal_workflow)
+    if health_symbols:
+        prompt_parts.append("\n**Code Health Summary:**")
+        for symbol in health_symbols:
+            if symbol.cyclomatic_complexity and symbol.cyclomatic_complexity >= 10:
+                prompt_parts.append(f"- **High Complexity:** `{symbol.name}` has a complexity of {symbol.cyclomatic_complexity}.")
+            if symbol.loc and symbol.loc >= 100:
+                prompt_parts.append(f"- **Large Symbol:** `{symbol.name}` is {symbol.loc} lines long.")
+            if symbol.is_orphan:
+                prompt_parts.append(f"- **Potential Dead Code:** `{symbol.name}` is an orphan (no incoming calls).")
 
     if external_dependencies:
-        prompt_parts.append("\n**External Dependencies (What this module relies on):**")
+        prompt_parts.append("\n**External Dependencies (This module relies on):**")
         prompt_parts.extend([f"- `{dep}`" for dep in external_dependencies[:10]])
 
     if external_consumers:
@@ -465,13 +484,15 @@ def generate_module_readme_stream(
         "Generate the `README.md` now. It must be well-structured and include the following sections:",
         "1.  **## Overview**: A detailed paragraph explaining the module's role and primary responsibilities.",
         "2.  **## Core Abstractions**: A description of the key public-facing classes and functions.",
-        "3.  **## Interactions & Dependencies**: Explain how this module fits into the larger system (dependencies and consumers).",
-        "4.  **## Usage Example**: A conceptual code snippet showing how an external consumer might use this module's public API.",
-        "\nYour response must be only the raw Markdown content of the README file."
+        "3.  **## Interactions & Dependencies**: Explain how this module fits into the larger system.",
+        "4.  **## Code Health & Maintainability**: Briefly mention any areas of high complexity or potential dead code as noted in the health summary.",
+        "5.  **## Usage Example**: A conceptual code snippet showing how an external consumer might use this module's public API.",
+        "\nYour response must be only the raw Markdown content of the README file. Do not wrap your response in markdown ```s."
     ])
     
     final_prompt = "\n".join(prompt_parts)
     print(f"MODULE_README_SERVICE: Sending final prompt to LLM. Length: {len(final_prompt)}")
+    print(final_prompt)
 
     # --- Step 5: Stream to LLM and Save ---
     full_response_text = ""

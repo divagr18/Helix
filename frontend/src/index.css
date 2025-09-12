@@ -435,3 +435,26 @@ body,
 .monaco-editor-container .monaco-editor .monaco-editor-background {
   background-color: #080808 !important;
 }
+
+.w-md-editor .w-md-editor-text {
+  /* This is the standard "make it a flexible item that can shrink and grow" property */
+  flex: 1 1 0%;
+  /* A crucial flexbox fix: allows the item to shrink below its content's minimum size */
+  min-width: 0;
+  /* Ensure it doesn't try to scroll itself; the textarea inside will scroll */
+  overflow: hidden;
+}
+
+/* Ensure the textarea fills its now correctly-sized wrapper */
+.w-md-editor .w-md-editor-text textarea {
+  height: 100%;
+  width: 100%;
+}
+
+/* Ensure the preview container also behaves correctly as a flex item */
+.w-md-editor .w-md-editor-preview {
+  flex: 1 1 0%;
+  min-width: 0;
+  overflow: hidden;
+  /* The inner div we styled with props will handle the scrolling */
+}

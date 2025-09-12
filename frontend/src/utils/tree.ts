@@ -7,6 +7,7 @@ export interface TreeNode {
     type: 'folder' | 'file';
     children?: TreeNode[];
     file?: CodeFile;
+    isVirtual?: boolean; // For virtual nodes like README.md
 }
 
 export function buildFileTreeFromCodeFiles(files: CodeFile[]): TreeNode[] {

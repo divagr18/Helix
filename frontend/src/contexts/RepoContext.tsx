@@ -2,20 +2,24 @@ import React, { createContext, useContext, useState, useEffect, useCallback, Dis
 import { useParams } from 'react-router-dom';
 import axios from 'axios';
 import { toast } from 'sonner';
-import { type Repository, type CodeFile, type CodeSymbol, type GeneratedDoc } from '@/types';
+import { type Repository, type CodeFile, type CodeSymbol, type GeneratedDoc, type LiteCodeFile } from '@/types';
 import { getCookie } from '@/utils';
-
+export interface StagedChange {
+    fileId: number;
+    newContent: string;
+}
 // 1. The complete interface for all shared state and functions
 interface RepoContextType {
     // Repo and File state
-    repo: Repository | null;
+    repo: Repository | null; // This will now contain LiteCodeFile[]
     isLoadingRepo: boolean;
     errorRepo: string | null;
-    selectedFile: CodeFile | null;
-    setSelectedFile: (file: CodeFile | null) => void;
+    selectedFile: CodeFile | null; // This will always be the FULL CodeFile object
+    setSelectedFile: (file: LiteCodeFile | null) => void; // Now accepts a LiteCodeFile
     fileContent: string | null;
     isLoadingFileContent: boolean;
     fetchRepoDetails: () => void;
+
     // Symbol selection state
     selectedSymbol: CodeSymbol | null;
     setSelectedSymbol: (symbol: CodeSymbol | null) => void;
@@ -25,21 +29,27 @@ interface RepoContextType {
     toggleFileForBatch: (fileId: number) => void;
     toggleAllFilesForBatch: () => void;
     clearBatchSelection: () => void;
+    setBatchSelection: (newSelection: Set<number>) => void;
 
-    // Batch task state
+    // Batch task state (no changes needed here)
     activeDocGenTaskId: string | null;
     activePRCreationTaskId: string | null;
     taskStatuses: Record<string, { status: string; message: any; progress: number; result_data?: any }>;
     handleBatchGenerateDocs: () => void;
     handleBatchCreatePR: () => void;
 
-    // Per-symbol documentation state and handlers
+    // Per-symbol documentation state and handlers (no changes needed here)
     generatedDocs: Record<number, GeneratedDoc>;
     generatingDocId: number | null;
     savingDocId: number | null;
     handleGenerateDoc: (symbolId: number) => Promise<void>;
     handleSaveDoc: (symbolId: number, docToSave: string) => Promise<void>;
-    setBatchSelection: (newSelection: Set<number>) => void;
+    selectedFolderPath: string | null;
+    setSelectedFolderPath: (path: string | null) => void;
+    stagedChanges: Map<number, StagedChange>; // Map<fileId, StagedChange>
+    addStagedChange: (fileId: number, newContent: string) => void;
+    discardStagedChange: (fileId: number) => void;
+    discardAllStagedChanges: () => void;
 }
 
 const RepoContext = createContext<RepoContextType | undefined>(undefined);
@@ -47,14 +57,20 @@ const RepoContext = createContext<RepoContextType | undefined>(undefined);
 export const RepoProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     const { repoId } = useParams<{ repoId: string }>();
 
-    // All state declarations
+    // --- State Declarations ---
     const [repo, setRepo] = useState<Repository | null>(null);
     const [isLoadingRepo, setIsLoadingRepo] = useState(true);
     const [errorRepo, setErrorRepo] = useState<string | null>(null);
+
+    // This map will act as our client-side cache for full file data
+    const [fullFilesData, setFullFilesData] = useState<Record<number, CodeFile>>({});
+
     const [selectedFile, setSelectedFile] = useState<CodeFile | null>(null);
     const [selectedSymbol, setSelectedSymbol] = useState<CodeSymbol | null>(null);
     const [fileContent, setFileContent] = useState<string | null>(null);
     const [isLoadingFileContent, setIsLoadingFileContent] = useState(false);
+
+    // All other state (batch selection, tasks, docs) remains the same
     const [selectedFilesForBatch, setSelectedFilesForBatch] = useState<Set<number>>(new Set());
     const [activeDocGenTaskId, setActiveDocGenTaskId] = useState<string | null>(null);
     const [activePRCreationTaskId, setActivePRCreationTaskId] = useState<string | null>(null);
@@ -62,7 +78,32 @@ export const RepoProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const [generatedDocs, setGeneratedDocs] = useState<Record<number, GeneratedDoc>>({});
     const [generatingDocId, setGeneratingDocId] = useState<number | null>(null);
     const [savingDocId, setSavingDocId] = useState<number | null>(null);
+    const [selectedFolderPath, setSelectedFolderPath] = useState<string | null>(null);
+    const [stagedChanges, setStagedChanges] = useState<Map<number, StagedChange>>(new Map());
 
+    const addStagedChange = useCallback((fileId: number, newContent: string) => {
+        setStagedChanges(prev => {
+            const newMap = new Map(prev);
+            newMap.set(fileId, { fileId, newContent });
+            return newMap;
+        });
+    }, []);
+
+    const discardStagedChange = useCallback((fileId: number) => {
+        setStagedChanges(prev => {
+            const newMap = new Map(prev);
+            newMap.delete(fileId);
+            return newMap;
+        });
+    }, []);
+
+    const discardAllStagedChanges = useCallback(() => {
+        setStagedChanges(new Map());
+    }, []);
+    const handleSetSelectedFolderPath = (path: string | null) => {
+        setSelectedFolderPath(path);
+        if (path) setSelectedFile(null);
+    };
     // --- 2. Create the new handler ---
     const setBatchSelection = useCallback((newSelection: Set<number>) => {
         setSelectedFilesForBatch(newSelection);
@@ -72,13 +113,14 @@ export const RepoProvider: React.FC<{ children: React.ReactNode }> = ({ children
         if (repoId) {
             setIsLoadingRepo(true);
             setErrorRepo(null);
+            // This now fetches the "lite" repository data with only file paths
             axios.get(`/api/v1/repositories/${repoId}/`)
                 .then(response => {
                     setRepo(response.data);
                 })
                 .catch(err => {
                     console.error("Error fetching repository details:", err);
-                    setErrorRepo('Failed to load repository. It may not exist or you may not have permission.');
+                    setErrorRepo('Failed to load repository.');
                     setRepo(null);
                 })
                 .finally(() => {
@@ -86,53 +128,51 @@ export const RepoProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 });
         }
     }, [repoId]);
+    const handleSetSelectedFile = useCallback((file: LiteCodeFile | null) => {
+        if (!file) {
+            setSelectedFile(null);
+            setFileContent(null); // Also clear content when deselecting
+            return;
+        }
+
+        const fetchContent = (fileToFetch: CodeFile) => {
+            setIsLoadingFileContent(true);
+            setFileContent(null);
+            axios.get(`/api/v1/files/${fileToFetch.id}/content/`)
+                .then(response => setFileContent(response.data))
+                .catch(() => setFileContent("// Error loading file content."))
+                .finally(() => setIsLoadingFileContent(false));
+        };
+
+        // Check our client-side cache first
+        if (fullFilesData[file.id]) {
+            const cachedFile = fullFilesData[file.id];
+            setSelectedFile(cachedFile);
+            fetchContent(cachedFile); // Fetch content for the cached file
+        } else {
+            // If not in cache, fetch the full details first
+            axios.get(`/api/v1/files/${file.id}/`)
+                .then(response => {
+                    const fullFileData: CodeFile = response.data;
+                    setFullFilesData(prev => ({ ...prev, [file.id]: fullFileData }));
+                    setSelectedFile(fullFileData);
+                    // THEN, fetch the content for the newly fetched file
+                    fetchContent(fullFileData);
+                })
+                .catch(err => {
+                    console.error(`Failed to fetch full details for file ${file.id}:`, err);
+                    toast.error(`Could not load details for ${file.file_path}`);
+                });
+        }
+    }, [fullFilesData]);
 
     useEffect(() => {
         fetchRepoDetails();
+        setFullFilesData({});
         setSelectedFile(null);
         setSelectedSymbol(null);
         setSelectedFilesForBatch(new Set());
     }, [repoId, fetchRepoDetails]);
-
-    useEffect(() => {
-        // If no file is selected, ensure content is null and do nothing.
-        if (!selectedFile) {
-            setFileContent(null);
-            return;
-        }
-
-        // A file is selected, start the loading process.
-        setIsLoadingFileContent(true);
-        setFileContent(null); // Clear old content immediately
-
-        axios.get(`/api/v1/files/${selectedFile.id}/content/`)
-            .then(response => {
-                // --- Robustly handle the response data ---
-                let content: string | null = null;
-
-                if (typeof response.data === 'string') {
-                    // Case 1: The API returns the raw text content directly.
-                    content = response.data;
-                } else if (response.data && typeof response.data.content === 'string') {
-                    // Case 2: The API returns a JSON object like { "content": "..." }.
-                    content = response.data.content;
-                } else {
-                    // Case 3: The response is unexpected.
-                    console.error("Unexpected API response structure for file content:", response.data);
-                    content = `// Error: Received unexpected data structure for ${selectedFile.file_path}`;
-                }
-
-                setFileContent(content);
-            })
-            .catch(err => {
-                console.error("Error fetching file content:", err);
-                const errorMessage = err.response?.data?.error || err.message || "An unknown error occurred.";
-                setFileContent(`// Error: Failed to load content for ${selectedFile.file_path}\n// ${errorMessage}`);
-            })
-            .finally(() => {
-                setIsLoadingFileContent(false);
-            });
-    }, [selectedFile]);
 
     useEffect(() => {
         setSelectedSymbol(null);
@@ -162,25 +202,58 @@ export const RepoProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // Per-Symbol Documentation Handlers
     const handleGenerateDoc = useCallback(async (symbolId: number) => {
         setGeneratingDocId(symbolId);
-        setGeneratedDocs(prev => ({ ...prev, [symbolId]: { markdown: '' } }));
+
+        // Find the symbol and its file from our repo state
+        const file = repo?.files.find(f =>
+            f.symbols.some(s => s.id === symbolId) ||
+            f.classes.some(c => c.methods.some(m => m.id === symbolId))
+        );
+        const symbol = file?.symbols.find(s => s.id === symbolId) ||
+            file?.classes.flatMap(c => c.methods).find(m => m.id === symbolId);
+
+        if (!file || !symbol) {
+            toast.error("Could not find the symbol or file to document.");
+            setGeneratingDocId(null);
+            return;
+        }
+
+        // Get the current content (either staged or original)
+        const currentContent = stagedChanges.get(file.id)?.newContent || fileContent;
+        if (currentContent === null) {
+            toast.error("File content is not available.");
+            setGeneratingDocId(null);
+            return;
+        }
+
         try {
             const response = await fetch(`/api/v1/functions/${symbolId}/generate-docstring/`, { credentials: 'include' });
             if (!response.body) throw new Error("Response has no body");
+
             const reader = response.body.getReader();
             const decoder = new TextDecoder();
+            let generatedDocstring = '';
             while (true) {
                 const { done, value } = await reader.read();
                 if (done) break;
-                const chunk = decoder.decode(value, { stream: true });
-                setGeneratedDocs(prev => ({ ...prev, [symbolId]: { markdown: (prev[symbolId]?.markdown || '') + chunk } }));
+                generatedDocstring += decoder.decode(value, { stream: true });
             }
+
+            // --- THE MAGIC HAPPENS HERE ---
+            // Use an AST utility to inject the new docstring into the current content
+            const className = file.classes.find(c => c.methods.some(m => m.id === symbolId))?.name;
+            const newFileContent = updateDocstringInAst(currentContent, symbol.name, generatedDocstring, className);
+
+            // Add the modified file content to our staging area
+            addStagedChange(file.id, newFileContent);
+
+            toast.success(`Docstring for ${symbol.name} generated and staged.`);
+
         } catch (error) {
             toast.error("Failed to generate documentation.");
-            setGeneratedDocs(prev => ({ ...prev, [symbolId]: { markdown: "// Error generating documentation." } }));
         } finally {
             setGeneratingDocId(null);
         }
-    }, []);
+    }, [repo, fileContent, stagedChanges, addStagedChange]);
 
     const handleSaveDoc = useCallback(async (symbolId: number, docToSave: string) => {
         setSavingDocId(symbolId);
@@ -253,18 +326,11 @@ export const RepoProvider: React.FC<{ children: React.ReactNode }> = ({ children
                             toast.success(taskData.message || "Batch operation completed!", {
                                 action: prUrl ? { label: "View PR", onClick: () => window.open(prUrl, '_blank') } : undefined,
                             });
-                            if (taskData.task_name === 'BATCH_GENERATE_DOCS') refetchRepoDetails();
+                            if (taskData.task_name === 'BATCH_GENERATE_DOCS') fetchRepoDetails();
                             setTimeout(() => {
                                 if (activeDocGenTaskId === activeTaskId) setActiveDocGenTaskId(null);
                                 if (activePRCreationTaskId === activeTaskId) setActivePRCreationTaskId(null);
                             }, 4000);
-
-                            // --- THIS IS THE KEY ---
-                            // We do NOT clear the active task ID immediately.
-                            // We leave it so the UI can read the final 'SUCCESS' status and its result.
-                            // It will be cleared when the user starts a new task or navigates away.
-                            // setActiveDocGenTaskId(null); // <-- REMOVE THIS
-                            // setActivePRCreationTaskId(null); // <-- REMOVE THIS
 
                         } else { // FAILURE
                             toast.error(taskData.message || "Batch operation failed.");
@@ -292,7 +358,7 @@ export const RepoProvider: React.FC<{ children: React.ReactNode }> = ({ children
         isLoadingRepo,
         errorRepo,
         selectedFile,
-        setSelectedFile,
+        setSelectedFile: handleSetSelectedFile, // Use the new smart handler
         fileContent,
         isLoadingFileContent,
         fetchRepoDetails: fetchRepoDetails,
@@ -312,7 +378,12 @@ export const RepoProvider: React.FC<{ children: React.ReactNode }> = ({ children
         savingDocId,
         handleGenerateDoc,
         handleSaveDoc,
+        selectedFolderPath, setSelectedFolderPath,
         setBatchSelection,
+        stagedChanges,
+        addStagedChange,
+        discardStagedChange,
+        discardAllStagedChanges,
     };
 
     return <RepoContext.Provider value={value}>{children}</RepoContext.Provider>;

@@ -8,8 +8,9 @@ import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/componen
 import { SymbolTestGeneratorPanel } from "./SymbolTestGeneratorPanel"
 import type { CodeFile } from "@/types"
 import axios from "axios"
-import { FileText, Folder, FolderOpen, ChevronRight, ChevronDown } from "lucide-react"
+import { FileText, Folder, FolderOpen, ChevronRight, ChevronDown, Loader2 } from "lucide-react"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import { toast } from "sonner"
 
 interface FileTreeNode {
     name: string
@@ -144,7 +145,9 @@ const FileTreeItem: React.FC<FileTreeItemProps> = ({ node, selectedFile, onFileS
 
 export const TestGenerationDashboard = () => {
     const { repo } = useRepo()
-    const [selectedFile, setSelectedFile] = useState<CodeFile | null>(null)
+    const [detailedSelectedFile, setDetailedSelectedFile] = useState<CodeFile | null>(null);
+    const [isLoadingDetails, setIsLoadingDetails] = useState(false);
+
     const [sourceCode, setSourceCode] = useState<string | null>(null)
     const [isLoadingContent, setIsLoadingContent] = useState(false)
     const [fileTree, setFileTree] = useState<FileTreeNode[]>([])
@@ -154,7 +157,6 @@ export const TestGenerationDashboard = () => {
         if (repo?.files) {
             const tree = buildFileTree(repo.files)
             setFileTree(tree)
-
             const firstLevelFolders = tree.filter((node) => node.type === "folder").map((node) => node.path)
             setExpandedFolders(new Set(firstLevelFolders))
         }
@@ -172,25 +174,39 @@ export const TestGenerationDashboard = () => {
         setFileTree((prev) => updateTreeExpansion(prev))
     }, [expandedFolders])
 
-    useEffect(() => {
-        if (selectedFile) {
-            setIsLoadingContent(true)
-            setSourceCode(null)
-            axios
-                .get(`/api/v1/files/${selectedFile.id}/content/`)
-                .then((response) => {
-                    setSourceCode(response.data)
-                })
-                .catch(() => {
-                    setSourceCode("// Error: Could not load source code.")
-                })
-                .finally(() => {
-                    setIsLoadingContent(false)
-                })
-        } else {
-            setSourceCode(null)
-        }
-    }, [selectedFile])
+    const handleFileSelect = (fileFromTree: CodeFile) => {
+        // 1. Clear out old data immediately
+        setDetailedSelectedFile(null);
+        setSourceCode(null);
+        setIsLoadingDetails(true);
+        setIsLoadingContent(true);
+
+        // 2. Fetch the FULL, detailed file object from its specific endpoint
+        axios.get(`/api/v1/files/${fileFromTree.id}/`)
+            .then(response => {
+                // The response.data should be the complete CodeFile object
+                setDetailedSelectedFile(response.data);
+            })
+            .catch(err => {
+                console.error("Failed to fetch detailed file:", err);
+                toast.error("Could not load file details.");
+            })
+            .finally(() => {
+                setIsLoadingDetails(false);
+            });
+
+        // 3. Fetch the source code in parallel
+        axios.get(`/api/v1/files/${fileFromTree.id}/content/`)
+            .then((response) => {
+                setSourceCode(response.data.content || response.data);
+            })
+            .catch(() => {
+                setSourceCode("// Error: Could not load source code.");
+            })
+            .finally(() => {
+                setIsLoadingContent(false);
+            });
+    };
 
     const handleToggleExpand = (path: string) => {
         setExpandedFolders((prev) => {
@@ -231,8 +247,10 @@ export const TestGenerationDashboard = () => {
                                     <FileTreeItem
                                         key={node.path}
                                         node={node}
-                                        selectedFile={selectedFile}
-                                        onFileSelect={setSelectedFile}
+                                        // The visual selection is based on the detailed file's ID
+                                        selectedFile={detailedSelectedFile}
+                                        // The onFileSelect now calls our new handler
+                                        onFileSelect={handleFileSelect}
                                         onToggleExpand={handleToggleExpand}
                                         level={0}
                                     />
@@ -247,19 +265,20 @@ export const TestGenerationDashboard = () => {
                 {/* Right Panel: Symbol Selector and Test Display */}
                 <ResizablePanel defaultSize={70} minSize={30} className="flex flex-col min-h-0">
                     <div className="h-full flex flex-col min-h-0 bg-zinc-950">
-                        {selectedFile ? (
+                        {/* --- RENDER LOGIC IS NOW BASED ON THE DETAILED FILE --- */}
+                        {isLoadingDetails ? (
+                            <div className="flex items-center justify-center h-full">
+                                <Loader2 className="w-8 h-8 animate-spin text-zinc-400" />
+                            </div>
+                        ) : detailedSelectedFile ? (
                             <SymbolTestGeneratorPanel
-                                file={selectedFile}
+                                file={detailedSelectedFile} // Pass the full object
                                 sourceCode={sourceCode}
                                 isLoadingContent={isLoadingContent}
                             />
                         ) : (
                             <div className="flex items-center justify-center flex-1">
-                                <div className="text-center">
-                                    <FileText className="w-12 h-12 text-zinc-600 mx-auto mb-3" />
-                                    <p className="text-zinc-400 text-sm">Select a file to see its functions and methods</p>
-                                    <p className="text-zinc-600 text-xs mt-1">Choose from the file tree on the left</p>
-                                </div>
+                                {/* ... (Placeholder remains the same) ... */}
                             </div>
                         )}
                     </div>

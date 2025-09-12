@@ -3,8 +3,40 @@ import { Button } from "@/components/ui/button"
 import { CoverageDashboard } from "@/components/testing/CoverageDashboard"
 import { TestGenerationDashboard } from "@/components/testing/TestGenerationDashboard"
 import { Play, Download, Settings, RefreshCw } from "lucide-react"
+import type { CodeFile } from "@/types"
+import type { TreeNode } from "@/utils/tree"
+import axios from "axios"
+import { useState, useEffect } from "react"
 
 export const TestingViewPage = () => {
+    const [selectedNode, setSelectedNode] = useState<TreeNode | null>(null);
+
+    // This will hold the FULLY DETAILED file object, fetched on demand
+    const [detailedFile, setDetailedFile] = useState<CodeFile | null>(null);
+    const [isLoadingDetails, setIsLoadingDetails] = useState(false);
+
+    // --- NEW DATA FETCHING LOGIC ---
+    // This effect triggers whenever the user selects a new file from a tree.
+    useEffect(() => {
+        // Clear old data first
+        setDetailedFile(null);
+
+        if (selectedNode?.type === 'file' && selectedNode.file) {
+            setIsLoadingDetails(true);
+            // This is the missing API call to get the full file object with symbols
+            axios.get(`/api/v1/files/${selectedNode.file.id}/`)
+                .then(response => {
+                    setDetailedFile(response.data);
+                })
+                .catch(err => {
+                    console.error("Failed to fetch full file details:", err);
+                    // Handle error, maybe show a toast
+                })
+                .finally(() => {
+                    setIsLoadingDetails(false);
+                });
+        }
+    }, [selectedNode]);
     return (
         <div className="h-screen flex flex-col bg-zinc-950">
             {/* Header Section */}
@@ -95,7 +127,10 @@ export const TestingViewPage = () => {
                         </TabsContent>
 
                         <TabsContent value="generation" className="flex-1 flex flex-col min-h-0 px-0 py-0">
-                            <TestGenerationDashboard />
+                            <TestGenerationDashboard
+                                file={detailedFile}
+                                isLoadingFile={isLoadingDetails}
+                            />
                         </TabsContent>
 
                         <TabsContent value="results" className="flex flex-col flex-grow min-h-0 m-0 p-6">

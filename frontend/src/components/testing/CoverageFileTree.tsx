@@ -1,14 +1,25 @@
 // src/components/testing/CoverageFileTree.tsx
 import React, { useMemo } from 'react';
-import { buildFileTree, type TreeNode } from '@/utils/tree';
+// --- FIX 1: Import the correct tree building function ---
+import { buildFileTreeFromCodeFiles, type TreeNode } from '@/utils/tree';
 import { CoverageFileTreeItem } from './CoverageFileTreeItem';
+import { type CodeFile } from '@/types'; // Import the CodeFile type
+
+// --- FIX 2: Define a more specific type for the report data ---
+interface FileCoverage {
+    file_path: string;
+    line_rate: number;
+    // The backend MUST include the full CodeFile object here
+    file_details: CodeFile;
+}
 
 interface CoverageFileTreeProps {
-    report: any; // The full coverage report from the API
+    report: {
+        file_coverages: FileCoverage[];
+    };
     onSelect: (node: TreeNode) => void;
     selectedPath: string | null;
 }
-
 // This helper function calculates coverage for folders by averaging their children
 const calculateFolderCoverage = (node: TreeNode, coverageData: any) => {
     if (node.type === 'file') {
@@ -51,8 +62,18 @@ export const CoverageFileTree: React.FC<CoverageFileTreeProps> = ({ report, onSe
     // Memoize the file tree structure so it's not rebuilt on every render
     const fileTree = useMemo(() => {
         if (!report?.file_coverages) return [];
-        const filePaths = report.file_coverages.map((fc: any) => fc.file_path);
-        return buildFileTree(filePaths);
+
+        // --- FIX 3: Use the correct data and the correct function ---
+        // 1. Extract the full CodeFile objects from the report data.
+        //    We filter out any entries that might be missing the details for safety.
+        const codeFiles = report.file_coverages
+            .map((fc) => fc.file_details)
+            .filter((file): file is CodeFile => !!file);
+
+        // 2. Call the function that is designed to work with CodeFile objects.
+        return buildFileTreeFromCodeFiles(codeFiles);
+        // --- END FIX ---
+
     }, [report]);
 
     // Memoize the coverage data, including calculated folder coverages

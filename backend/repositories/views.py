@@ -34,7 +34,7 @@ from .serializers import CodeSymbolSerializer,AsyncTaskStatusSerializer,InsightS
 import os
 from .models import ModuleDependency
 from .decorators import check_usage_limit
-from .serializers import RepositorySerializer, RepositoryDetailSerializer, RepositoryCreateSerializer
+from .serializers import RepositorySerializer, RepositoryDetailSerializer, RepositoryCreateSerializer,LiteRepositoryDetailSerializer
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
 User = get_user_model() # <--- 2. Call the function to get the active User model
@@ -64,6 +64,8 @@ class RepositoryViewSet(viewsets.ModelViewSet):
         # --- USE OUR NEW SERIALIZER FOR THE 'create' ACTION ---
         if self.action == 'create':
             return RepositoryCreateSerializer
+        if self.action == 'retrieve':
+            return LiteRepositoryDetailSerializer
         # For all other actions, use the detailed serializer.
         return RepositoryDetailSerializer
 
@@ -2462,3 +2464,85 @@ class DocumentationSummaryView(APIView):
         }
 
         return Response(response_data)
+
+from rest_framework import generics
+from .serializers import CodeFileSerializer
+class CodeFileDetailView(generics.RetrieveAPIView):
+    """
+    Provides the full details for a single CodeFile, including its
+    nested classes and symbols.
+    """
+    queryset = CodeFile.objects.all()
+    serializer_class = CodeFileSerializer # Use the original, full serializer
+    permission_classes = [permissions.IsAuthenticated] 
+
+from .tasks import generate_module_documentation_workflow_task # The Celery task
+
+class GenerateModuleReadmeView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, repo_id, *args, **kwargs):
+        # 1. Permission Check: Ensure the user has access to this repository.
+        try:
+            repo = Repository.objects.get(id=repo_id, organization__memberships__user=request.user)
+        except Repository.DoesNotExist:
+            return Response({"error": "Repository not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        # 2. Get the module path from the request body.
+        module_path = request.data.get('module_path', '').strip()
+
+        # 3. Asynchronously start the Celery workflow task.
+        #    `apply_async` immediately returns a task object without waiting.
+        task = generate_module_documentation_workflow_task.apply_async(
+            kwargs={
+                'user_id': request.user.id,
+                'repo_id': repo.id,
+                'module_path': module_path,
+            }
+        )
+
+        # 4. Immediately respond to the frontend.
+        #    This is the key part. The frontend is not left waiting.
+        return Response(
+            {"message": "Workflow started.", "task_id": task.id}, 
+            status=status.HTTP_202_ACCEPTED
+        )
+
+from django.views import View
+from django.contrib.auth.mixins import LoginRequiredMixin
+
+class StreamModuleReadmeView(LoginRequiredMixin, View):
+    
+    def get(self, request, repo_id, *args, **kwargs):
+        # Permission check (can be more robust, but this is a start)
+        if not Repository.objects.filter(id=repo_id, organization__memberships__user=request.user).exists():
+            # You can't return a DRF Response, so you'd handle errors differently
+            # For a stream, you might just close it or send an error event.
+            return StreamingHttpResponse(status=404)
+
+        module_path = request.GET.get('module_path', '').strip()
+        
+        # This is the generator function from your ai_services
+        stream_generator = generate_module_readme_stream(
+            repo_id=repo_id,
+            module_path=module_path,
+            openai_client=OPENAI_CLIENT_INSTANCE # Assuming OPENAI_CLIENT is globally available
+        )
+
+        def event_stream():
+            """A generator that yields Server-Sent Events."""
+            for chunk in stream_generator:
+                # Format the chunk as a Server-Sent Event (SSE)
+                data = json.dumps({"chunk": chunk})
+                yield f"data: {data}\n\n"
+                time.sleep(0.02) # Small sleep to prevent overwhelming the client
+            
+            # Signal the end of the stream
+            yield "event: end\n"
+            yield "data: {}\n\n"
+
+        # --- THIS IS THE KEY ---
+        # Return a StreamingHttpResponse with the correct content type
+        response = StreamingHttpResponse(event_stream(), content_type="text/event-stream")
+        response['Cache-Control'] = 'no-cache'
+        return response

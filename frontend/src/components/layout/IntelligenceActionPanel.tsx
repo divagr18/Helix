@@ -62,6 +62,8 @@ export const IntelligenceActionPanel = () => {
                             onGenerateDoc={() => handleGenerateDoc(symbol.id)}
                             onSaveDoc={(docToSave: string) => handleSaveDoc(symbol.id, docToSave)}
                             isSavingDoc={savingDocId === symbol.id}
+                            generatingDocId={generatingDocId}
+                            savingDocId={savingDocId}
                         />
                     ))}
                 </Accordion>

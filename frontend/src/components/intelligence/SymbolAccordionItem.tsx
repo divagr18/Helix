@@ -16,6 +16,8 @@ interface SymbolAccordionItemProps {
     isGeneratingDoc: boolean;
     onSaveDoc: (docToSave: string) => void; // No need for ID, it's scoped
     isSavingDoc: boolean;
+    generatingDocId: number | null;
+    savingDocId: number | null;
 }
 export const SymbolAccordionItem: React.FC<SymbolAccordionItemProps> = ({
     symbol,
@@ -24,7 +26,12 @@ export const SymbolAccordionItem: React.FC<SymbolAccordionItemProps> = ({
     isGeneratingDoc,
     onSaveDoc,
     isSavingDoc,
+    generatingDocId,
+    savingDocId,
 }) => {
+    const isAnyOtherActionInProgress =
+        (generatingDocId !== null && generatingDocId !== symbol.id) ||
+        (savingDocId !== null && savingDocId !== symbol.id);
     return (
         <AccordionItem value={`symbol-${symbol.id}`} className="border-b border-border/80">
 
@@ -72,19 +79,17 @@ export const SymbolAccordionItem: React.FC<SymbolAccordionItemProps> = ({
                         <DocumentationLens
                             symbol={symbol}
                             generatedDoc={generatedDoc}
-                            // Pass down handlers that are already scoped to this symbol's ID
                             onGenerateDoc={() => onGenerateDoc()}
                             isGenerating={isGeneratingDoc}
                             onSaveDoc={onSaveDoc}
                             isSaving={isSavingDoc}
+                            // Pass a check to see if any other symbol is being worked on
+                            isAnyOtherActionInProgress={isAnyOtherActionInProgress}
+
                         />
                     </div>
 
                     {/* --- Call Graph Lens (Placeholder) --- */}
-                    <div>
-                        <h4 className="font-semibold text-sm mb-2 text-muted-foreground">Call Graph</h4>
-                        <CallGraphLens symbolId={symbol.id} />
-                    </div>
 
                     {/* --- Future Lenses (e.g., Tests, Refactors) can be added here --- */}
 

@@ -56,8 +56,7 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
-        'corsheaders.middleware.CorsMiddleware',
-
+    'corsheaders.middleware.CorsMiddleware',
     "django.middleware.security.SecurityMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
@@ -174,7 +173,6 @@ SOCIALACCOUNT_PROVIDERS = {
 }
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:5173",
-    "https://7352-2405-201-1c-1029-3959-dfcc-2e4a-d18.ngrok-free.app",
     "https://woodcock-wondrous-infinitely.ngrok-free.app" # The origin of our React frontend
 ]
 SESSION_COOKIE_SECURE = True  # Required for HTTPS

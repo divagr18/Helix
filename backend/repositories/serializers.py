@@ -397,3 +397,25 @@ class FileCoverageStatSerializer(serializers.Serializer):
     name = serializers.CharField()
     path = serializers.CharField()
     coverage = serializers.FloatField()
+class LiteCodeFileSerializer(serializers.ModelSerializer):
+    """
+    A lightweight serializer for code files that only includes the path and ID.
+    Used for quickly loading the file tree structure.
+    """
+    class Meta:
+        model = CodeFile
+        fields = ['id', 'file_path']
+
+class LiteRepositoryDetailSerializer(serializers.ModelSerializer):
+    """
+    A serializer for the initial repository load. It includes all repo-level
+    data but only a lightweight list of file paths.
+    """
+    files = LiteCodeFileSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = Repository
+        fields = [
+            'id', 'name', 'full_name', 'github_id',
+            'status', 'last_processed', 'files' # Note: 'files' now uses the lite serializer
+        ]

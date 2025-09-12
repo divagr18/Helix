@@ -32,8 +32,9 @@ from repositories.views import (
     ClassSummaryView,ReprocessRepositoryView, SuggestRefactorsView,GenerateModuleWorkflowView,DependencyGraphView,OrganizationMemberListView,
     OrganizationMemberDetailView,
     InvitationListView,
-    AcceptInviteView
+    AcceptInviteView,GenerateModuleReadmeView,StreamModuleReadmeView
 )
+from repositories.views import CodeFileDetailView
 
 
 
@@ -116,6 +117,12 @@ urlpatterns += [
     path('auth/logout/', LogoutView.as_view(), name='auth-logout'),
     path('auth/password-reset/request/', PasswordResetRequestView.as_view(), name='auth-password-reset-request'),
     path('auth/password-reset/confirm/', PasswordResetConfirmView.as_view(), name='auth-password-reset-confirm'),
+    path('files/<int:pk>/', CodeFileDetailView.as_view(), name='codefile-detail'),
+
+    path('repositories/<int:repo_id>/generate-module-readme/', GenerateModuleReadmeView.as_view(), name='generate-module-readme'),
+    path('repositories/<int:repo_id>/generate-module-readme-stream/', StreamModuleReadmeView.as_view(), name='generate-module-readme-stream'),
+
+
 
 
 

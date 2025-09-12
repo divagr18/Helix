@@ -1138,14 +1138,11 @@ def create_pr_for_multiple_files_task(self, repo_id: int, user_id: int, file_ids
     except (User.DoesNotExist, Repository.DoesNotExist) as e:
         # This case means we can't even create a status object linked to user/repo
         print(f"BATCH_PR_TASK: ERROR - User or Repository not found for task {task_id}. Cannot create status record. Error: {e}")
-        # We can't update task_status_obj if it wasn't created.
-        # The task should fail and Celery will handle it based on ack_late etc.
-        # For now, just return an error structure.
+
         return {"status": "error", "message": f"User or Repository for task status not found: {e}"}
     except Exception as e:
         print(f"BATCH_PR_TASK: ERROR - Could not create/update AsyncTaskStatus for {task_id}. Error: {e}")
-        # Task can proceed but status won't be fully tracked if task_status_obj is None.
-        # This is problematic. Better to fail if status tracking can't be initialized.
+
         return {"status": "error", "message": f"Failed to initialize task status tracking: {e}"}
 
     # Use the fetched user_obj and repo_obj (renamed to repo_model for consistency with your original code)
@@ -1153,7 +1150,6 @@ def create_pr_for_multiple_files_task(self, repo_id: int, user_id: int, file_ids
     repo_model = repo_obj
 
     try:
-        # Fetch CodeFile objects that are in file_ids_for_pr AND have at least one symbol with fresh docs
         code_files_to_process = CodeFile.objects.filter(
             id__in=file_ids_for_pr,
             repository=repo_model # Ensure files belong to the target repository
