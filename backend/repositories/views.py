@@ -10,7 +10,7 @@ from .permissions import IsMemberOfOrganization
 from .tasks import calculate_documentation_coverage_task, create_documentation_pr_task,batch_generate_docstrings_task, parse_coverage_report_task # We will create this task soon
 from django.utils.decorators import method_decorator
 from rest_framework import viewsets
-from .models import CodeFile, CodeSymbol as CodeFunction, Repository, CodeSymbol,CodeDependency,AsyncTaskStatus, Notification,CodeClass,Insight, TestCoverageReport
+from .models import CodeFile, CodeSymbol as CodeFunction, Repository, CodeSymbol,CodeDependency,AsyncTaskStatus, Notification,CodeClass,Insight, TestCoverageReport, Organization, OrganizationMember
 from .ai_services import generate_class_summary_stream, generate_module_readme_stream,generate_refactor_stream, generate_refactoring_suggestions # 03c03c03c NEW IMPORT
 from .tasks import process_repository # Import the Celery task
 import json
@@ -22,6 +22,7 @@ from allauth.socialaccount.models import SocialToken
 import requests,re
 from django.http import Http404, HttpResponse
 from django.http import StreamingHttpResponse # Import Django's native streaming class
+from django.utils import timezone
 from openai import OpenAI
 import tempfile,hashlib
 from rest_framework import status  # if using Django REST Framework
@@ -289,7 +290,7 @@ def openai_stream_generator(prompt: str, openai_client_instance: OpenAIClient | 
 
     try:
         stream = openai_client_instance.chat.completions.create(
-            model="gpt-4.1-mini", # Or your preferred model
+            model="gpt-4o-mini", # Fixed model name
             messages=[
                 {"role": "system", "content": "You are a helpful AI programming assistant specialized in writing Python docstrings."},
                 {"role": "user", "content": prompt} # The full prompt is now constructed in the view
@@ -2042,32 +2043,6 @@ class AcceptInviteView(APIView):
 
         return Response(OrganizationSerializer(invitation.organization).data, status=status.HTTP_200_OK)
     
-from users.models import BetaInviteCode
-
-class ValidateInviteCodeView(APIView):
-    permission_classes = [permissions.AllowAny] # Anyone can check a code
-
-    def post(self, request, *args, **kwargs):
-        code_str = request.data.get('code')
-        if not code_str:
-            return Response({"error": "Invite code is required."}, status=status.HTTP_400_BAD_REQUEST)
-
-        try:
-            invite_code = BetaInviteCode.objects.get(code=code_str, is_active=True)
-            
-            # Check if the code has uses left
-            if invite_code.uses >= invite_code.max_uses:
-                return Response({"error": "This invite code has already been used."}, status=status.HTTP_400_BAD_REQUEST)
-
-            # --- Store the valid code in the user's session ---
-            request.session['validated_invite_code'] = str(invite_code.code)
-            print(f"INVITE_VALIDATION: Stored code {invite_code.code} in session {request.session.session_key}")
-            
-            return Response({"message": "Invite code is valid. Please proceed to sign up."}, status=status.HTTP_200_OK)
-
-        except BetaInviteCode.DoesNotExist:
-            return Response({"error": "Invalid invite code."}, status=status.HTTP_404_NOT_FOUND)
-        
 from django.http import JsonResponse
 from django.views.decorators.csrf import ensure_csrf_cookie
 
@@ -2546,3 +2521,138 @@ class StreamModuleReadmeView(LoginRequiredMixin, View):
         response = StreamingHttpResponse(event_stream(), content_type="text/event-stream")
         response['Cache-Control'] = 'no-cache'
         return response
+
+
+@method_decorator(csrf_exempt, name="dispatch")
+class LocalRepositoryUploadView(APIView):
+    permission_classes = [permissions.IsAuthenticated, IsMemberOfOrganization]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def post(self, request, *args, **kwargs):
+        """
+        Handle folder upload for local repositories.
+        Users can upload multiple files maintaining folder structure.
+        """
+        try:
+            # Get data from request
+            repository_name = request.data.get('repository_name')
+            uploaded_files = request.FILES.getlist('files')
+            
+            if not uploaded_files:
+                return Response(
+                    {"error": "No files uploaded"}, 
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            # Get user's first organization (workspace) automatically
+            user_membership = OrganizationMember.objects.filter(user=request.user).first()
+            if not user_membership:
+                return Response(
+                    {"error": "You are not a member of any workspace. Please create or join a workspace first."}, 
+                    status=status.HTTP_403_FORBIDDEN
+                )
+            
+            organization = user_membership.organization
+
+            # Generate repository name if not provided
+            if not repository_name:
+                repository_name = f"Local Repository {timezone.now().strftime('%Y%m%d_%H%M%S')}"
+            
+            # Create a unique full_name for the repository
+            # Check if full_name already exists and make it unique
+            base_full_name = f"local/{repository_name}"
+            full_name = base_full_name
+            counter = 1
+            
+            while Repository.objects.filter(full_name=full_name).exists():
+                full_name = f"{base_full_name}-{counter}"
+                counter += 1
+
+            # Create repository record
+            repository = Repository.objects.create(
+                name=repository_name,
+                full_name=full_name,
+                repository_type='local',
+                github_id=None,
+                organization=organization,
+                added_by=request.user,
+                status='processing'
+            )
+
+            # Create directory for this repository
+            repo_path = os.path.join(REPO_CACHE_BASE_PATH, str(repository.id))
+            os.makedirs(repo_path, exist_ok=True)
+
+            # Save uploaded files maintaining folder structure
+            saved_files = []
+            total_size = 0
+            
+            for uploaded_file in uploaded_files:
+                # For folder uploads, browsers may preserve the relative path in the file name
+                # or we can reconstruct it from the file structure
+                file_path = uploaded_file.name
+                
+                # Handle file path extraction from various upload methods
+                if hasattr(uploaded_file, 'relative_path'):
+                    file_path = uploaded_file.relative_path
+                elif '/' in uploaded_file.name or '\\' in uploaded_file.name:
+                    # File path is embedded in the name
+                    file_path = uploaded_file.name.replace('\\', '/')
+                
+                # Security: ensure we don't have path traversal attacks
+                if '..' in file_path or file_path.startswith('/'):
+                    continue
+                
+                # Skip non-source files and directories we don't want
+                if any(exclude in file_path for exclude in ['.git/', 'node_modules/', '__pycache__/', '.venv/', 'venv/', 'env/']):
+                    continue
+                
+                # Only process source code files
+                if not any(file_path.endswith(ext) for ext in ['.py', '.js', '.ts', '.jsx', '.tsx', '.java', '.cpp', '.c', '.h', '.cs', '.php', '.rb', '.go', '.rs', '.swift', '.kt']):
+                    continue
+                
+                # Create full file path
+                full_file_path = os.path.join(repo_path, file_path)
+                
+                # Create directories if they don't exist
+                os.makedirs(os.path.dirname(full_file_path), exist_ok=True)
+                
+                # Save the file
+                with open(full_file_path, 'wb+') as destination:
+                    for chunk in uploaded_file.chunks():
+                        destination.write(chunk)
+                        total_size += len(chunk)
+                
+                saved_files.append(file_path)
+
+            if not saved_files:
+                # Clean up the repository if no valid files were uploaded
+                repository.delete()
+                if os.path.exists(repo_path):
+                    shutil.rmtree(repo_path)
+                return Response(
+                    {"error": "No valid source code files found in upload"}, 
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            # Update repository size
+            repository.size_kb = total_size // 1024
+            repository.save(update_fields=['size_kb'])
+
+            # Trigger processing of the local repository
+            process_repository.delay(repository.id, is_local=True, local_path=repo_path)
+
+            # Return repository details
+            serializer = RepositoryDetailSerializer(repository)
+            return Response({
+                "repository": serializer.data,
+                "uploaded_files": saved_files,
+                "total_size_kb": total_size // 1024,
+                "message": f"Successfully uploaded {len(saved_files)} files ({total_size // 1024} KB). Processing started."
+            }, status=status.HTTP_201_CREATED)
+
+        except Exception as e:
+            return Response(
+                {"error": f"Upload failed: {str(e)}"}, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )

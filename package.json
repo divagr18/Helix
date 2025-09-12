@@ -1,0 +1,24 @@
+{
+    "name": "helix-cme",
+    "version": "1.0.0",
+    "description": "Helix Code Management Enterprise",
+    "scripts": {
+        "start": "docker-compose up -d",
+        "start-all": "docker-compose up -d && echo 'All services including Electron are starting...'",
+        "stop": "docker-compose down",
+        "desktop": "powershell -ExecutionPolicy Bypass -File ./start-desktop.ps1",
+        "desktop-dev": "cd electron && npm run electron-dev",
+        "build": "cd frontend && npm run build",
+        "logs": "docker-compose logs -f",
+        "logs-electron": "docker-compose logs -f electron"
+    },
+    "keywords": [
+        "helix",
+        "cme",
+        "code-management",
+        "electron",
+        "desktop"
+    ],
+    "author": "Helix Team",
+    "license": "MIT"
+}

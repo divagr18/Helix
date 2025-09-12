@@ -13,7 +13,7 @@ WORKDIR /app
 # Install Python, git, UV, and Python requirements in one step
 # We need to copy the requirements file relative to the build context, which is '.'
 COPY backend/requirements.txt .
-RUN apt-get update && apt-get install -y python3 python3-pip git curl && \
+RUN apt-get update && apt-get install -y python3 python3-pip git curl netcat-openbsd && \
     curl -LsSf https://astral.sh/uv/install.sh | sh && \
     uv pip install --system --break-system-packages -r requirements.txt && \
     apt-get clean && rm -rf /var/lib/apt/lists/*

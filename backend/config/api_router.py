@@ -1,7 +1,7 @@
 # backend/config/api_router.py
 
 from rest_framework.routers import DefaultRouter
-from repositories.views import BatchDocumentModuleView, ChatView, CohesiveTestGenerationView, ComplexityGraphView, ComplexityHotspotsView, CoverageUploadView, DashboardSummaryView, DocumentationSummaryView, LatestCoverageReportView, OrganizationDetailView, OrganizationListView, OrphanSymbolsView, RepositorySelectorListView, RepositoryViewSet,GithubReposView,FileContentView,GenerateDocstringView, CodeSymbolDetailView, RunTestsInSandboxView, SymbolAnalysisView, ValidateInviteCodeView, set_csrf_cookie
+from repositories.views import BatchDocumentModuleView, ChatView, CohesiveTestGenerationView, ComplexityGraphView, ComplexityHotspotsView, CoverageUploadView, DashboardSummaryView, DocumentationSummaryView, LatestCoverageReportView, OrganizationDetailView, OrganizationListView, OrphanSymbolsView, RepositorySelectorListView, RepositoryViewSet,GithubReposView,FileContentView,GenerateDocstringView, CodeSymbolDetailView, RunTestsInSandboxView, SymbolAnalysisView, set_csrf_cookie
 
 router = DefaultRouter()
 from django.urls import path # Make sure path is imported
@@ -32,7 +32,8 @@ from repositories.views import (
     ClassSummaryView,ReprocessRepositoryView, SuggestRefactorsView,GenerateModuleWorkflowView,DependencyGraphView,OrganizationMemberListView,
     OrganizationMemberDetailView,
     InvitationListView,
-    AcceptInviteView,GenerateModuleReadmeView,StreamModuleReadmeView
+    AcceptInviteView,GenerateModuleReadmeView,StreamModuleReadmeView,
+    LocalRepositoryUploadView
 )
 from repositories.views import CodeFileDetailView
 
@@ -48,6 +49,7 @@ def set_csrf_token(request):
 urlpatterns = router.urls
 urlpatterns += [
     path('github-repos/', GithubReposView.as_view(), name='github-repos'),
+    path('local-analyze/', LocalRepositoryUploadView.as_view(), name='local-analyze'),
     path('files/<int:file_id>/content/', FileContentView.as_view(), name='file-content'),
     path('functions/<int:function_id>/generate-docstring/', GenerateDocstringView.as_view(), name='generate-docstring'),
     path('functions/<int:function_id>/save-docstring/', SaveDocstringView.as_view(), name='save-docstring'),
@@ -91,7 +93,6 @@ urlpatterns += [
     path('organizations/<int:org_id>/members/<int:membership_id>/', OrganizationMemberDetailView.as_view(), name='organization-member-detail'),
     path('organizations/<int:org_id>/invites/', InvitationListView.as_view(), name='organization-invites'),
     path('invites/accept/<uuid:token>/', AcceptInviteView.as_view(), name='accept-invite'),
-    path('invites/validate/', ValidateInviteCodeView.as_view(), name='validate-invite-code'),
     path('auth/logout/', LogoutView.as_view(), name='api-logout'),
     path('repositories/<int:repo_id>/intelligence/complexity-hotspots/', ComplexityHotspotsView.as_view(), name='repository-complexity-hotspots'),
 

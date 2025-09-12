@@ -1,9 +1,9 @@
-import React, { createContext, useContext, useState, useEffect, useCallback, Dispatch, SetStateAction } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { useParams } from 'react-router-dom';
 import axios from 'axios';
 import { toast } from 'sonner';
 import { type Repository, type CodeFile, type CodeSymbol, type GeneratedDoc, type LiteCodeFile } from '@/types';
-import { getCookie } from '@/utils';
+import { getCookie, updateDocstringInAst } from '@/utils';
 export interface StagedChange {
     fileId: number;
     newContent: string;
@@ -201,32 +201,42 @@ export const RepoProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     // Per-Symbol Documentation Handlers
     const handleGenerateDoc = useCallback(async (symbolId: number) => {
+        console.log('handleGenerateDoc called for symbolId:', symbolId);
         setGeneratingDocId(symbolId);
 
-        // Find the symbol and its file from our repo state
-        const file = repo?.files.find(f =>
-            f.symbols.some(s => s.id === symbolId) ||
-            f.classes.some(c => c.methods.some(m => m.id === symbolId))
-        );
-        const symbol = file?.symbols.find(s => s.id === symbolId) ||
-            file?.classes.flatMap(c => c.methods).find(m => m.id === symbolId);
+        // Use selectedFile which is the full CodeFile object
+        if (!selectedFile) {
+            console.error('No file selected');
+            toast.error("No file selected.");
+            setGeneratingDocId(null);
+            return;
+        }
 
-        if (!file || !symbol) {
-            toast.error("Could not find the symbol or file to document.");
+        // Find the symbol in the selected file
+        const symbol = selectedFile.symbols.find(s => s.id === symbolId) ||
+            selectedFile.classes.flatMap(c => c.methods).find(m => m.id === symbolId);
+
+        if (!symbol) {
+            console.error('Could not find symbol:', { symbolId, selectedFile });
+            toast.error("Could not find the symbol to document.");
             setGeneratingDocId(null);
             return;
         }
 
         // Get the current content (either staged or original)
-        const currentContent = stagedChanges.get(file.id)?.newContent || fileContent;
+        const currentContent = stagedChanges.get(selectedFile.id)?.newContent || fileContent;
         if (currentContent === null) {
+            console.error('File content is not available');
             toast.error("File content is not available.");
             setGeneratingDocId(null);
             return;
         }
 
         try {
+            console.log('Making API call to generate docstring for symbol:', symbol.name);
             const response = await fetch(`/api/v1/functions/${symbolId}/generate-docstring/`, { credentials: 'include' });
+            console.log('API response status:', response.status);
+
             if (!response.body) throw new Error("Response has no body");
 
             const reader = response.body.getReader();
@@ -238,22 +248,35 @@ export const RepoProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 generatedDocstring += decoder.decode(value, { stream: true });
             }
 
+            console.log('Generated docstring:', generatedDocstring);
+
             // --- THE MAGIC HAPPENS HERE ---
             // Use an AST utility to inject the new docstring into the current content
-            const className = file.classes.find(c => c.methods.some(m => m.id === symbolId))?.name;
+            const className = selectedFile.classes.find(c => c.methods.some(m => m.id === symbolId))?.name;
             const newFileContent = updateDocstringInAst(currentContent, symbol.name, generatedDocstring, className);
 
             // Add the modified file content to our staging area
-            addStagedChange(file.id, newFileContent);
+            addStagedChange(selectedFile.id, newFileContent);
+
+            // Store the generated documentation in state so it shows in the UI
+            setGeneratedDocs(prev => ({
+                ...prev,
+                [symbolId]: {
+                    id: symbolId,
+                    markdown: generatedDocstring,
+                    created_at: new Date().toISOString()
+                }
+            }));
 
             toast.success(`Docstring for ${symbol.name} generated and staged.`);
 
         } catch (error) {
+            console.error('Error generating documentation:', error);
             toast.error("Failed to generate documentation.");
         } finally {
             setGeneratingDocId(null);
         }
-    }, [repo, fileContent, stagedChanges, addStagedChange]);
+    }, [selectedFile, fileContent, stagedChanges, addStagedChange]);
 
     const handleSaveDoc = useCallback(async (symbolId: number, docToSave: string) => {
         setSavingDocId(symbolId);
@@ -264,18 +287,46 @@ export const RepoProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 { headers: { 'X-CSRFToken': getCookie('csrftoken') } }
             );
             toast.success("Documentation saved successfully!");
+
+            // Clear the generated doc since it's now saved
             setGeneratedDocs(prev => {
                 const newDocs = { ...prev };
                 delete newDocs[symbolId];
                 return newDocs;
             });
+
+            // Update the selectedFile with the new docstring to avoid needing a reload
+            if (selectedFile) {
+                const updatedFile = { ...selectedFile };
+
+                // Update the symbol in the symbols array
+                updatedFile.symbols = updatedFile.symbols.map(symbol =>
+                    symbol.id === symbolId
+                        ? { ...symbol, existing_docstring: docToSave, documentation_status: 'FRESH' }
+                        : symbol
+                );
+
+                // Update methods in classes if it's a method
+                updatedFile.classes = updatedFile.classes.map(cls => ({
+                    ...cls,
+                    methods: cls.methods.map(method =>
+                        method.id === symbolId
+                            ? { ...method, existing_docstring: docToSave, documentation_status: 'FRESH' }
+                            : method
+                    )
+                }));
+
+                setSelectedFile(updatedFile);
+            }
+
+            // Also fetch updated repo details for dashboard
             fetchRepoDetails();
         } catch (err) {
             toast.error("Failed to save documentation.");
         } finally {
             setSavingDocId(null);
         }
-    }, [fetchRepoDetails]);
+    }, [fetchRepoDetails, selectedFile]);
 
     // Batch Action Task Handlers
     const handleBatchGenerateDocs = useCallback(() => {

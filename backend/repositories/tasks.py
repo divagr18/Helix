@@ -41,7 +41,7 @@ OPENAI_EMBEDDING_MODEL = "text-embedding-3-small"
 from django.core.cache import cache
 
 @app.task
-def process_repository(repo_id):
+def process_repository(repo_id, is_local=False, local_path=None):
     lock_key = f"process_repo_lock_{repo_id}"
     # Since we don't have `self.request.id`, we can just use a simple value for the lock
     if not cache.add(lock_key, "locked", timeout=900):
@@ -61,96 +61,137 @@ def process_repository(repo_id):
         repo.status = Repository.Status.INDEXING
         repo.save(update_fields=['status'])
 
-        # --- Git Cache Management ---
-        # (Your existing git clone/pull logic - seems okay)
-        # ... (ensure SocialToken and token logic is robust) ...
-        if not repo.added_by:
-            raise Exception(f"Repository {repo.full_name} has no associated user to fetch a token.")
-
-        user_who_added_repo = repo.added_by
-        social_account = user_who_added_repo.socialaccount_set.filter(provider='github').first()
-        if not social_account:
-            raise Exception(f"No GitHub social account found for user {user_who_added_repo.username} to process repo {repo.full_name}")
-        
-        social_token = SocialToken.objects.filter(account=social_account).first()
-        if not social_token:
-            raise Exception(f"No GitHub token found for user {user_who_added_repo.username} to process repo {repo.full_name}")
-        
-        token = social_token.token
-        clone_url = f"https://oauth2:{token}@github.com/{repo.full_name}.git"
-
-        previous_commit_hash = None
-        if os.path.exists(repo_path):
-            try:
-                # Get the hash of the current HEAD
-                result = subprocess.run(['git', '-C', repo_path, 'rev-parse', 'HEAD'], check=True, capture_output=True, text=True)
-                previous_commit_hash = result.stdout.strip()
-                
-                print(f"PROCESS_REPO_TASK: Previous commit hash for repo {repo.id} is {previous_commit_hash[:7]}")
-                subprocess.run(['git', '-C', repo_path, 'pull'], check=True, capture_output=True, timeout=300)
-            except subprocess.CalledProcessError as e:
-                # Handle git errors
-                print(f"Git pull failed: {e.stderr}")
-                repo.status = Repository.Status.FAILED; repo.save(); return
-        else:
-            # Cloning new repo
-            subprocess.run(['git', 'clone', clone_url, repo_path], check=True, capture_output=True, timeout=300)
-        try:
-            git_repo = Repo(repo_path)
+        # Handle local repositories differently
+        if is_local or repo.repository_type == 'local':
+            print(f"PROCESS_REPO_TASK: Processing local repository from path: {local_path}")
             
-            # 1. Get Commit and Contributor Count
-            commit_count = git_repo.rev_parse('HEAD').count()
-            contributors = {commit.author.email for commit in git_repo.iter_commits('HEAD')}
-            contributor_count = len(contributors)
+            # If local_path is not provided, try to read it from the stored file
+            if not local_path:
+                path_info_file = os.path.join(repo_path, '.local_path')
+                if os.path.exists(path_info_file):
+                    with open(path_info_file, 'r') as f:
+                        local_path = f.read().strip()
+                else:
+                    raise Exception(f"Local path not found for repository {repo.full_name}")
+            
+            # Validate local path exists
+            if not os.path.exists(local_path):
+                raise Exception(f"Local path does not exist: {local_path}")
+            
+            # Use the local path directly for processing
+            actual_repo_path = local_path
+        else:
+            # --- Git Cache Management for GitHub repositories ---
+            if not repo.added_by:
+                raise Exception(f"Repository {repo.full_name} has no associated user to fetch a token.")
 
-            # 2. Get Repo Size
+            user_who_added_repo = repo.added_by
+            social_account = user_who_added_repo.socialaccount_set.filter(provider='github').first()
+            if not social_account:
+                raise Exception(f"No GitHub social account found for user {user_who_added_repo.username} to process repo {repo.full_name}")
+            
+            social_token = SocialToken.objects.filter(account=social_account).first()
+            if not social_token:
+                raise Exception(f"No GitHub token found for user {user_who_added_repo.username} to process repo {repo.full_name}")
+            
+            token = social_token.token
+            clone_url = f"https://oauth2:{token}@github.com/{repo.full_name}.git"
+            actual_repo_path = repo_path
+
+        # Handle local repositories differently for git operations
+        if not (is_local or repo.repository_type == 'local'):
+            previous_commit_hash = None
+            if os.path.exists(repo_path):
+                try:
+                    # Get the hash of the current HEAD
+                    result = subprocess.run(['git', '-C', repo_path, 'rev-parse', 'HEAD'], check=True, capture_output=True, text=True)
+                    previous_commit_hash = result.stdout.strip()
+                    
+                    print(f"PROCESS_REPO_TASK: Previous commit hash for repo {repo.id} is {previous_commit_hash[:7]}")
+                    subprocess.run(['git', '-C', repo_path, 'pull'], check=True, capture_output=True, timeout=300)
+                except subprocess.CalledProcessError as e:
+                    # Handle git errors
+                    print(f"Git pull failed: {e.stderr}")
+                    repo.status = Repository.Status.FAILED; repo.save(); return
+            else:
+                # Cloning new repo
+                subprocess.run(['git', 'clone', clone_url, repo_path], check=True, capture_output=True, timeout=300)
+        # Git metrics only for GitHub repositories
+        if not (is_local or repo.repository_type == 'local'):
+            try:
+                git_repo = Repo(repo_path)
+                
+                # 1. Get Commit and Contributor Count
+                commit_count = git_repo.rev_parse('HEAD').count()
+                contributors = {commit.author.email for commit in git_repo.iter_commits('HEAD')}
+                contributor_count = len(contributors)
+
+                # 2. Get Repo Size
+                total_size = 0
+                for dirpath, dirnames, filenames in os.walk(actual_repo_path):
+                    if '.git' in dirnames:
+                        dirnames.remove('.git')
+                    for f in filenames:
+                        fp = os.path.join(dirpath, f)
+                        if not os.path.islink(fp):
+                            total_size += os.path.getsize(fp)
+                size_kb = total_size // 1024
+
+                # 3. Save metrics to the database model
+                repo.commit_count = commit_count
+                repo.contributor_count = contributor_count
+                repo.size_kb = size_kb
+                # We will save primary_language after file analysis
+                repo.save(update_fields=['commit_count', 'contributor_count', 'size_kb'])
+                print(f"PROCESS_REPO_TASK: Saved Git metrics for repo {repo.id}.")
+
+            except GitCommandError as e:
+                print(f"Git command failed for repo {repo_id}: {e}")
+            except Exception as e:
+                print(f"Error gathering git metrics for repo {repo_id}: {e}")
+        else:
+            # For local repositories, calculate basic metrics
             total_size = 0
-            for dirpath, dirnames, filenames in os.walk(repo_path):
-                if '.git' in dirnames:
-                    dirnames.remove('.git')
+            for dirpath, dirnames, filenames in os.walk(actual_repo_path):
+                # Skip common non-source directories
+                dirnames[:] = [d for d in dirnames if d not in ['.git', 'node_modules', '__pycache__', '.venv', 'venv', 'env']]
                 for f in filenames:
                     fp = os.path.join(dirpath, f)
                     if not os.path.islink(fp):
                         total_size += os.path.getsize(fp)
             size_kb = total_size // 1024
-
-            # 3. Save metrics to the database model
-            repo.commit_count = commit_count
-            repo.contributor_count = contributor_count
+            
+            repo.commit_count = 1  # Default for local repos
+            repo.contributor_count = 1  # Default for local repos
             repo.size_kb = size_kb
-            # We will save primary_language after file analysis
             repo.save(update_fields=['commit_count', 'contributor_count', 'size_kb'])
-            print(f"PROCESS_REPO_TASK: Saved Git metrics for repo {repo.id}.")
+            print(f"PROCESS_REPO_TASK: Saved local repository metrics for repo {repo.id}.")
 
-        except GitCommandError as e:
-            print(f"Git command failed for repo {repo_id}: {e}")
-        except Exception as e:
-            print(f"Error gathering git metrics for repo {repo_id}: {e}")
+        # Get commit hash AFTER pull (only for GitHub repos)
+        if not (is_local or repo.repository_type == 'local'):
+            try:
+                result = subprocess.run(['git', '-C', repo_path, 'rev-parse', 'HEAD'], check=True, capture_output=True, text=True)
+                latest_commit_hash = result.stdout.strip()
+            except subprocess.CalledProcessError as e:
+                print(f"Could not get latest commit hash: {e.stderr}")
+                repo.status = Repository.Status.FAILED; repo.save(); return
 
-        # Get commit hash AFTER pull
-        try:
-            result = subprocess.run(['git', '-C', repo_path, 'rev-parse', 'HEAD'], check=True, capture_output=True, text=True)
-            latest_commit_hash = result.stdout.strip()
-        except subprocess.CalledProcessError as e:
-            print(f"Could not get latest commit hash: {e.stderr}")
-            repo.status = Repository.Status.FAILED; repo.save(); return
-
-        # If nothing changed, we can stop early
-        if previous_commit_hash and previous_commit_hash == latest_commit_hash:
-            print(f"PROCESS_REPO_TASK: No new commits for repo {repo.id}. Processing complete.")
-            repo.status = Repository.Status.COMPLETED
-            repo.last_processed = timezone.now()
-            repo.save(update_fields=['status', 'last_processed'])
-            print(f"PROCESS_REPO_TASK: Dispatching metric calculation tasks for repo {repo_id}")
-            calculate_documentation_coverage_task.delay(repo_id=repo_id)
-            detect_orphan_symbols_task.delay(repo_id=repo.id, user_id=user_who_added_repo.id)
-            return # Stop here
+            # If nothing changed, we can stop early
+            if previous_commit_hash and previous_commit_hash == latest_commit_hash:
+                print(f"PROCESS_REPO_TASK: No new commits for repo {repo.id}. Processing complete.")
+                repo.status = Repository.Status.COMPLETED
+                repo.last_processed = timezone.now()
+                repo.save(update_fields=['status', 'last_processed'])
+                print(f"PROCESS_REPO_TASK: Dispatching metric calculation tasks for repo {repo_id}")
+                calculate_documentation_coverage_task.delay(repo_id=repo_id)
+                detect_orphan_symbols_task.delay(repo_id=repo.id, user_id=user_who_added_repo.id)
+                return # Stop here
         
         # --- Call Rust Engine ---
         # (Your existing Rust engine call logic - seems okay)
         # ...
-        print(f"PROCESS_REPO_TASK: Calling Rust engine for directory: {repo_path}")
-        command = [RUST_ENGINE_PATH, "--dir-path", repo_path]
+        print(f"PROCESS_REPO_TASK: Calling Rust engine for directory: {actual_repo_path}")
+        command = [RUST_ENGINE_PATH, "--dir-path", actual_repo_path]
         result = subprocess.run(command, capture_output=True, text=True, check=True, timeout=600) # Added timeout
         json_output_string = result.stdout
         repo_analysis_data = json.loads(json_output_string)
@@ -364,12 +405,22 @@ def process_repository(repo_id):
         print(f"PROCESS_REPO_TASK: Dispatching metric calculation tasks for repo {repo_id}")
         calculate_documentation_coverage_task.delay(repo_id=repo_id)
         
-        print(f"PROCESS_REPO_TASK: Dispatching insights generation for repo {repo.id} at commit {latest_commit_hash[:7]}")
-        generate_insights_on_change_task.delay(
-            repo_id=repo.id,
-            commit_hash=latest_commit_hash,
-            diff_report=diff_report
-        )
+        # Only dispatch insights generation for GitHub repositories that have commit hashes
+        if not (is_local or repo.repository_type == 'local') and 'latest_commit_hash' in locals():
+            print(f"PROCESS_REPO_TASK: Dispatching insights generation for repo {repo.id} at commit {latest_commit_hash[:7]}")
+            generate_insights_on_change_task.delay(
+                repo_id=repo.id,
+                commit_hash=latest_commit_hash,
+                diff_report=diff_report
+            )
+        else:
+            print(f"PROCESS_REPO_TASK: Skipping insights generation for local repository {repo.id}")
+            # For local repos, we can still generate insights but without commit hash
+            generate_insights_on_change_task.delay(
+                repo_id=repo.id,
+                commit_hash=None,
+                diff_report=diff_report
+            )
         print(f"PROCESS_REPO_TASK: Dispatching knowledge indexing for repo {repo.id}")
         index_repository_knowledge_task.delay(repo_id=repo.id)
         print(f"PROCESS_REPO_TASK: Successfully processed and saved analysis for repository: {repo.full_name}")
@@ -1681,11 +1732,12 @@ def submit_embedding_batch_job_task(self, repo_id: int):
             os.remove(batch_input_file_path)
             
 @app.task
-def generate_insights_on_change_task(repo_id: int, commit_hash: str, diff_report: dict):
+def generate_insights_on_change_task(repo_id: int, commit_hash: str = None, diff_report: dict = None):
     """
     Analyzes a diff report from process_repository and creates Insight records.
     """
-    print(f"INSIGHTS_TASK: Started for repo {repo_id}, commit {commit_hash[:7]}")
+    commit_display = commit_hash[:7] if commit_hash else "local"
+    print(f"INSIGHTS_TASK: Started for repo {repo_id}, commit {commit_display}")
     
     try:
         repo = Repository.objects.get(id=repo_id)

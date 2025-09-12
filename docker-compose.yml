@@ -5,6 +5,7 @@ services:
     image: pgvector/pgvector:pg15
     volumes:
       - postgres_data:/var/lib/postgresql/data/
+      - ./roles.sql:/docker-entrypoint-initdb.d/01-roles.sql
     environment:
       - POSTGRES_USER=helix
       - POSTGRES_PASSWORD=helix
@@ -19,7 +20,7 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    command: python manage.py runserver 0.0.0.0:8000
+    command: sh -c " echo 'Waiting for database to be ready...' && while ! nc -z db 5432; do sleep 1; done && echo 'Database is ready!' && python manage.py setup_helix && python manage.py runserver 0.0.0.0:8000 "
     volumes:
       - ./backend:/app
       - repo_cache:/var/repos
@@ -49,7 +50,7 @@ services:
     build:
       context: .
       dockerfile: backend/worker.Dockerfile
-    command: python3 -m celery -A config worker -l info
+    command: sh -c " echo 'Waiting for backend to be ready...' && while ! nc -z backend 8000; do sleep 2; done && echo 'Backend is ready!' && python3 -m celery -A config worker -l info "
     volumes:
       - repo_cache:/var/repos
       - ./scripts:/app/scripts
@@ -62,12 +63,12 @@ services:
 
   beat:
     build: ./backend
-    command: celery -A config beat -l info --scheduler django_celery_beat.schedulers:DatabaseScheduler
+    command: sh -c " echo 'Waiting for backend to be ready...' && while ! nc -z backend 8000; do sleep 2; done && echo 'Backend is ready!' && celery -A config beat -l info --scheduler django_celery_beat.schedulers:DatabaseScheduler "
     volumes:
       - ./backend:/app
       - ./scripts:/app/scripts # Mount scripts for beat access
     depends_on:
-      - db
+      - backend
       - cache
     env_file:
       - ./.env

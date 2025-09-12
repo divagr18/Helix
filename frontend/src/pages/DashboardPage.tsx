@@ -3,7 +3,7 @@ import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { toast } from 'sonner';
-import { Plus, GitBranch, AlertTriangle, FileText, TrendingDown, Loader2, Search } from 'lucide-react';
+import { Plus, GitBranch, AlertTriangle, FileText, TrendingDown, Loader2, Search, Folder } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -19,6 +19,7 @@ import { getCookie } from '@/utils';
 export interface DashboardRepository {
     id: number;
     full_name: string;
+    repository_type: 'local' | 'github';
     status: string;
     last_processed: string | null;
     documentation_coverage: number;
@@ -240,50 +241,90 @@ export function DashboardPage() {
                     <DialogContent className="bg-zinc-900 border-zinc-800 text-zinc-300 sm:max-w-[625px]">
                         <DialogHeader>
                             <DialogTitle className="text-white">Add a Repository</DialogTitle>
-                            <DialogDescription>Choose a repository from your GitHub account to start analyzing.</DialogDescription>
+                            <DialogDescription>Choose how you want to add a repository for analysis.</DialogDescription>
                         </DialogHeader>
-                        {addRepoError && <p className="text-sm text-red-400 p-2 bg-red-500/10 rounded-md">{addRepoError}</p>}
 
-                        {/* --- NEW SEARCH BAR --- */}
-                        <div className="relative my-4">
-                            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-zinc-500" />
-                            <Input
-                                placeholder="Search GitHub repositories..."
-                                value={githubSearchQuery}
-                                onChange={(e) => setGithubSearchQuery(e.target.value)}
-                                className="pl-10 bg-zinc-800/50 border-zinc-700 focus:ring-blue-500"
-                            />
-                        </div>
-
-                        <ScrollArea className="h-[55vh] border border-zinc-800 rounded-md">
-                            <div className="p-2">
-                                {isGithubLoading ? (
-                                    <div className="flex items-center justify-center h-48">
-                                        <Loader2 className="w-6 h-6 animate-spin text-zinc-500" />
+                        {/* Repository Type Selection */}
+                        <div className="space-y-4">
+                            {/* Local Repository Option */}
+                            <div className="border border-zinc-700 rounded-lg p-4 hover:border-zinc-600 transition-colors">
+                                <div className="flex items-start space-x-3">
+                                    <Folder className="h-5 w-5 text-blue-400 mt-0.5" />
+                                    <div className="flex-1">
+                                        <h3 className="font-medium text-white">Local Upload</h3>
+                                        <p className="text-sm text-zinc-400 mt-1">
+                                            Upload and analyze a folder from your local machine
+                                        </p>
+                                        <Button
+                                            onClick={() => {
+                                                setIsAddRepoOpen(false);
+                                                navigate('/local-analysis');
+                                            }}
+                                            className="mt-3 bg-blue-600 hover:bg-blue-700 text-white text-sm"
+                                            size="sm"
+                                        >
+                                            Upload Folder
+                                        </Button>
                                     </div>
-                                ) : (
-                                    <>
-                                        {filteredGithubRepos.length > 0 ? (
-                                            <div className="space-y-1">
-                                                {filteredGithubRepos.map(repo => (
-                                                    <div key={repo.id} className="flex items-center justify-between p-2 rounded-md hover:bg-zinc-800/50">
-                                                        <div className="flex items-center gap-2">
-                                                            <GitBranch className="h-4 w-4 text-zinc-500" />
-                                                            <span className="font-medium text-zinc-300">{repo.full_name}</span>
-                                                        </div>
-                                                        <Button size="sm" className="h-7 text-xs bg-zinc-800 hover:bg-zinc-700 text-zinc-300" onClick={() => handleAddRepository(repo)}>Add</Button>
-                                                    </div>
-                                                ))}
+                                </div>
+                            </div>
+
+                            {/* GitHub Repository Option */}
+                            <div className="border border-zinc-700 rounded-lg p-4">
+                                <div className="flex items-start space-x-3 mb-3">
+                                    <GitBranch className="h-5 w-5 text-green-400 mt-0.5" />
+                                    <div className="flex-1">
+                                        <h3 className="font-medium text-white">GitHub Repository</h3>
+                                        <p className="text-sm text-zinc-400 mt-1">
+                                            Import and analyze a repository from your GitHub account
+                                        </p>
+                                    </div>
+                                </div>
+
+                                {addRepoError && <p className="text-sm text-red-400 p-2 bg-red-500/10 rounded-md mb-3">{addRepoError}</p>}
+
+                                {/* Search Bar */}
+                                <div className="relative mb-3">
+                                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-zinc-500" />
+                                    <Input
+                                        placeholder="Search GitHub repositories..."
+                                        value={githubSearchQuery}
+                                        onChange={(e) => setGithubSearchQuery(e.target.value)}
+                                        className="pl-10 bg-zinc-800/50 border-zinc-700 focus:ring-blue-500"
+                                    />
+                                </div>
+
+                                <ScrollArea className="h-[35vh] border border-zinc-800 rounded-md">
+                                    <div className="p-2">
+                                        {isGithubLoading ? (
+                                            <div className="flex items-center justify-center h-32">
+                                                <Loader2 className="w-6 h-6 animate-spin text-zinc-500" />
                                             </div>
                                         ) : (
-                                            <div className="flex items-center justify-center h-48 text-zinc-500 text-sm">
-                                                No repositories found.
-                                            </div>
+                                            <>
+                                                {filteredGithubRepos.length > 0 ? (
+                                                    <div className="space-y-1">
+                                                        {filteredGithubRepos.map(repo => (
+                                                            <div key={repo.id} className="flex items-center justify-between p-2 rounded-md hover:bg-zinc-800/50">
+                                                                <div className="flex items-center gap-2">
+                                                                    <GitBranch className="h-4 w-4 text-zinc-500" />
+                                                                    <span className="font-medium text-zinc-300">{repo.full_name}</span>
+                                                                </div>
+                                                                <Button size="sm" className="h-7 text-xs bg-zinc-800 hover:bg-zinc-700 text-zinc-300" onClick={() => handleAddRepository(repo)}>Add</Button>
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                ) : (
+                                                    <div className="flex items-center justify-center h-32 text-zinc-500 text-sm">
+                                                        No repositories found.
+                                                    </div>
+                                                )}
+                                            </>
                                         )}
-                                    </>
-                                )}
+                                    </div>
+                                </ScrollArea>
                             </div>
-                        </ScrollArea>
+                        </div>
                     </DialogContent>
                 </Dialog>
             </div>

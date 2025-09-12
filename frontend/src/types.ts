@@ -68,6 +68,7 @@ export interface Repository {
   name: string;
   full_name: string;
   github_id: number;
+  repository_type: 'local' | 'github';
   status: string;
   last_processed: string | null;
   files: LiteCodeFile[]; // <-- This is the key change

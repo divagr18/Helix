@@ -22,5 +22,5 @@ ruff
 django-celery-beat
 e2b_code_interpreter
 GitPython
-agno
+agno==1.7.4
 psycopg[binary]

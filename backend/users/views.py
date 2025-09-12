@@ -1,4 +1,5 @@
 from django.shortcuts import render
+from django.db.models import Q
 
 # Create your views here.
 # backend/users/views.py (or a new auth_views.py)
@@ -14,8 +15,9 @@ from rest_framework import generics, permissions, status
 from django.contrib.auth import authenticate, login, logout
 
 from .models import VerificationToken
-from .tasks import send_password_reset_email_task, send_verification_email_task
-from .serializers import ResendVerificationSerializer, SignUpSerializer, TokenVerificationSerializer, UserDetailSerializer
+from .tasks import send_password_reset_email_task
+from repositories.models import Organization, OrganizationMember
+from .serializers import ResendVerificationSerializer, SignUpSerializer, TokenVerificationSerializer, UserDetailSerializer, PasswordResetRequestSerializer
 from allauth.account.views import LogoutView as AllauthLogoutView
 
 @method_decorator(csrf_exempt, name='dispatch')
@@ -88,28 +90,25 @@ class SignUpView(generics.CreateAPIView):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         
-        # The serializer's .create() method is called, creating an inactive user
+        # Create the user (now active immediately)
         user = serializer.save()
-        
-        # --- Post-creation logic ---
-        
-        # 1. Increment the invite code's usage count
-        invite_code_obj = serializer.context['invite_code_obj']
-        invite_code_obj.uses += 1
-        invite_code_obj.save()
 
-        # 2. Create a verification token for the new user
-        token = VerificationToken.objects.create(
-            user=user,
-            token_type=VerificationToken.TokenType.EMAIL_VERIFICATION
+        # Auto-create a personal workspace for the new user
+        organization = Organization.objects.create(
+            name=f"{user.username}'s Workspace",
+            owner=user
         )
-
-        # 3. Dispatch the email sending task to a Celery worker
-        send_verification_email_task.delay(user.email, str(token.token))
+        
+        # Add the user as the owner/member of the organization
+        OrganizationMember.objects.create(
+            organization=organization,
+            user=user,
+            role=OrganizationMember.Role.OWNER
+        )
 
         headers = self.get_success_headers(serializer.data)
         return Response(
-            {"message": "Sign-up successful. Please check your email to verify your account."},
+            {"message": "Sign-up successful. You can now log in."},
             status=status.HTTP_201_CREATED,
             headers=headers
         )
@@ -167,39 +166,9 @@ class ResendVerificationView(APIView):
     permission_classes = [permissions.AllowAny]
 
     def post(self, request, *args, **kwargs):
-        serializer = ResendVerificationSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        email = serializer.validated_data['email']
-
-        try:
-            user = User.objects.get(email__iexact=email)
-
-            # Only resend if the user is not already active
-            if not user.is_active:
-                # Invalidate any old, unused tokens for this user to be safe
-                VerificationToken.objects.filter(
-                    user=user, 
-                    token_type=VerificationToken.TokenType.EMAIL_VERIFICATION,
-                    is_used=False
-                ).update(is_used=True) # Mark them as used to invalidate
-
-                # Create a new token
-                new_token = VerificationToken.objects.create(
-                    user=user,
-                    token_type=VerificationToken.TokenType.EMAIL_VERIFICATION
-                )
-
-                # Dispatch the email task again
-                send_verification_email_task.delay(user.email, str(new_token.token))
-        
-        except User.DoesNotExist:
-            # If the user doesn't exist, we don't do anything.
-            # We still return a success response to prevent email enumeration attacks.
-            # An attacker should not be able to figure out which emails are registered.
-            pass
-
+        # Email verification is no longer required
         return Response(
-            {"message": "If an account with that email exists, a new verification link has been sent."},
+            {"message": "Email verification is not required. All users are automatically activated."},
             status=status.HTTP_200_OK
         )
     
@@ -263,12 +232,19 @@ class PasswordResetRequestView(APIView):
     permission_classes = [permissions.AllowAny]
 
     def post(self, request, *args, **kwargs):
-        serializer = ResendVerificationSerializer(data=request.data) # We can reuse this serializer
+        serializer = PasswordResetRequestSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        email = serializer.validated_data['email']
+        username = serializer.validated_data['username']
 
         try:
-            user = User.objects.get(email__iexact=email)
+            user = User.objects.get(username__iexact=username)
+            
+            # Check if user has an email address
+            if not user.email:
+                return Response(
+                    {"error": "This account has no email address associated. Please contact support."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
             
             # Invalidate old password reset tokens
             VerificationToken.objects.filter(
@@ -284,14 +260,13 @@ class PasswordResetRequestView(APIView):
             )
             
             # Dispatch a task to send the password reset email
-            # We'll need to create this new task
             send_password_reset_email_task.delay(user.email, str(token.token))
 
         except User.DoesNotExist:
-            pass # Fail silently to prevent email enumeration
+            pass # Fail silently to prevent username enumeration
 
         return Response(
-            {"message": "If an account with that email exists, a password reset link has been sent."},
+            {"message": "If an account with that username exists and has an email, a password reset link has been sent."},
             status=status.HTTP_200_OK
         )
     

@@ -333,7 +333,7 @@ class DashboardRepositorySerializer(serializers.ModelSerializer):
     class Meta:
         model = Repository
         fields = [
-            'id', 'full_name', 'status', 'last_processed',
+            'id', 'full_name', 'repository_type', 'status', 'last_processed',
             'documentation_coverage', 'orphan_symbol_count',
             # New fields
             'primary_language', 'size_kb', 'commit_count', 'contributor_count'

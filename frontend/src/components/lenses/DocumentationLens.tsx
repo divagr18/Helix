@@ -48,10 +48,8 @@ export const DocumentationLens: React.FC<DocumentationLensProps> = ({
     const hasGeneratedDoc = !!generatedDoc;
     const hasContent = docContent.trim().length > 0;
 
-    // This logic is now correct because it compares against the right source.
-    const isDirty = hasGeneratedDoc
-        ? docContent !== generatedDoc.markdown
-        : docContent !== (symbol.existing_docstring || '');
+    // This logic checks if the current content differs from what's saved in the database
+    const isDirty = docContent !== (symbol.existing_docstring || '') && docContent.trim().length > 0;
 
     const handleSaveClick = () => {
         if (isDirty) {
@@ -81,8 +79,8 @@ export const DocumentationLens: React.FC<DocumentationLensProps> = ({
 
             {/* --- The Action Buttons --- */}
             <div className="flex items-center justify-end gap-2">
-                {/* Show "Regenerate" if docs exist, otherwise "Generate" */}
-                {hasExistingDoc && !hasGeneratedDoc && (
+                {/* Show "Regenerate" if docs exist (either existing or generated), otherwise "Generate" */}
+                {(hasExistingDoc || hasGeneratedDoc) && (
                     <Button variant="outline" size="sm" onClick={onGenerateDoc} disabled={isActionDisabled}>
                         <RefreshCw className="h-4 w-4 mr-2" />
                         Regenerate

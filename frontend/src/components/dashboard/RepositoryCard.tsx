@@ -6,6 +6,7 @@ import {
     Loader2,
     Trash2,
     MoreHorizontal,
+    FileText,
 } from 'lucide-react';
 
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -27,7 +28,12 @@ interface RepositoryCardProps {
     onRepoDeleted: (repoId: number) => void;
 }
 
-const getSyncStatusBadge = (status: string) => {
+const getSyncStatusBadge = (status: string, repositoryType: 'local' | 'github') => {
+    // Special handling for local repositories
+    if (repositoryType === 'local') {
+        return <Badge className="bg-purple-500/20 text-purple-400 border-purple-500/30 text-xs rounded-full px-2 py-0.5">Local</Badge>;
+    }
+
     switch (status?.toLowerCase()) {
         case 'completed':
             return <Badge className="bg-green-500/20 text-green-400 border-green-500/30 text-xs rounded-full px-2 py-0.5">Synced</Badge>;
@@ -62,6 +68,7 @@ const getOrphanColor = (orphans: number) => {
 
 export const RepositoryCard: React.FC<RepositoryCardProps> = ({ repo, onNavigate, onRepoDeleted, onSyncRequest, isSyncing }) => {
     const isActionDisabled = isSyncing || repo.status.toLowerCase() === 'indexing' || repo.status.toLowerCase() === 'pending';
+    const isLocalRepo = repo.repository_type === 'local';
     const [owner, name] = repo.full_name.split('/');
     const [isDeleting, setIsDeleting] = useState(false);
     const [isAlertOpen, setIsAlertOpen] = useState(false);
@@ -116,7 +123,7 @@ export const RepositoryCard: React.FC<RepositoryCardProps> = ({ repo, onNavigate
                         </DropdownMenu>
                     </div>
                     <div className="flex items-center space-x-2 mt-1">
-                        {getSyncStatusBadge(repo.status)}
+                        {getSyncStatusBadge(repo.status, repo.repository_type)}
                         {repo.primary_language && (
                             <Badge variant="outline" className="border-zinc-800 text-zinc-500 bg-transparent text-xs rounded-full px-2 py-0.5">
                                 {repo.primary_language}
@@ -172,18 +179,27 @@ export const RepositoryCard: React.FC<RepositoryCardProps> = ({ repo, onNavigate
                             </div>
                         </div>
 
-                        <Button
-                            onClick={handleSyncClick}
-                            disabled={isActionDisabled}
-                            className="w-full bg-blue-500 hover:bg-blue-600 text-white text-sm h-8 mt-3 disabled:bg-zinc-700 disabled:text-zinc-400 disabled:cursor-not-allowed"
-                        >
-                            {isActionDisabled ? (
-                                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                            ) : (
-                                <RefreshCw className="w-4 h-4 mr-2" />
-                            )}
-                            {repo.status.toLowerCase() === 'indexing' || repo.status.toLowerCase() === 'pending' ? 'Syncing...' : 'Sync with GitHub'}
-                        </Button>
+                        {!isLocalRepo && (
+                            <Button
+                                onClick={handleSyncClick}
+                                disabled={isActionDisabled}
+                                className="w-full bg-blue-500 hover:bg-blue-600 text-white text-sm h-8 mt-3 disabled:bg-zinc-700 disabled:text-zinc-400 disabled:cursor-not-allowed"
+                            >
+                                {isActionDisabled ? (
+                                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                                ) : (
+                                    <RefreshCw className="w-4 h-4 mr-2" />
+                                )}
+                                {repo.status.toLowerCase() === 'indexing' || repo.status.toLowerCase() === 'pending' ? 'Syncing...' : 'Sync with GitHub'}
+                            </Button>
+                        )}
+
+                        {isLocalRepo && (
+                            <div className="w-full bg-zinc-800 text-zinc-400 text-sm h-8 mt-3 flex items-center justify-center rounded">
+                                <FileText className="w-4 h-4 mr-2" />
+                                Local Repository
+                            </div>
+                        )}
                     </div>
                 </CardContent>
             </Card>

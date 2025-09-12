@@ -20,12 +20,15 @@ import { ChatViewPage } from './pages/modes/ChatViewPage';
 
 // Standard Pages
 import { LoginPage } from './pages/LoginPage';
+import { SignupPage } from './pages/SignupPage';
+import { ForgotPasswordPage } from './pages/ForgotPasswordPage';
+import { ResetPasswordPage } from './pages/ResetPasswordPage';
 import { DashboardPage } from './pages/DashboardPage';
 import { SettingsLayout } from './pages/settings/SettingsLayout';
-import { BetaInvitePage } from './pages/BetaInvitePage';
 import { AcceptInvitePage } from './pages/AcceptInvitePage';
 import { RepoContextLoader } from './pages/modes/RepoContextLoader';
 import { RefactorSymbolPage } from './pages/RefactorSymbolPage';
+import LocalAnalysisPage from './pages/LocalAnalysisPage';
 
 // Set global Axios defaults
 axios.defaults.xsrfCookieName = 'csrftoken';
@@ -45,6 +48,11 @@ function AppRoutes() {
 
     return (
         <Routes>
+            {/* Routes accessible to everyone */}
+            <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+            <Route path="/reset-password" element={<ResetPasswordPage />} />
+            <Route path="/invite/:token" element={<AcceptInvitePage />} />
+
             {isAuthenticated ? (
                 // --- AUTHENTICATED ROUTES ---
                 // The MainAppLayout is now the single entry point for the entire
@@ -68,6 +76,7 @@ function AppRoutes() {
 
                     {/* Other top-level pages */}
                     <Route path="settings/*" element={<SettingsLayout />} />
+                    <Route path="local-analysis" element={<LocalAnalysisPage />} />
                     <Route path="invite/:token" element={<AcceptInvitePage />} />
 
                     {/* A general catch-all for any other path sends the user to their dashboard */}
@@ -79,9 +88,8 @@ function AppRoutes() {
                 // --- UNAUTHENTICATED ROUTES ---
                 <>
                     <Route path="/login" element={<LoginPage />} />
-                    <Route path="/invite" element={<BetaInvitePage />} />
-                    <Route path="/invite/:token" element={<AcceptInvitePage />} />
-                    <Route path="*" element={<Navigate to="/invite" replace />} />
+                    <Route path="/signup" element={<SignupPage />} />
+                    <Route path="*" element={<Navigate to="/login" replace />} />
                 </>
             )}
         </Routes>

@@ -66,9 +66,19 @@ class Repository(models.Model):
         null=True
     )
     
+    class RepositoryType(models.TextChoices):
+        GITHUB = 'GITHUB', 'GitHub Repository'
+        LOCAL = 'LOCAL', 'Local Upload'
+    
     name = models.CharField(max_length=255)
     full_name = models.CharField(max_length=512, unique=True) 
-    github_id = models.IntegerField(unique=True)
+    github_id = models.IntegerField(unique=True, null=True, blank=True)  # Made optional for local repos
+    repository_type = models.CharField(
+        max_length=10, 
+        choices=RepositoryType.choices, 
+        default=RepositoryType.GITHUB,
+        help_text="Whether this is a GitHub repo or local upload"
+    )
     
     class Status(models.TextChoices):
         PENDING = 'PENDING', 'Pending'

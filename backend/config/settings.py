@@ -116,7 +116,8 @@ AUTH_PASSWORD_VALIDATORS = [
 ]
 
 ACCOUNT_FORMS = {
-    'signup': 'users.forms.CustomSignupForm',
+    # Remove custom signup form for social accounts
+    # 'signup': 'users.forms.CustomSignupForm',
 }
 # Internationalization
 # https://docs.djangoproject.com/en/5.0/topics/i18n/
@@ -149,17 +150,20 @@ AUTHENTICATION_BACKENDS = [
 # Add these settings at the bottom
 SITE_ID = 1
 
-ACCOUNT_DEFAULT_HTTP_PROTOCOL = "https"
+ACCOUNT_DEFAULT_HTTP_PROTOCOL = "http"
 
-LOGIN_REDIRECT_URL = "/dashboard"
-ACCOUNT_LOGOUT_REDIRECT_URL = "/"
+LOGIN_REDIRECT_URL = f"{FRONTEND_URL}/dashboard"
+ACCOUNT_LOGOUT_REDIRECT_URL = f"{FRONTEND_URL}/"
 
 # Allauth provider settings
 SOCIALACCOUNT_PROVIDERS = {
     'github': {
         'SCOPE': [
             'repo', # Ask for permission to read repositories
+            'user:email', # Explicitly request email access
         ],
+        'VERIFIED_EMAIL': True,  # Skip email verification for GitHub users
+        'EMAIL_AUTHENTICATION': True,
     },
     'google': {
         'SCOPE': [
@@ -173,42 +177,61 @@ SOCIALACCOUNT_PROVIDERS = {
 }
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:5173",
-    "https://woodcock-wondrous-infinitely.ngrok-free.app" # The origin of our React frontend
+    "http://127.0.0.1:5173",
 ]
-SESSION_COOKIE_SECURE = True  # Required for HTTPS
-CSRF_COOKIE_SECURE = True
-SESSION_COOKIE_SAMESITE = 'None'  # Needed for cross-origin
-CSRF_COOKIE_SAMESITE = 'None'
+SESSION_COOKIE_SECURE = False  # Set to False for localhost (HTTP)
+CSRF_COOKIE_SECURE = False
+SESSION_COOKIE_SAMESITE = 'Lax'  # Changed from 'None' for same-origin
+CSRF_COOKIE_SAMESITE = 'Lax'
 # settings.py
 SESSION_COOKIE_DOMAIN = None  # Allow any domain
 SESSION_COOKIE_PATH = '/'
-SESSION_COOKIE_SECURE = True  # Required for ngrok (HTTPS)
-SESSION_COOKIE_SAMESITE = 'None'  # Required for cross-origin
 SESSION_COOKIE_HTTPONLY = True
 
 # Also update CSRF settings
 CSRF_COOKIE_DOMAIN = None
-CSRF_COOKIE_SECURE = True
-CSRF_COOKIE_SAMESITE = 'None'
+
 # This is the crucial setting that allows the browser to send
 # the session cookie to our backend.
 ACCOUNT_REDIRECT_WHITELIST = [
-    "https://woodcock-wondrous-infinitely.ngrok-free.app",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
 ]
 CORS_ALLOW_CREDENTIALS = True
 SOCIALACCOUNT_LOGIN_ON_GET = True
 ACCOUNT_EMAIL_VERIFICATION = 'none'
 SOCIALACCOUNT_AUTO_SIGNUP = True
+
+# Completely bypass the signup form for social accounts
+SOCIALACCOUNT_SIGNUP_FORM_CLASS = None
+
+# Skip allauth's intermediate signup page and go directly to provider
+SOCIALACCOUNT_ADAPTER = 'allauth.socialaccount.adapter.DefaultSocialAccountAdapter'
+ACCOUNT_ADAPTER = 'allauth.account.adapter.DefaultAccountAdapter'
+
+# Force direct OAuth flow without intermediate pages
+ACCOUNT_SIGNUP_FORM_CLASS = None
+
+# This prevents the intermediate signup page
+ACCOUNT_EMAIL_CONFIRMATION_ANONYMOUS_REDIRECT_URL = "/dashboard"
+ACCOUNT_EMAIL_CONFIRMATION_AUTHENTICATED_REDIRECT_URL = "/dashboard"
+
+# Additional allauth settings for proper OAuth flow
+ACCOUNT_AUTHENTICATION_METHOD = 'email'
+ACCOUNT_EMAIL_REQUIRED = True
+ACCOUNT_USERNAME_REQUIRED = False
+SOCIALACCOUNT_QUERY_EMAIL = True
+SOCIALACCOUNT_EMAIL_REQUIRED = True
+
+# Ensure allauth redirects properly
+ACCOUNT_LOGIN_ATTEMPTS_LIMIT = None
+ACCOUNT_LOGIN_ATTEMPTS_TIMEOUT = None
 CSRF_TRUSTED_ORIGINS = [
-    "https://example.com",
-    "https://www.example.com",
-    "https://subdomain.example.com",
     "http://localhost:3000",  # if you're using React/Vite locally
     "http://127.0.0.1:5173",
     "http://localhost:5173",
-      "https://woodcock-wondrous-infinitely.ngrok-free.app"  # for Vite dev server
 ]
-SOCIAL_REDIRECT_HOST = "woodcock-wondrous-infinitely.ngrok-free.app"
+SOCIAL_REDIRECT_HOST = "localhost:5173"
 
 
 
