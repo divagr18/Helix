@@ -1,16 +1,46 @@
 # Helix
 
-A self-hosted code intelligence platform for analyzing and understanding Python codebases. Built with Django and React, Helix runs entirely on your local machine to ensure complete privacy and control over your code.
+A self-hosted code intelligence platform for analyzing and understanding Python codebases. Built with Django and React alongside a Rust parsing engine, Helix runs entirely on your local machine to ensure complete privacy and control over your code.
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Python](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/)
-[![Django](https://img.shields.io/badge/django-5.2.3-green.svg)](https://www.djangoproject.com/)
-[![React](https://img.shields.io/badge/react-18-blue.svg)](https://react.dev/)
-[![TypeScript](https://img.shields.io/badge/typescript-5-blue.svg)](https://www.typescriptlang.org/)
+
+---
+
+## Table of Contents
+
+- [Screenshots](#screenshots)
+- [Features](#features)
+- [Prerequisites](#prerequisites)
+- [Quick Start](#quick-start)
+- [Architecture](#architecture)
+- [Usage](#usage)
+- [Development](#development)
+- [Troubleshooting](#troubleshooting)
+- [Contributing](#contributing)
+- [License](#license)
+- [Security](#security)
+- [Support](#support)
+- [Roadmap](#roadmap)
 
 ---
 
 > **⚠️ Important Note**: Helix currently supports **Python projects only** for code analysis, diagram generation, and AI features. Multi-language support is planned for future releases.
+
+---
+
+## Screenshots
+
+### Dashboard
+![Dashboard](screenshots/HomePage.png)
+
+### Code View
+![Code View](screenshots/CodeView.png)
+
+### Intelligence Dashboard
+![Intelligence View](screenshots/IntelligenceView.png)
+
+### Testing View
+![Testing View](screenshots/TestView.png)
 
 ---
 
@@ -27,24 +57,15 @@ A self-hosted code intelligence platform for analyzing and understanding Python 
 - OAuth authentication for seamless login
 - Repository import directly from GitHub
 - Automatic workspace creation for new users
-- Link/unlink GitHub accounts from local accounts
+- Support for local repository uploads
 
-### Local Repository Support (Python Files)
-- Upload local Python projects for analysis
-- Intelligent filtering of build artifacts (node_modules, __pycache__, dist, etc.)
-- Automatic folder structure preservation during upload
-- Support for Python (.py) files
-
-### AI-Powered Chat (Python Projects Only)
+### AI-Powered Features
 - **Ctrl+K** shortcut to open chat from anywhere
 - Vector search-powered Q&A about your codebase
 - Context-aware responses using repository embeddings
 - Ask about architecture, functions, dependencies, and more
-- Floating chat button on repository pages
-
-### AI Features (In Development)
-- Automated test generation (planned)
-- Code improvement suggestions (planned)
+- Automated test generation for Python code
+- Code improvement suggestions and refactoring recommendations
 
 ### Privacy & Security
 - All processing happens locally on your machine
@@ -93,11 +114,10 @@ POSTGRES_PASSWORD=your-secure-password
 POSTGRES_HOST=db
 POSTGRES_PORT=5432
 
-# GitHub OAuth (Required)
+# GitHub OAuth (Required for adding GitHub repos)
 GITHUB_CLIENT_ID=your-github-client-id
 GITHUB_CLIENT_SECRET=your-github-client-secret
 
-# OpenAI (Optional - for AI features)
 OPENAI_API_KEY=your-openai-api-key
 ```
 
@@ -130,7 +150,7 @@ This starts all services:
 
 ### 5. Access the Application
 
-Navigate to http://localhost:5173 and click "Continue with GitHub" to authenticate.
+Navigate to http://localhost:5173 and click "Continue with GitHub" to authenticate, or make a local account for local repo only usage.
 
 ---
 
@@ -334,13 +354,12 @@ Completed:
 - Local repository upload
 - Code analysis and metrics
 - Dependency visualization
-
-In Development:
-- AI-powered chat assistant
+- AI-powered chat assistant with vector search
 - Automated test generation
-- Code refactoring suggestions
+- Code improvement suggestions and refactoring
 
 Planned:
+- Multi-language support (JavaScript, TypeScript, Java, etc.)
 - Multi-user collaboration
 - CI/CD integration
 - VS Code extension

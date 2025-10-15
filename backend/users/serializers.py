@@ -8,23 +8,12 @@ class UserDetailSerializer(serializers.ModelSerializer):
     """
     Serializer for user details. Makes email read-only.
     """
-    has_github = serializers.SerializerMethodField()
-    has_usable_password = serializers.SerializerMethodField()
     
     class Meta:
         model = User
         # Expose fields that are safe to view and edit
-        fields = ['id', 'username', 'email', 'first_name', 'last_name', 'has_github', 'has_usable_password']
-        read_only_fields = ['email', 'has_github', 'has_usable_password'] # Can't change email for now
-    
-    def get_has_github(self, obj):
-        """Check if user has a connected GitHub account"""
-        from allauth.socialaccount.models import SocialAccount
-        return SocialAccount.objects.filter(user=obj, provider='github').exists()
-    
-    def get_has_usable_password(self, obj):
-        """Check if user has a local password set"""
-        return obj.has_usable_password()
+        fields = ['id', 'username', 'email', 'first_name', 'last_name']
+        read_only_fields = ['email'] # Can't change email for now
 
 class SignUpSerializer(serializers.ModelSerializer):
     class Meta:

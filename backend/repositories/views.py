@@ -175,7 +175,11 @@ class GithubReposView(APIView):
                 account__provider='github'
             )
         except SocialToken.DoesNotExist:
-            return Response({"error": "GitHub token not found."}, status=400)
+            return Response({
+                "error": "GitHub account not connected.",
+                "message": "Please connect your GitHub account in Settings to import repositories from GitHub.",
+                "action": "connect_github"
+            }, status=400)
 
         # Use the token to make an authenticated request to the GitHub API
         headers = {
