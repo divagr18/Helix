@@ -1,32 +1,39 @@
 # Helix
 
-A self-hosted code intelligence platform for analyzing and understanding Python codebases. Built with Django and React alongside a Rust parsing engine, Helix runs entirely on your local machine to ensure complete privacy and control over your code.
+**Helix** is a self-hosted code intelligence platform for Python projects. It automatically generates comprehensive documentation, creates missing docstrings, updates stale docs, generates tests cases and refactor suggestions, and helps you understand unfamiliar codebases through deep static analysis and AI-powered insights.
+
+**Import from GitHub or upload local projects.** Helix automatically analyzes your code structure, detects all classes and functions, and maps dependencies between components. Get instant metrics like cyclomatic complexity and maintainability scores.
+
+**Auto-generate documentation at every level.** Generate repository-level READMEs, module-level documentation, and function-level docstrings across your entire codebase. Keep documentation synchronized with code changes and revive outdated docs with AI assistance.
+
+**Generate tests and refactoring recommendations.** Automatically create comprehensive test cases for untested code. Get intelligent refactoring suggestions based on complexity analysis and code patterns. Improve code quality with actionable recommendations.
+
+**AI-powered code exploration.** Press **Ctrl+K** to chat with an intelligent assistant that understands your codebase. Ask questions, explore architecture, and get instant answers using vector search across your entire project.
+
+**Complete privacy guaranteed.** Built with Django, React, and Rust, Helix runs entirely on your infrastructure with Docker. Your code never leaves your machine.
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
----
+
 
 ## Table of Contents
 
 - [Screenshots](#screenshots)
 - [Features](#features)
+- [Use Cases](#use-cases)
 - [Prerequisites](#prerequisites)
 - [Quick Start](#quick-start)
-- [Architecture](#architecture)
 - [Usage](#usage)
-- [Development](#development)
 - [Troubleshooting](#troubleshooting)
 - [Contributing](#contributing)
 - [License](#license)
-- [Security](#security)
-- [Support](#support)
 - [Roadmap](#roadmap)
 
----
+
 
 > **⚠️ Important Note**: Helix currently supports **Python projects only** for code analysis, diagram generation, and AI features. Multi-language support is planned for future releases.
 
----
+
 
 ## Screenshots
 
@@ -42,7 +49,6 @@ A self-hosted code intelligence platform for analyzing and understanding Python 
 ### Testing View
 ![Testing View](screenshots/TestView.png)
 
----
 
 ## Features
 
@@ -60,10 +66,12 @@ A self-hosted code intelligence platform for analyzing and understanding Python 
 - Support for local repository uploads
 
 ### AI-Powered Features
+- **Auto-generate documentation** at repository, module, and function levels
+- **Generate missing docstrings** for entire codebases
+- **Update stale documentation** to match current code
+- **Create comprehensive READMEs** with usage examples and architecture overviews
 - **Ctrl+K** shortcut to open chat from anywhere
 - Vector search-powered Q&A about your codebase
-- Context-aware responses using repository embeddings
-- Ask about architecture, functions, dependencies, and more
 - Automated test generation for Python code
 - Code improvement suggestions and refactoring recommendations
 
@@ -71,6 +79,56 @@ A self-hosted code intelligence platform for analyzing and understanding Python 
 - All processing happens locally on your machine
 - No code ever leaves your infrastructure
 - Complete control over data and access
+
+
+## Use Cases
+
+### Documentation Generation & Maintenance
+- Auto-generate repository-level READMEs with architecture overviews
+- Create module-level documentation for all Python packages
+- Generate missing docstrings across entire codebases
+- Update outdated documentation to match current code
+- Maintain live documentation synchronized with code changes
+- Create comprehensive API documentation automatically
+
+### Onboarding New Developers
+- Auto-generate comprehensive project READMEs and documentation
+- Quickly understand project architecture and code structure
+- Navigate complex codebases with symbol detection and dependency graphs
+- Ask the AI assistant questions about how systems interact
+- Generate module-level documentation for all components
+
+### Code Review & Quality Assurance
+- Analyze code complexity metrics before merging
+- Identify tightly coupled components and architectural issues
+- Review maintainability scores across the codebase
+- Ensure code quality standards are met
+
+### Refactoring & Technical Debt
+- Visualize dependencies before making changes
+- Identify high-complexity functions that need refactoring
+- Get AI-powered suggestions for code improvements
+- Understand the impact of proposed changes
+
+### Test Coverage Improvement
+- Automatically generate test cases for untested code
+- Identify gaps in test coverage
+- Generate unit tests for legacy code
+- Improve overall code reliability
+
+### Legacy Code Understanding & Documentation
+- Auto-generate missing documentation for undocumented codebases
+- Create docstrings for all functions, classes, and methods automatically
+- Update outdated documentation to reflect current implementation
+- Map out undocumented codebases with AI-generated explanations
+- Generate architecture diagrams and comprehensive READMEs
+- Ask contextual questions about unfamiliar code
+
+### Secure Development
+- Keep sensitive codebases on your own infrastructure
+- Analyze proprietary code without external API calls
+- Maintain compliance with data privacy requirements
+- Full control over code and analysis results
 
 ---
 
@@ -80,7 +138,7 @@ A self-hosted code intelligence platform for analyzing and understanding Python 
 - Git
 - GitHub account (for OAuth authentication)
 
----
+
 
 ## Quick Start
 
@@ -152,34 +210,15 @@ This starts all services:
 
 Navigate to http://localhost:5173 and click "Continue with GitHub" to authenticate, or make a local account for local repo only usage.
 
----
-
-## Architecture
-
-```
-Helix/
-├── backend/              # Django REST API
-│   ├── config/           # Settings and configuration
-│   ├── users/            # Authentication and user management
-│   └── repositories/     # Code analysis and repository management
-├── frontend/             # React + TypeScript UI
-│   ├── src/
-│   │   ├── components/   # Reusable components
-│   │   ├── pages/        # Page components
-│   │   ├── stores/       # State management
-│   │   └── utils/        # Utility functions
-└── docker-compose.yml    # Service orchestration
-```
-
 ### Technology Stack
 
 Backend: Django 5.2.3, Django REST Framework, PostgreSQL with pgvector, Redis, Celery
 
+Engine: Rust
+
 Frontend: React 18, TypeScript, Vite, TailwindCSS, shadcn/ui
 
 Infrastructure: Docker, Docker Compose
-
----
 
 ## Usage
 
@@ -206,68 +245,8 @@ Infrastructure: Docker, Docker Compose
 - **Code View**: File browser, metrics, and symbol navigation
 - **Intelligence**: Dependency graphs and code relationships
 - **Testing**: Test coverage information
-- **Chat**: AI assistant with vector search (Press **Ctrl+K** to open from anywhere in a repository)
+- **Chat**: AI assistant with vector search for Q&A, documentation generation, test creation, and more (Press **Ctrl+K** to open from anywhere in a repository)
 
----
-
-## Development
-
-### Running Services Individually
-
-Backend:
-```bash
-cd backend
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-pip install -r requirements.txt
-python manage.py migrate
-python manage.py runserver
-```
-
-Frontend:
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-Celery worker (for async tasks):
-```bash
-cd backend
-celery -A config worker --loglevel=info
-```
-
-Both frontend and backend support automatic hot-reloading.
-
-### Testing
-
-Backend:
-```bash
-cd backend
-python manage.py test
-```
-
-Frontend:
-```bash
-cd frontend
-npm run test
-```
-
-### Code Quality
-
-Backend:
-```bash
-cd backend
-ruff check .
-```
-
-Frontend:
-```bash
-cd frontend
-npm run lint
-```
-
----
 
 ## Troubleshooting
 
@@ -326,26 +305,17 @@ Quick steps:
 3. Make your changes
 4. Submit a pull request
 
----
 
 ## License
 
 MIT License - see [LICENSE](LICENSE) for details.
 
----
-
-## Security
-
-For security vulnerability reports, see [SECURITY.md](SECURITY.md).
-
----
 
 ## Support
 
 - Issues: [GitHub Issues](https://github.com/divagr18/Helix/issues)
 - Discussions: [GitHub Discussions](https://github.com/divagr18/Helix/discussions)
 
----
 
 ## Roadmap
 
@@ -355,15 +325,14 @@ Completed:
 - Code analysis and metrics
 - Dependency visualization
 - AI-powered chat assistant with vector search
+- Auto-generate documentation (READMEs, module docs, docstrings)
+- Update stale and missing documentation
 - Automated test generation
 - Code improvement suggestions and refactoring
 
 Planned:
 - Multi-language support (JavaScript, TypeScript, Java, etc.)
+- Live documentation sync with code changes
 - Multi-user collaboration
 - CI/CD integration
 - VS Code extension
-
----
-
-Built with Django REST Framework, React, and shadcn/ui.
