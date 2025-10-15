@@ -20,5 +20,7 @@ PyGithub
 astor
 ruff
 django-celery-beat
-agno
+e2b_code_interpreter
+GitPython
+agno==1.7.4
 psycopg[binary]

@@ -1,9 +1,11 @@
 // src/pages/settings/SettingsLayout.tsx
 import React from 'react';
-import { Link, NavLink, Outlet } from 'react-router-dom';
+import { Link, NavLink, Routes, Route, Navigate, Outlet } from 'react-router-dom';
 import { cn } from '@/lib/utils';
 import { User, Building, ArrowLeft } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { ProfileSettingsPage } from './ProfileSettingsPage';
+import { WorkspaceSettingsPage } from './WorkspaceSettingsPage';
 
 const settingsNavLinks = [
     { to: '/settings/profile', label: 'Profile', icon: User },
@@ -54,7 +56,11 @@ export const SettingsLayout = () => {
 
                 {/* Right Pane: Content Area */}
                 <main className="md:col-span-3">
-                    <Outlet /> {/* Child routes will be rendered here */}
+                    <Routes>
+                        <Route path="profile" element={<ProfileSettingsPage />} />
+                        <Route path="workspace" element={<WorkspaceSettingsPage />} />
+                        <Route index element={<Navigate to="profile" replace />} />
+                    </Routes>
                 </main>
 
             </div>

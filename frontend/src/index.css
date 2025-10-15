@@ -50,12 +50,6 @@
   /* any other theme values you need (fonts, keyframes, etc.) */
 }
 
-html,
-body,
-#root {
-  height: 100%;
-}
-
 html {
   font-size: 14px;
   /* Try 14px or 15px as a base */
@@ -189,7 +183,7 @@ html {
     --foreground: oklch(0.984 0.003 247.858);
     /* Light text (off-white) */
 
-    --card: oklch(0.1467 0 6.35);
+    --card: #0C0C0E;
     /* Slightly lighter dark blue/gray */
     --card-foreground: oklch(0.984 0.003 247.858);
     /* Light text */
@@ -199,10 +193,6 @@ html {
     --popover-foreground: oklch(0.984 0.003 247.858);
     /* Light text */
 
-    /* Accent Colors (Dark Mode) - REVIEW THESE CAREFULLY */
-    /* The oklch primary `oklch(0.929 0.013 255.508)` is very light for a dark theme primary. */
-    /* Consider your HSL blue: `217 91% 60%` or a dark theme appropriate oklch value. */
-    /* For example, a dark theme primary might be: oklch(0.7 0.15 265) (a noticeable blue) */
     --primary: oklch(0.929 0.013 255.508);
     /* Current: Very Light Blue/Off-white */
     --primary-foreground: #272727;
@@ -229,7 +219,8 @@ html {
     --destructive-foreground: oklch(0.984 0.003 247.858);
     /* Light text */
 
-    --border: oklch(1 0 0 / 10%);
+    --border: #1d1d1d;
+    --border-subtle: rgba(204, 204, 204, 0.6);
     /* White with 10% alpha for subtle border */
     --input: oklch(1 0 0 / 15%);
     /* White with 15% alpha for input background */
@@ -243,6 +234,17 @@ html {
     --chart-3: oklch(0.769 0.188 70.08);
     --chart-4: oklch(0.627 0.265 303.9);
     --chart-5: oklch(0.645 0.246 16.439);
+    --complexity-high: #f87171;
+    /* hsl(3.7, 95.1%, 69.2%) for #f87171 */
+    --complexity-medium: #fb923c;
+    /* hsl(22.3, 95.6%, 62.2%) for #fb923c */
+    --complexity-low: #4ade80;
+
+    --coverage-high: 142.1 70.6% 45.3%;
+    /* #4ade80 */
+    --coverage-medium: 22.3 95.6% 62.2%;
+    /* #fb923c */
+    --coverage-low: 3.7 95.1% 69.2%;
 
     /* Sidebar Colors (Dark Mode) */
     --sidebar: oklch(0.208 0.042 265.755);
@@ -260,7 +262,7 @@ html {
     background-color: var(--background);
     /* USE VARIABLE DIRECTLY */
     color: var(--foreground);
-    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+    font-family: 'Inter', sans-serif;
     line-height: 1.5;
     font-weight: 400;
     color-scheme: light dark;
@@ -270,6 +272,7 @@ html {
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     font-feature-settings: "rlig" 1, "calt" 1;
+    font-family: 'IBM Plex Sans', sans-serif;
     /* Recommended by shadcn/ui */
 
     /* Body layout - if for global centering, keep. Otherwise, scope to app container. */
@@ -378,4 +381,80 @@ html {
 /* 3) Optional hover effect */
 .ScrollAreaThumb:hover {
   background-color: rgba(255, 255, 255, 0.8) !important;
+}
+
+/* in your app’s CSS */
+.monaco-editor .fullLineHighlightGreen {
+  background-color: rgba(34, 197, 94, 0.2);
+}
+
+.monaco-editor .fullLineHighlightRed {
+  background-color: rgba(239, 68, 68, 0.2);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  /* Tailwind helpers if you prefer: */
+  /* @apply h-full overflow-hidden m-0 p-0; */
+}
+
+.font-inter {
+  font-family: 'Inter', sans-serif;
+}
+
+/* Add this to your global CSS or component CSS */
+.monaco-editor,
+.monaco-diff-editor,
+.monaco-component {
+  --vscode-editor-background: #080808 !important;
+  --vscode-editorGutter-background: #080808 !important;
+  --vscode-editor-foreground: #FFFFFF !important;
+  --vscode-editorLineNumber-foreground: #858585 !important;
+  --vscode-editorLineNumber-activeForeground: #FFFFFF !important;
+  --vscode-editor-selectionBackground: #264F78 !important;
+  --vscode-editor-inactiveSelectionBackground: #3A3D41 !important;
+  --vscode-editorCursor-foreground: #AEAFAD !important;
+  --vscode-editorWhitespace-foreground: #404040 !important;
+  --vscode-scrollbarSlider-background: #79797966 !important;
+  --vscode-scrollbarSlider-hoverBackground: #646464B3 !important;
+  --vscode-scrollbarSlider-activeBackground: #BFBFBF99 !important;
+}
+
+.monaco-editor-container .monaco-editor {
+  background-color: #080808 !important;
+}
+
+.monaco-editor-container .monaco-editor .margin {
+  background-color: #080808 !important;
+}
+
+.monaco-editor-container .monaco-editor .monaco-editor-background {
+  background-color: #080808 !important;
+}
+
+.w-md-editor .w-md-editor-text {
+  /* This is the standard "make it a flexible item that can shrink and grow" property */
+  flex: 1 1 0%;
+  /* A crucial flexbox fix: allows the item to shrink below its content's minimum size */
+  min-width: 0;
+  /* Ensure it doesn't try to scroll itself; the textarea inside will scroll */
+  overflow: hidden;
+}
+
+/* Ensure the textarea fills its now correctly-sized wrapper */
+.w-md-editor .w-md-editor-text textarea {
+  height: 100%;
+  width: 100%;
+}
+
+/* Ensure the preview container also behaves correctly as a flex item */
+.w-md-editor .w-md-editor-preview {
+  flex: 1 1 0%;
+  min-width: 0;
+  overflow: hidden;
+  /* The inner div we styled with props will handle the scrolling */
 }

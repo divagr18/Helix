@@ -1,3 +1,4 @@
+from datetime import timedelta
 import uuid
 from django.conf import settings
 from django.contrib.auth.models import AbstractUser
@@ -10,6 +11,7 @@ class CustomUser(AbstractUser):
         db_table = 'users' 
     def __str__(self):
         return self.username
+    
 
 class BetaInviteCode(models.Model):
     """
@@ -67,3 +69,41 @@ class BetaInviteCode(models.Model):
         if self.expires_at and self.expires_at < timezone.now(): # Requires `from django.utils import timezone`
             return False
         return True
+
+class VerificationToken(models.Model):
+    """
+    Stores a single-use, expiring token for actions like email verification
+    and password resets.
+    """
+    class TokenType(models.TextChoices):
+        EMAIL_VERIFICATION = 'EMAIL_VERIFICATION', 'Email Verification'
+        PASSWORD_RESET = 'PASSWORD_RESET', 'Password Reset'
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="verification_tokens"
+    )
+    token = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
+    token_type = models.CharField(max_length=30, choices=TokenType.choices)
+    
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    is_used = models.BooleanField(default=False)
+
+    class Meta:
+        db_table = 'user_verification_tokens'
+        ordering = ['-created_at']
+
+    def save(self, *args, **kwargs):
+        # Automatically set the expiration date on creation
+        if not self.pk: # If the object is new
+            self.expires_at = timezone.now() + timedelta(hours=1)
+        super().save(*args, **kwargs)
+
+    def is_valid(self) -> bool:
+        """Checks if the token is still valid (not used and not expired)."""
+        return not self.is_used and self.expires_at > timezone.now()
+
+    def __str__(self):
+        return f"{self.get_token_type_display()} token for {self.user.username}"

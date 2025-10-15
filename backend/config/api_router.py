@@ -1,12 +1,12 @@
 # backend/config/api_router.py
 
 from rest_framework.routers import DefaultRouter
-from repositories.views import BatchDocumentModuleView, ChatView, OrganizationDetailView, OrganizationListView, RepositoryViewSet,GithubReposView,FileContentView,GenerateDocstringView, CodeSymbolDetailView, ValidateInviteCodeView, set_csrf_cookie
+from repositories.views import BatchDocumentModuleView, ChatView, CohesiveTestGenerationView, ComplexityGraphView, ComplexityHotspotsView, CoverageUploadView, DashboardSummaryView, DocumentationSummaryView, LatestCoverageReportView, OrganizationDetailView, OrganizationListView, OrphanSymbolsView, RepositorySelectorListView, RepositoryViewSet,GithubReposView,FileContentView,GenerateDocstringView, CodeSymbolDetailView, RunTestsInSandboxView, SymbolAnalysisView, set_csrf_cookie
 
 router = DefaultRouter()
 from django.urls import path # Make sure path is imported
-from users.views import AuthCheckView, LogoutView
-from users.views import UserMeView # Import the new view
+from users.views import AuthCheckView, LoginView, LogoutView, PasswordResetConfirmView, PasswordResetRequestView, ResendVerificationView, SignUpView, VerifyEmailView
+from users.views import UserMeView, GithubConnectionStatusView, DisconnectGithubView # Import the new views
 
 from repositories.views import UserNotificationsView, MarkNotificationReadView
 router.register(r'repositories', RepositoryViewSet, basename='repository')
@@ -32,8 +32,10 @@ from repositories.views import (
     ClassSummaryView,ReprocessRepositoryView, SuggestRefactorsView,GenerateModuleWorkflowView,DependencyGraphView,OrganizationMemberListView,
     OrganizationMemberDetailView,
     InvitationListView,
-    AcceptInviteView
+    AcceptInviteView,GenerateModuleReadmeView,StreamModuleReadmeView,
+    LocalRepositoryUploadView
 )
+from repositories.views import CodeFileDetailView
 
 
 
@@ -47,6 +49,7 @@ def set_csrf_token(request):
 urlpatterns = router.urls
 urlpatterns += [
     path('github-repos/', GithubReposView.as_view(), name='github-repos'),
+    path('local-analyze/', LocalRepositoryUploadView.as_view(), name='local-analyze'),
     path('files/<int:file_id>/content/', FileContentView.as_view(), name='file-content'),
     path('functions/<int:function_id>/generate-docstring/', GenerateDocstringView.as_view(), name='generate-docstring'),
     path('functions/<int:function_id>/save-docstring/', SaveDocstringView.as_view(), name='save-docstring'),
@@ -90,10 +93,47 @@ urlpatterns += [
     path('organizations/<int:org_id>/members/<int:membership_id>/', OrganizationMemberDetailView.as_view(), name='organization-member-detail'),
     path('organizations/<int:org_id>/invites/', InvitationListView.as_view(), name='organization-invites'),
     path('invites/accept/<uuid:token>/', AcceptInviteView.as_view(), name='accept-invite'),
-    path('invites/validate/', ValidateInviteCodeView.as_view(), name='validate-invite-code'),
     path('auth/logout/', LogoutView.as_view(), name='api-logout'),
+    path('repositories/<int:repo_id>/intelligence/complexity-hotspots/', ComplexityHotspotsView.as_view(), name='repository-complexity-hotspots'),
 
     path("csrf/", set_csrf_cookie),
+    path('repo-selector-list/', RepositorySelectorListView.as_view(), name='repository-selector-list'),
+    path('repositories/<int:repo_id>/intelligence/orphan-symbols/', OrphanSymbolsView.as_view(), name='repository-orphan-symbols'),
+
+
+    path('repositories/<int:repo_id>/coverage/upload/', CoverageUploadView.as_view(), name='coverage-upload'),
+    path('repositories/<int:repo_id>/coverage/latest/', LatestCoverageReportView.as_view(), name='coverage-latest'),
+    path('generate-cohesive-tests/', CohesiveTestGenerationView.as_view(), name='generate-cohesive-tests'),
+    path('testing/run-sandbox/', RunTestsInSandboxView.as_view(), name='testing-run-sandbox'),
+
+    path('repositories/<int:repo_id>/intelligence/complexity-graph/', ComplexityGraphView.as_view(), name='repository-complexity-graph'),
+    path('dashboard/summary/', DashboardSummaryView.as_view(), name='dashboard-summary'),
+    path('symbols/<int:symbol_id>/analysis/', SymbolAnalysisView.as_view(), name='symbol-analysis'),
+    path('symbols/<int:symbol_id>/suggest-refactors/', SuggestRefactorsView.as_view(), name='symbol-suggest-refactors'),
+    path('repositories/<int:repo_id>/documentation/summary/', DocumentationSummaryView.as_view(), name='repository-doc-summary'),
+    path('auth/signup/', SignUpView.as_view(), name='auth-signup'),
+    path('auth/verify-email/', VerifyEmailView.as_view(), name='auth-verify-email'),
+    path('auth/resend-verification/', ResendVerificationView.as_view(), name='auth-resend-verification'),
+    path('auth/login/', LoginView.as_view(), name='auth-login'),
+    path('auth/logout/', LogoutView.as_view(), name='auth-logout'),
+    path('auth/password-reset/request/', PasswordResetRequestView.as_view(), name='auth-password-reset-request'),
+    path('auth/password-reset/confirm/', PasswordResetConfirmView.as_view(), name='auth-password-reset-confirm'),
+    path('files/<int:pk>/', CodeFileDetailView.as_view(), name='codefile-detail'),
+
+    path('repositories/<int:repo_id>/generate-module-readme/', GenerateModuleReadmeView.as_view(), name='generate-module-readme'),
+    path('repositories/<int:repo_id>/generate-module-readme-stream/', StreamModuleReadmeView.as_view(), name='generate-module-readme-stream'),
+    
+    # GitHub account connection
+    path('users/github/status/', GithubConnectionStatusView.as_view(), name='github-connection-status'),
+    path('users/github/disconnect/', DisconnectGithubView.as_view(), name='github-disconnect'),
+
+
+
+
+
+
+
+
 
 
 

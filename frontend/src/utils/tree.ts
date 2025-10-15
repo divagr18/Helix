@@ -7,6 +7,7 @@ export interface TreeNode {
     type: 'folder' | 'file';
     children?: TreeNode[];
     file?: CodeFile;
+    isVirtual?: boolean; // For virtual nodes like README.md
 }
 
 export function buildFileTreeFromCodeFiles(files: CodeFile[]): TreeNode[] {
@@ -48,11 +49,6 @@ export function buildFileTreeFromCodeFiles(files: CodeFile[]): TreeNode[] {
     return root.children || [];
 }
 
-/**
- * Recursively collects all file IDs from a node and its descendants.
- * @param node The starting TreeNode.
- * @returns An array of file IDs (numbers).
- */
 export function getFileIdsFromNode(node: TreeNode): number[] {
     let ids: number[] = [];
     if (node.type === 'file' && node.file) {
@@ -63,4 +59,43 @@ export function getFileIdsFromNode(node: TreeNode): number[] {
         }
     }
     return ids;
+}
+export function buildFileTree(paths: string[]): TreeNode[] {
+    const root: TreeNode = { name: 'root', path: '', children: [], type: 'folder' };
+
+    for (const path of paths) {
+        const parts = path.split('/');
+        let currentNode = root;
+
+        for (let i = 0; i < parts.length; i++) {
+            const part = parts[i];
+            const isFile = i === parts.length - 1;
+            const currentPath = parts.slice(0, i + 1).join('/');
+
+            let childNode = currentNode.children?.find(child => child.name === part);
+
+            if (!childNode) {
+                childNode = {
+                    name: part,
+                    path: currentPath,
+                    type: isFile ? 'file' : 'folder',
+                    // Note: The 'file' property will be undefined because we are working from strings
+                    file: undefined,
+                    children: isFile ? undefined : [],
+                };
+                currentNode.children?.push(childNode);
+            }
+
+            // Sort children: folders first, then files, both alphabetically
+            currentNode.children?.sort((a, b) => {
+                if (a.type === b.type) return a.name.localeCompare(b.name);
+                return a.type === 'folder' ? -1 : 1;
+            });
+
+            if (!isFile) {
+                currentNode = childNode;
+            }
+        }
+    }
+    return root.children || [];
 }

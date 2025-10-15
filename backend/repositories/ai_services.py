@@ -1,10 +1,15 @@
 # backend/repositories/ai_services.py
+from collections import Counter
+import json
 import re
 from typing import Generator,Optional
 from django.conf import settings
 from openai import OpenAI as OpenAIClient
 from agno.tools import tool
+import logging
+from django.db.models import Q
 
+logger = logging.getLogger(__name__)
 from .models import CodeClass, CodeSymbol, CodeDependency,KnowledgeChunk,CodeClass,CodeFile,ModuleDocumentation 
 from pgvector.django import L2Distance
 def generate_class_summary_stream(
@@ -369,91 +374,134 @@ def generate_module_readme_stream(
     openai_client: OpenAIClient
 ) -> Generator[str, None, None]:
     """
-    Generates a README.md for a given module/directory by creating a "summary of summaries"
-    from its contained classes, functions, and dependencies.
+    Generates an in-depth, architectural README.md for a module by synthesizing
+    semantic data from KnowledgeChunks and structural data from CodeDependencies.
     """
-    print(f"MODULE_README_SERVICE: Generating README for repo {repo_id}, path '{module_path}'")
+    print(f"MODULE_README_SERVICE (v3): Starting hyper-contextual analysis for repo {repo_id}, path '{module_path}'")
 
-    # 1. Gather all relevant files and their contents from the database
-    # We use `startswith` to get all files within the specified directory path
+    # --- Step 1: Scoping & Initial Data Gathering ---
     files_in_module = CodeFile.objects.filter(
-        repository_id=repo_id,
-        file_path__startswith=module_path
-    ).prefetch_related(
-        'classes', 
-        'symbols'
-    )
-
+        repository_id=repo_id, file_path__startswith=module_path
+    ).prefetch_related('classes', 'symbols')
+    
     if not files_in_module.exists():
         yield "Could not find any files in the specified module path to generate a README."
         return
 
-    # 2. Assemble the "Smart Context" from the gathered data
-    class_summaries = []
-    public_functions = []
-    all_imports = set()
+    file_ids_in_module = [f.id for f in files_in_module]
+    all_symbols_in_module = CodeSymbol.objects.filter(code_file_id__in=file_ids_in_module)
+    symbol_ids_in_module = [s.id for s in all_symbols_in_module]
+    print(f"MODULE_README_SERVICE: Found {len(file_ids_in_module)} files and {len(symbol_ids_in_module)} symbols.")
 
+    # --- Step 2: Build the "Module Content Manifest" and Infer Ecosystem ---
+    file_content_map = {}
+    all_module_imports = set()
     for file in files_in_module:
-        # Collect class summaries (using the short 'summary' field for the prompt)
-        for code_class in file.classes.all():
-            if code_class.summary:
-                class_summaries.append(f"- **{code_class.name}**: {code_class.summary}")
+        file_content_map[file.file_path] = {
+            "classes": [c.name for c in file.classes.all()],
+            "functions": [s.name for s in file.symbols.filter(code_class__isnull=True)],
+            "imports": file.imports or []
+        }
+        all_module_imports.update(file.imports or [])
 
-        # Collect public function summaries from their docstrings
-        for symbol in file.symbols.filter(code_class__isnull=True): # Top-level functions only
-            if not symbol.name.startswith('_') and symbol.documentation:
-                # Get the first line of the docstring as a summary
-                docstring_summary = symbol.documentation.strip().split('\n')[0]
-                public_functions.append(f"- `def {symbol.name}(...)`: {docstring_summary}")
-        
-        # Collect imports
-        if file.imports:
-            # Assuming file.imports is a list of strings
-            all_imports.update(file.imports)
+    inferred_ecosystem = []
+    if any('django' in imp for imp in all_module_imports): inferred_ecosystem.append('Django')
+    if any('pandas' in imp or 'numpy' in imp for imp in all_module_imports): inferred_ecosystem.append('Data Science (Pandas/NumPy)')
+    if any('react' in imp for imp in all_module_imports): inferred_ecosystem.append('React')
+    if any('fastapi' in imp for imp in all_module_imports): inferred_ecosystem.append('FastAPI')
+    print(f"MODULE_README_SERVICE: Inferred ecosystem: {inferred_ecosystem}")
 
-    # 3. Construct the Final Prompt
-    prompt_parts = [
-        "You are an expert software architect tasked with writing a clear and concise `README.md` file for a software module.",
-        "Based *only* on the provided summary of its contents and dependencies, generate a helpful README.",
-        f"\n--- Module Context ---",
-        f"**Module Path:** `{module_path}`"
-    ]
+    # --- Step 3: Gather Semantic Layer (from KnowledgeChunks) ---
+    chunks = KnowledgeChunk.objects.filter(
+        related_file_id__in=file_ids_in_module,
+        chunk_type__in=[KnowledgeChunk.ChunkType.CLASS_SUMMARY, KnowledgeChunk.ChunkType.SYMBOL_DOCSTRING]
+    ).select_related('related_class', 'related_symbol')
+    class_summaries_map = {chunk.related_class.id: chunk.content for chunk in chunks if chunk.chunk_type == 'CLASS_SUMMARY'}
+    symbol_doc_summaries_map = {chunk.related_symbol.id: chunk.content.strip().split('\n')[0] for chunk in chunks if chunk.chunk_type == 'SYMBOL_DOCSTRING'}
 
-    if class_summaries:
-        prompt_parts.append("\n**Contained Classes:**")
-        prompt_parts.extend(class_summaries)
+    # --- Step 4: Gather Structural & Quality Layers ---
+    # Dependencies & Consumers
+    incoming_deps = CodeDependency.objects.filter(callee_id__in=symbol_ids_in_module).exclude(caller_id__in=symbol_ids_in_module).select_related('caller__code_file', 'callee')
+    outgoing_deps = CodeDependency.objects.filter(caller_id__in=symbol_ids_in_module).exclude(callee_id__in=symbol_ids_in_module).select_related('callee__code_file')
     
-    if public_functions:
-        prompt_parts.append("\n**Exported Public Functions:**")
-        prompt_parts.extend(public_functions)
-        
-    if all_imports:
-        # Show a reasonable number of key dependencies
-        key_imports = sorted(list(all_imports))[:15]
-        prompt_parts.append("\n**Key Dependencies (Imports):**")
-        prompt_parts.append(f"`{', '.join(key_imports)}`")
+    external_consumers = sorted(list(set(dep.caller.code_file.file_path.replace('/', '.').replace('.py', '') for dep in incoming_deps if dep.caller.code_file)))
+    external_dependencies = sorted(list(set(dep.callee.code_file.file_path.replace('/', '.').replace('.py', '') for dep in outgoing_deps if dep.callee.code_file)))
+
+    # Key Entrypoints (weighted by call count)
+    entrypoint_counts = Counter(dep.callee for dep in incoming_deps)
+    key_entrypoints = [item[0] for item in entrypoint_counts.most_common(5)]
+
+    # Code Health Summary
+    health_symbols = all_symbols_in_module.filter(
+        Q(cyclomatic_complexity__gte=10) | Q(loc__gte=100) | Q(is_orphan=True)
+    ).order_by('-cyclomatic_complexity', '-loc')[:5] # Top 5 health concerns
+
+    # --- Step 5: Construct the Hyper-Contextualized Prompt ---
+    prompt_parts = [
+        "You are an expert Staff Engineer writing a comprehensive, in-depth architectural README.md for a software module.",
+        "Based *only* on the architectural analysis provided below, generate a detailed and insightful README.",
+        "\n--- ARCHITECTURAL ANALYSIS DOSSIER ---"
+    ]
+    if inferred_ecosystem:
+        prompt_parts.append(f"**Project Ecosystem:** {', '.join(inferred_ecosystem)}")
+    prompt_parts.append(f"**Module Path:** `{module_path or 'Repository Root'}`")
+
+    if file_content_map:
+        prompt_parts.append("\n**Module Content Manifest:**")
+        for file_path, contents in sorted(file_content_map.items())[:10]: # Limit files for brevity
+            prompt_parts.append(f"- **File:** `{file_path}`")
+            if contents["classes"]: prompt_parts.append(f"  - **Classes:** {', '.join([f'`{c}`' for c in contents['classes']])}")
+            if contents["functions"]: prompt_parts.append(f"  - **Functions:** {', '.join([f'`{f}()`' for f in contents['functions']])}")
+            if contents["imports"]: prompt_parts.append(f"  - **Imports:** {', '.join([f'`{i}`' for i in contents['imports'][:5]])}")
+
+    if key_entrypoints:
+        prompt_parts.append("\n**Key Public-Facing Components (Most Used Externally):**")
+        for symbol in key_entrypoints:
+            summary = symbol_doc_summaries_map.get(symbol.id, "No summary available.")
+            count = entrypoint_counts[symbol]
+            prompt_parts.append(f"- `def {symbol.name}(...)` (called {count} times externally): {summary}")
+
+    if health_symbols:
+        prompt_parts.append("\n**Code Health Summary:**")
+        for symbol in health_symbols:
+            if symbol.cyclomatic_complexity and symbol.cyclomatic_complexity >= 10:
+                prompt_parts.append(f"- **High Complexity:** `{symbol.name}` has a complexity of {symbol.cyclomatic_complexity}.")
+            if symbol.loc and symbol.loc >= 100:
+                prompt_parts.append(f"- **Large Symbol:** `{symbol.name}` is {symbol.loc} lines long.")
+            if symbol.is_orphan:
+                prompt_parts.append(f"- **Potential Dead Code:** `{symbol.name}` is an orphan (no incoming calls).")
+
+    if external_dependencies:
+        prompt_parts.append("\n**External Dependencies (This module relies on):**")
+        prompt_parts.extend([f"- `{dep}`" for dep in external_dependencies[:10]])
+
+    if external_consumers:
+        prompt_parts.append("\n**External Consumers (Who uses this module):**")
+        prompt_parts.extend([f"- `{consumer}`" for consumer in external_consumers[:10]])
 
     prompt_parts.extend([
-        "\n--- Task ---",
-        "Generate the `README.md` now. The README should be well-structured and include the following sections:",
-        "1.  **## Purpose**: A high-level, one or two-sentence explanation of the module's primary role and responsibility in the broader application.",
-        "2.  **## Key Components**: A brief, bulleted list describing the most important classes and functions and what they do.",
-        "3.  **## Usage**: (Optional but encouraged) If possible, infer a brief conceptual code snippet showing how this module might be imported and used.",
-        "\nYour response should be only the raw Markdown content of the README file, starting with a level-1 heading for the module name (e.g., `# My Module`)."
+        "\n--- TASK ---",
+        "Generate the `README.md` now. It must be well-structured and include the following sections:",
+        "1.  **## Overview**: A detailed paragraph explaining the module's role and primary responsibilities.",
+        "2.  **## Core Abstractions**: A description of the key public-facing classes and functions.",
+        "3.  **## Interactions & Dependencies**: Explain how this module fits into the larger system.",
+        "4.  **## Code Health & Maintainability**: Briefly mention any areas of high complexity or potential dead code as noted in the health summary.",
+        "5.  **## Usage Example**: A conceptual code snippet showing how an external consumer might use this module's public API.",
+        "\nYour response must be only the raw Markdown content of the README file. Do not wrap your response in markdown ```s."
     ])
     
     final_prompt = "\n".join(prompt_parts)
-    
-    print(f"MODULE_README_SERVICE: Sending final prompt to LLM. Prompt length: {len(final_prompt)}")
+    print(f"MODULE_README_SERVICE: Sending final prompt to LLM. Length: {len(final_prompt)}")
+    print(final_prompt)
 
-    # 4. Stream the LLM Response
+    # --- Step 5: Stream to LLM and Save ---
     full_response_text = ""
     try:
         stream = openai_client.chat.completions.create(
-            model="gpt-4.1-mini",  # Use a model suitable for text generation       
+            model="gpt-4.1-mini", # Use a powerful model for this complex task
             messages=[{"role": "user", "content": final_prompt}],
             stream=True,
-            temperature=0.4,
+            temperature=0.3,
         )
         for chunk in stream:
             content = chunk.choices[0].delta.content
@@ -463,17 +511,96 @@ def generate_module_readme_stream(
                 
         if full_response_text:
             cleaned_readme = full_response_text.strip()
-            
-            # Use update_or_create to either create a new README or update an existing one
-            # for the same module path.
             module_doc, created = ModuleDocumentation.objects.update_or_create(
                 repository_id=repo_id,
                 module_path=module_path,
                 defaults={'content_md': cleaned_readme}
             )
-            
             action = "created" if created else "updated"
             print(f"MODULE_README_SERVICE: Successfully {action} ModuleDocumentation for repo {repo_id}, path '{module_path}'.")
     except Exception as e:
         print(f"MODULE_README_SERVICE: FATAL - LLM streaming failed: {e}")
         yield f"// Helix encountered an error while generating the README."
+
+def generate_refactoring_suggestions(symbol_obj: CodeSymbol, openai_client: OpenAIClient) -> list:
+    """
+    Uses an LLM to analyze a CodeSymbol and generate a list of
+    structured refactoring suggestions in JSON format.
+    """
+    source_code = symbol_obj.source_code
+    if not source_code or source_code.strip().startswith("# Error:"):
+        logger.error(f"AI_REFACTOR: Invalid source code for symbol {symbol_obj.id}.")
+        return []
+
+    symbol_kind = "method" if symbol_obj.code_class else "function"
+    
+    # --- Context Injection (re-used from your existing function) ---
+    context_parts = [
+        f"The {symbol_kind} is named `{symbol_obj.name}`."
+    ]
+    if symbol_obj.loc is not None and symbol_obj.cyclomatic_complexity is not None:
+        context_parts.append(
+            f"**Code Metrics:** It has a Lines of Code (LOC) of `{symbol_obj.loc}` and a Cyclomatic Complexity of `{symbol_obj.cyclomatic_complexity}`."
+        )
+        if symbol_obj.cyclomatic_complexity > 10:
+            context_parts.append("The complexity is high, so pay special attention to simplifying conditional logic.")
+    
+    context_str = "\n".join(context_parts)
+
+    # --- NEW, JSON-FOCUSED PROMPT ---
+    # This prompt is adapted from yours to request a specific JSON structure.
+    prompt = (
+        f"You are an expert software architect. Your task is to analyze the provided Python code and identify actionable refactoring opportunities.\n\n"
+        f"--- Context ---\n"
+        f"{context_str}\n\n"
+        f"--- Original Source Code ---\n"
+        f"```python\n{source_code}\n```\n\n"
+        f"--- INSTRUCTIONS ---\n"
+        f"Analyze the code and return a JSON object containing a single key: 'suggestions'.\n"
+        f"The value of 'suggestions' MUST be an array of JSON objects, where each object represents one distinct refactoring opportunity.\n"
+        f"Each suggestion object MUST have the following keys:\n"
+        f"- \"title\": A short, descriptive title (e.g., \"Extract Method: Input Validation\").\n"
+        f"- \"description\": A brief explanation of why this refactoring is beneficial.\n"
+        f"- \"type\": A string describing the type of fix, example list: [\"extract_method\", \"simplify_conditional\", \"remove_duplication\", \"rename_variable\", \"improve_loop\"].\n"
+        f"- \"severity\": A string from this exact list: [\"low\", \"medium\", \"high\"].\n"
+        f"- \"complexity_reduction\": An integer representing the estimated reduction in cyclomatic complexity (e.g., -2).\n"
+        f"- \"current_code_snippet\": A string containing the exact lines from the original code that should be refactored.\n"
+        f"- \"refactored_code_snippet\": A string containing the new code that would replace the original snippet.\n\n"
+        f"If you find no refactoring opportunities, return an object with an empty array: {{\"suggestions\": []}}."
+    )
+
+    # --- LLM Call (Non-streaming, JSON mode) ---
+    try:
+        logger.info(f"AI_REFACTOR: Requesting refactoring suggestions for symbol {symbol_obj.id}.")
+        response = openai_client.chat.completions.create(
+            model="gpt-4.1-mini", # Or your preferred model that supports JSON mode
+            response_format={"type": "json_object"}, # Enable JSON mode
+            messages=[
+                {"role": "system", "content": "You are a helpful AI code quality analyst that provides refactoring suggestions in a structured JSON format."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.2,
+        )
+        
+        content = response.choices[0].message.content
+        if not content:
+            logger.warning(f"AI_REFACTOR: LLM returned empty content for symbol {symbol_obj.id}.")
+            return []
+
+        # Parse the JSON string and extract the 'suggestions' array
+        suggestions_data = json.loads(content)
+        
+        if isinstance(suggestions_data, dict) and "suggestions" in suggestions_data:
+            # Validate that the result is a list before returning
+            if isinstance(suggestions_data["suggestions"], list):
+                return suggestions_data["suggestions"]
+            else:
+                logger.warning(f"AI_REFACTOR: 'suggestions' key is not a list for symbol {symbol_obj.id}.")
+                return []
+        else:
+            logger.warning(f"AI_REFACTOR: LLM returned unexpected JSON structure for symbol {symbol_obj.id}.")
+            return []
+
+    except Exception as e:
+        logger.exception(f"AI_REFACTOR: An exception occurred during LLM call for symbol {symbol_obj.id}: {e}")
+        return []

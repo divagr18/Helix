@@ -2,20 +2,86 @@
 .DS_Store
 .env
 *.env
+!.env.example
+*.log
 
 # Python / Django
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+*.so
+.Python
 venv/
 .venv/
+env/
+ENV/
 instance/
+*.sqlite3
+db.sqlite3
+*.db
+.pytest_cache/
+.coverage
+htmlcov/
+coverage_uploads/
+test_local_repo/
+*.egg-info/
+dist/
+build/
+*.manifest
+*.spec
+pip-log.txt
+pip-delete-this-directory.txt
 
 # Node / React
 node_modules/
 dist/
 .npm
 npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+.pnpm-debug.log*
+.cache/
+.parcel-cache/
+build/
 
 # Rust
 target/
-Cargo.lock # We might commit this later, but for now, ignore it.
+Cargo.lock
+**/*.rs.bk
+*.pdb
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.c9/
+*.launch
+.settings/
+*.sublime-workspace
+
+# OS
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.cab
+*.msi
+*.msix
+*.msm
+*.msp
+*.lnk
+
+# Docker
+*.log
+
+# Temporary files
+temp/
+tmp/
+*.tmp
+*.bak
+*.old

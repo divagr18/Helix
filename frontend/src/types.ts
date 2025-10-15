@@ -57,21 +57,31 @@ export interface CodeClass {
 
 }
 
+export interface LiteCodeFile {
+  id: number;
+  file_path: string;
+}
+
+// Update the main Repository type to use the lite version
+export interface Repository {
+  id: number;
+  name: string;
+  full_name: string;
+  github_id: number;
+  repository_type: 'local' | 'github';
+  status: string;
+  last_processed: string | null;
+  files: LiteCodeFile[]; // <-- This is the key change
+}
+
+// The full CodeFile type remains the same
 export interface CodeFile {
   id: number;
   file_path: string;
-  structure_hash: string | null;
+  structure_hash: string;
   symbols: CodeSymbol[];
   classes: CodeClass[];
-}
-
-export interface Repository {
-  id: number;
-  full_name: string;
-  status: string;
-  root_merkle_hash: string | null;
-  files: CodeFile[];
-  organization: number;
+  imports: string[];
 }
 export interface InsightRelatedSymbol {
   id: number;
@@ -150,3 +160,104 @@ export interface DetailedOrganization extends Organization {
   }[];
   invitations: Invitation[];
 }
+export interface GeneratedDoc {
+  markdown: string;
+}
+export interface FileCoverageData {
+  id: number;
+  file_path: string;
+  code_file_id: number;
+  line_rate: number;
+  covered_lines: number[];
+  missed_lines: number[];
+}
+
+export interface CoverageReport {
+  id: number;
+  commit_hash: string;
+  uploaded_at: string;
+  overall_coverage: number;
+  file_coverages: FileCoverageData[];
+}
+
+export interface GraphLinkData {
+  source: number; // ID of the caller symbol
+  target: number; // ID of the callee symbol
+}
+
+// The data structure for the entire graph API response
+export interface ComplexityGraphData {
+  nodes: CodeSymbol[];
+  links: GraphLinkData[];
+}
+
+// The internal representation of a node for D3 simulation
+export interface GraphNode extends d3.SimulationNodeDatum {
+  id: number;
+  name: string;
+  complexity: number;
+  radius: number;
+}
+
+// The internal representation of a link for D3 simulation
+export interface GraphLink extends d3.SimulationLinkDatum<GraphNode> {
+  source: number | GraphNode; // D3 populates this
+  target: number | GraphNode; // D3 populates this
+}
+// src/types.ts
+
+export interface RefactoringSuggestion {
+  title: string;
+  description: string;
+  type: string;
+  severity: "low" | "medium" | "high";
+  complexity_reduction: number;
+  current_code_snippet: string;
+  refactored_code_snippet: string;
+}
+
+export interface SymbolAnalysisData {
+  symbol: CodeSymbol; // Your existing detailed CodeSymbol type
+  refactoring_suggestions: RefactoringSuggestion[];
+}
+
+export interface ToolCall {
+  id: string;
+  name: string;
+  status: 'running' | 'complete' | 'error';
+  summary?: string;
+  // We can add input/output later for more detail
+}
+
+export interface ChatMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  tool_calls?: ToolCall[];
+}
+
+// This defines what can be shown in the right-hand output panel
+// src/types.ts
+
+export type ActiveOutput =
+  | {
+    type: 'test_generation';
+    // --- THIS IS THE CORRECTED DEFINITION ---
+    status: 'loading' | 'complete'; // The loading status for the whole operation
+    file: CodeFile;                 // The file containing the symbols
+    sourceCode: string | null;        // The source code of that file
+    generatedCode: string | null;     // The generated test code from the stream
+  }
+  | {
+    type: 'refactor_suggestion';
+    // Props for a future RefactorPanel component
+    symbol: CodeSymbol;
+    originalCode: string;
+    refactoredCode: string;
+  }
+  | {
+    type: 'documentation_generation';
+    // Props for a future DocumentationPanel component
+    symbol: CodeSymbol;
+    generatedDocstring: string;
+  };

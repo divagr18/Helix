@@ -20,7 +20,6 @@ export default defineConfig({
     allowedHosts: [
       'localhost',
       '127.0.0.1',
-      'woodcock-wondrous-infinitely.ngrok-free.app' // 👈 add this
     ],
     watch: {
       usePolling: true,

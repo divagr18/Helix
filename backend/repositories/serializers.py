@@ -31,7 +31,6 @@ class CodeSymbolSerializer(serializers.ModelSerializer):
     outgoing_calls = serializers.SerializerMethodField()
     source_code = serializers.SerializerMethodField() # Add this new field
 
-
     class Meta:
         model = CodeSymbol
         fields = [
@@ -43,17 +42,12 @@ class CodeSymbolSerializer(serializers.ModelSerializer):
         ]
 
     def get_incoming_calls(self, obj):
-        # 'obj' is the CodeSymbol instance (the one being called).
-        # We need to find all CodeDependency records where 'obj' is the 'callee'.
-        # Then, for each of these dependencies, we get the 'caller' CodeSymbol.
+
         dependencies = CodeDependency.objects.filter(callee=obj)
         callers = [dep.caller for dep in dependencies]
         return LinkedSymbolSerializer(callers, many=True).data
 
     def get_outgoing_calls(self, obj):
-        # 'obj' is the CodeSymbol instance (the one making the call).
-        # We need to find all CodeDependency records where 'obj' is the 'caller'.
-        # Then, for each of these dependencies, we get the 'callee' CodeSymbol.
         dependencies = CodeDependency.objects.filter(caller=obj)
         callees = [dep.callee for dep in dependencies]
         return LinkedSymbolSerializer(callees, many=True).data
@@ -133,7 +127,6 @@ class RepositoryCreateSerializer(serializers.ModelSerializer):
     # This field is sent by the frontend
     organization_id = serializers.IntegerField(write_only=True)
     
-
     class Meta:
         model = Repository
         # These are the fields the frontend will send to create a repo
@@ -154,7 +147,6 @@ class RepositoryDetailSerializer(serializers.ModelSerializer):
         'last_processed']
         read_only_fields = ['status', 'files', 'root_merkle_hash']
 
-
 # The simple serializer for the dashboard list view (no changes needed here).
 class RepositorySerializer(serializers.ModelSerializer):
     class Meta:
@@ -162,7 +154,6 @@ class RepositorySerializer(serializers.ModelSerializer):
         fields = ['id', 'name', 'full_name', 'github_id', 'status','last_processed', 'updated_at','documentation_coverage',
             'orphan_symbol_count']
         read_only_fields = ['status', 'updated_at']
-
 
 class AsyncTaskStatusSerializer(serializers.ModelSerializer):
     user = serializers.StringRelatedField() # Shows user.username
@@ -222,12 +213,10 @@ class InsightSerializer(serializers.ModelSerializer):
             'created_at',
         ]
         
-
 class ModuleDocumentationSerializer(serializers.ModelSerializer):
     class Meta:
         model = ModuleDocumentation
         fields = ['id', 'repository', 'module_path', 'content_md', 'last_generated_at']
-
 
 class SimpleUserSerializer(serializers.ModelSerializer):
     class Meta:
@@ -255,7 +244,6 @@ class CreateOrganizationSerializer(serializers.ModelSerializer):
     class Meta:
         model = Organization
         fields = ['name'] # Only the name is needed for creation
-
 
 from .models import Invitation
 
@@ -286,3 +274,148 @@ class DetailedOrganizationSerializer(serializers.ModelSerializer):
         # We only want to show invitations that are still pending.
         pending_invites = obj.invitations.filter(status=Invitation.InviteStatus.PENDING)
         return InvitationSerializer(pending_invites, many=True).data
+    
+# backend/repositories/serializers.py
+class RepositorySelectorSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Repository
+        fields = ['id', 'full_name']
+        
+# backend/repositories/serializers.py
+
+class OrphanSymbolSerializer(serializers.ModelSerializer):
+    """
+    A serializer specifically for displaying orphan symbols in a list.
+    It includes the necessary context like file path and class name.
+    """
+    file_path = serializers.CharField(source='code_file.file_path', read_only=True, allow_null=True)
+    class_name = serializers.CharField(source='code_class.name', read_only=True, allow_null=True)
+
+    class Meta:
+        model = CodeSymbol
+        fields = [
+            'id',
+            'name',
+            'file_path',
+            'class_name',
+            'start_line',
+            'loc',
+            'cyclomatic_complexity',
+        ]
+
+from .models import TestCoverageReport, FileCoverage
+
+class FileCoverageSerializer(serializers.ModelSerializer):
+    file_path = serializers.CharField(source='code_file.file_path', read_only=True)
+    code_file_id = serializers.IntegerField(source='code_file.id', read_only=True)
+
+    class Meta:
+        model = FileCoverage
+        fields = ['id', 'file_path', 'code_file_id','line_rate', 'covered_lines', 'missed_lines']
+
+class TestCoverageReportSerializer(serializers.ModelSerializer):
+    # Nest the file-specific coverage data within the main report
+    file_coverages = FileCoverageSerializer(many=True, read_only=True)
+    
+    class Meta:
+        model = TestCoverageReport
+        fields = ['id', 'repository', 'commit_hash', 'uploaded_at', 'overall_coverage', 'file_coverages']
+
+class GraphLinkSerializer(serializers.ModelSerializer):
+    source = serializers.IntegerField(source='caller.id')
+    target = serializers.IntegerField(source='callee.id')
+
+    class Meta:
+        model = CodeDependency
+        fields = ['source', 'target']
+
+class DashboardRepositorySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Repository
+        fields = [
+            'id', 'full_name', 'repository_type', 'status', 'last_processed',
+            'documentation_coverage', 'orphan_symbol_count',
+            # New fields
+            'primary_language', 'size_kb', 'commit_count', 'contributor_count'
+        ]
+
+class RefactoringSuggestionSerializer(serializers.Serializer):
+    """
+    A read-only serializer to structure the AI-generated refactoring suggestions.
+    This ensures the data sent to the frontend is in a consistent format.
+    """
+    title = serializers.CharField()
+    description = serializers.CharField()
+    type = serializers.CharField()
+    severity = serializers.ChoiceField(choices=["low", "medium", "high"])
+    complexity_reduction = serializers.IntegerField()
+    current_code_snippet = serializers.CharField()
+    refactored_code_snippet = serializers.CharField()
+
+    # We don't need a create or update method as this is for serialization only.
+
+class SymbolAnalysisSerializer(serializers.ModelSerializer):
+    """
+    The main serializer for the Symbol Analysis page.
+    It combines the detailed symbol data with a list of refactoring suggestions.
+    """
+    symbol = CodeSymbolSerializer(read_only=True) 
+    
+    refactoring_suggestions = RefactoringSuggestionSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = CodeSymbol # The Meta model doesn't matter as much here since we define all fields
+        fields = ['symbol', 'refactoring_suggestions']
+
+class DocActionItemSerializer(serializers.ModelSerializer):
+    """A lightweight serializer for the 'Action Items' list."""
+    file_path = serializers.CharField(source='code_file.file_path', read_only=True, allow_null=True)
+    type = serializers.SerializerMethodField()
+
+    class Meta:
+        model = CodeSymbol
+        fields = [
+            'id',
+            'name',       # Renaming from symbolName for consistency
+            'file_path',
+            'documentation_status', # The raw status value (e.g., 'DOCUMENTED', 'MISSING')
+            'type',
+            # Add any other fields needed for the list, e.g., complexity
+            'cyclomatic_complexity',
+        ]
+
+    def get_type(self, obj: CodeSymbol) -> str:
+        # Determine the symbol type based on its relationships
+        if obj.code_class is None:
+            return 'function'
+        # This is a simplification; a more robust check might be needed
+        # if you distinguish between methods and properties.
+        return 'method'
+
+class FileCoverageStatSerializer(serializers.Serializer):
+    """A read-only serializer for file-level coverage stats."""
+    name = serializers.CharField()
+    path = serializers.CharField()
+    coverage = serializers.FloatField()
+class LiteCodeFileSerializer(serializers.ModelSerializer):
+    """
+    A lightweight serializer for code files that only includes the path and ID.
+    Used for quickly loading the file tree structure.
+    """
+    class Meta:
+        model = CodeFile
+        fields = ['id', 'file_path']
+
+class LiteRepositoryDetailSerializer(serializers.ModelSerializer):
+    """
+    A serializer for the initial repository load. It includes all repo-level
+    data but only a lightweight list of file paths.
+    """
+    files = LiteCodeFileSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = Repository
+        fields = [
+            'id', 'name', 'full_name', 'github_id',
+            'status', 'last_processed', 'files' # Note: 'files' now uses the lite serializer
+        ]

@@ -1,4 +1,5 @@
 # backend/repositories/tasks.py
+from collections import Counter
 from pathlib import Path
 from config.celery import app
 from .models import Repository,AsyncTaskStatus
@@ -18,13 +19,17 @@ import time
 from github import Github, GithubException, UnknownObjectException
 from django.contrib.auth import get_user_model
 import datetime
-from itertools import takewhile
 import tempfile
 from django.utils import timezone
 from django.db import transaction,models  # Import the transaction module
 from .models import CodeFile, CodeSymbol, CodeClass,CodeDependency,EmbeddingBatchJob,Insight,KnowledgeChunk,ModuleDocumentation
 from .models import Notification, AsyncTaskStatus # Ensure Notification is imported
 from allauth.socialaccount.models import SocialAccount
+import xml.etree.ElementTree as ET
+from django.core.files.storage import default_storage
+from git import Repo, GitCommandError # <--- Import GitPython
+
+from .models import TestCoverageReport, FileCoverage, CodeFile, Repository
 OPENAI_EMBEDDING_BATCH_SIZE = 50
 OPENAI_EMBEDDING_BATCH_FILE_MAX_REQUESTS = 49000
 # Define the path to our compiled Rust binary INSIDE the container
@@ -36,9 +41,7 @@ OPENAI_EMBEDDING_MODEL = "text-embedding-3-small"
 from django.core.cache import cache
 
 @app.task
-def process_repository(repo_id):
-
-
+def process_repository(repo_id, is_local=False, local_path=None):
     lock_key = f"process_repo_lock_{repo_id}"
     # Since we don't have `self.request.id`, we can just use a simple value for the lock
     if not cache.add(lock_key, "locked", timeout=900):
@@ -51,7 +54,6 @@ def process_repository(repo_id):
         print(f"Error: Repository with id={repo_id} not found.")
         return
         
-
     repo_path = os.path.join(REPO_CACHE_BASE_PATH, str(repo.id))
 
     try:
@@ -59,70 +61,141 @@ def process_repository(repo_id):
         repo.status = Repository.Status.INDEXING
         repo.save(update_fields=['status'])
 
-        # --- Git Cache Management ---
-        # (Your existing git clone/pull logic - seems okay)
-        # ... (ensure SocialToken and token logic is robust) ...
-        if not repo.added_by:
-            raise Exception(f"Repository {repo.full_name} has no associated user to fetch a token.")
-
-        user_who_added_repo = repo.added_by
-        social_account = user_who_added_repo.socialaccount_set.filter(provider='github').first()
-        if not social_account:
-            raise Exception(f"No GitHub social account found for user {user_who_added_repo.username} to process repo {repo.full_name}")
-        
-        social_token = SocialToken.objects.filter(account=social_account).first()
-        if not social_token:
-            raise Exception(f"No GitHub token found for user {user_who_added_repo.username} to process repo {repo.full_name}")
-        
-        token = social_token.token
-        clone_url = f"https://oauth2:{token}@github.com/{repo.full_name}.git"
-
-        previous_commit_hash = None
-        if os.path.exists(repo_path):
-            try:
-                # Get the hash of the current HEAD
-                result = subprocess.run(['git', '-C', repo_path, 'rev-parse', 'HEAD'], check=True, capture_output=True, text=True)
-                previous_commit_hash = result.stdout.strip()
-                
-                print(f"PROCESS_REPO_TASK: Previous commit hash for repo {repo.id} is {previous_commit_hash[:7]}")
-                subprocess.run(['git', '-C', repo_path, 'pull'], check=True, capture_output=True, timeout=300)
-            except subprocess.CalledProcessError as e:
-                # Handle git errors
-                print(f"Git pull failed: {e.stderr}")
-                repo.status = Repository.Status.FAILED; repo.save(); return
+        # Handle local repositories differently
+        if is_local or repo.repository_type == 'local':
+            print(f"PROCESS_REPO_TASK: Processing local repository from path: {local_path}")
+            
+            # If local_path is not provided, try to read it from the stored file
+            if not local_path:
+                path_info_file = os.path.join(repo_path, '.local_path')
+                if os.path.exists(path_info_file):
+                    with open(path_info_file, 'r') as f:
+                        local_path = f.read().strip()
+                else:
+                    raise Exception(f"Local path not found for repository {repo.full_name}")
+            
+            # Validate local path exists
+            if not os.path.exists(local_path):
+                raise Exception(f"Local path does not exist: {local_path}")
+            
+            # Use the local path directly for processing
+            actual_repo_path = local_path
         else:
-            # Cloning new repo
-            subprocess.run(['git', 'clone', clone_url, repo_path], check=True, capture_output=True, timeout=300)
+            # --- Git Cache Management for GitHub repositories ---
+            if not repo.added_by:
+                raise Exception(f"Repository {repo.full_name} has no associated user to fetch a token.")
 
-        # Get commit hash AFTER pull
-        try:
-            result = subprocess.run(['git', '-C', repo_path, 'rev-parse', 'HEAD'], check=True, capture_output=True, text=True)
-            latest_commit_hash = result.stdout.strip()
-        except subprocess.CalledProcessError as e:
-            print(f"Could not get latest commit hash: {e.stderr}")
-            repo.status = Repository.Status.FAILED; repo.save(); return
+            user_who_added_repo = repo.added_by
+            social_account = user_who_added_repo.socialaccount_set.filter(provider='github').first()
+            if not social_account:
+                raise Exception(f"No GitHub social account found for user {user_who_added_repo.username} to process repo {repo.full_name}")
+            
+            social_token = SocialToken.objects.filter(account=social_account).first()
+            if not social_token:
+                raise Exception(f"No GitHub token found for user {user_who_added_repo.username} to process repo {repo.full_name}")
+            
+            token = social_token.token
+            clone_url = f"https://oauth2:{token}@github.com/{repo.full_name}.git"
+            actual_repo_path = repo_path
 
-        # If nothing changed, we can stop early
-        if previous_commit_hash and previous_commit_hash == latest_commit_hash:
-            print(f"PROCESS_REPO_TASK: No new commits for repo {repo.id}. Processing complete.")
-            repo.status = Repository.Status.COMPLETED
-            repo.last_processed = timezone.now()
-            repo.save(update_fields=['status', 'last_processed'])
-            print(f"PROCESS_REPO_TASK: Dispatching metric calculation tasks for repo {repo_id}")
-            calculate_documentation_coverage_task.delay(repo_id=repo_id)
-            detect_orphan_symbols_task.delay(repo_id=repo.id, user_id=user_who_added_repo.id)
-            return # Stop here
+        # Handle local repositories differently for git operations
+        if not (is_local or repo.repository_type == 'local'):
+            previous_commit_hash = None
+            if os.path.exists(repo_path):
+                try:
+                    # Get the hash of the current HEAD
+                    result = subprocess.run(['git', '-C', repo_path, 'rev-parse', 'HEAD'], check=True, capture_output=True, text=True)
+                    previous_commit_hash = result.stdout.strip()
+                    
+                    print(f"PROCESS_REPO_TASK: Previous commit hash for repo {repo.id} is {previous_commit_hash[:7]}")
+                    subprocess.run(['git', '-C', repo_path, 'pull'], check=True, capture_output=True, timeout=300)
+                except subprocess.CalledProcessError as e:
+                    # Handle git errors
+                    print(f"Git pull failed: {e.stderr}")
+                    repo.status = Repository.Status.FAILED; repo.save(); return
+            else:
+                # Cloning new repo
+                subprocess.run(['git', 'clone', clone_url, repo_path], check=True, capture_output=True, timeout=300)
+        # Git metrics only for GitHub repositories
+        if not (is_local or repo.repository_type == 'local'):
+            try:
+                git_repo = Repo(repo_path)
+                
+                # 1. Get Commit and Contributor Count
+                commit_count = git_repo.rev_parse('HEAD').count()
+                contributors = {commit.author.email for commit in git_repo.iter_commits('HEAD')}
+                contributor_count = len(contributors)
+
+                # 2. Get Repo Size
+                total_size = 0
+                for dirpath, dirnames, filenames in os.walk(actual_repo_path):
+                    if '.git' in dirnames:
+                        dirnames.remove('.git')
+                    for f in filenames:
+                        fp = os.path.join(dirpath, f)
+                        if not os.path.islink(fp):
+                            total_size += os.path.getsize(fp)
+                size_kb = total_size // 1024
+
+                # 3. Save metrics to the database model
+                repo.commit_count = commit_count
+                repo.contributor_count = contributor_count
+                repo.size_kb = size_kb
+                # We will save primary_language after file analysis
+                repo.save(update_fields=['commit_count', 'contributor_count', 'size_kb'])
+                print(f"PROCESS_REPO_TASK: Saved Git metrics for repo {repo.id}.")
+
+            except GitCommandError as e:
+                print(f"Git command failed for repo {repo_id}: {e}")
+            except Exception as e:
+                print(f"Error gathering git metrics for repo {repo_id}: {e}")
+        else:
+            # For local repositories, calculate basic metrics
+            total_size = 0
+            for dirpath, dirnames, filenames in os.walk(actual_repo_path):
+                # Skip common non-source directories
+                dirnames[:] = [d for d in dirnames if d not in ['.git', 'node_modules', '__pycache__', '.venv', 'venv', 'env']]
+                for f in filenames:
+                    fp = os.path.join(dirpath, f)
+                    if not os.path.islink(fp):
+                        total_size += os.path.getsize(fp)
+            size_kb = total_size // 1024
+            
+            repo.commit_count = 1  # Default for local repos
+            repo.contributor_count = 1  # Default for local repos
+            repo.size_kb = size_kb
+            repo.save(update_fields=['commit_count', 'contributor_count', 'size_kb'])
+            print(f"PROCESS_REPO_TASK: Saved local repository metrics for repo {repo.id}.")
+
+        # Get commit hash AFTER pull (only for GitHub repos)
+        if not (is_local or repo.repository_type == 'local'):
+            try:
+                result = subprocess.run(['git', '-C', repo_path, 'rev-parse', 'HEAD'], check=True, capture_output=True, text=True)
+                latest_commit_hash = result.stdout.strip()
+            except subprocess.CalledProcessError as e:
+                print(f"Could not get latest commit hash: {e.stderr}")
+                repo.status = Repository.Status.FAILED; repo.save(); return
+
+            # If nothing changed, we can stop early
+            if previous_commit_hash and previous_commit_hash == latest_commit_hash:
+                print(f"PROCESS_REPO_TASK: No new commits for repo {repo.id}. Processing complete.")
+                repo.status = Repository.Status.COMPLETED
+                repo.last_processed = timezone.now()
+                repo.save(update_fields=['status', 'last_processed'])
+                print(f"PROCESS_REPO_TASK: Dispatching metric calculation tasks for repo {repo_id}")
+                calculate_documentation_coverage_task.delay(repo_id=repo_id)
+                detect_orphan_symbols_task.delay(repo_id=repo.id, user_id=user_who_added_repo.id)
+                return # Stop here
         
         # --- Call Rust Engine ---
         # (Your existing Rust engine call logic - seems okay)
         # ...
-        print(f"PROCESS_REPO_TASK: Calling Rust engine for directory: {repo_path}")
-        command = [RUST_ENGINE_PATH, "--dir-path", repo_path]
+        print(f"PROCESS_REPO_TASK: Calling Rust engine for directory: {actual_repo_path}")
+        command = [RUST_ENGINE_PATH, "--dir-path", actual_repo_path]
         result = subprocess.run(command, capture_output=True, text=True, check=True, timeout=600) # Added timeout
         json_output_string = result.stdout
         repo_analysis_data = json.loads(json_output_string)
 
-        
         # --- Database Transaction: Processing ---
         with transaction.atomic():
             print("PROCESS_REPO_TASK: Starting Pass 1: Creating/Updating Files, Classes, and Symbols...")
@@ -145,113 +218,105 @@ def process_repository(repo_id):
 
             symbol_map_for_deps = {} # For dependency linking, using newly created/updated symbol objects
             call_map_for_deps = {}
-
+            newly_stale_symbol_details = []
             for file_data in repo_analysis_data.get('files', []):
                 file_defaults = {
                     'structure_hash': file_data['structure_hash'],
-                    'imports': file_data.get('imports', None) # Get the new 'imports' array
+                    'imports': file_data.get('imports', None)
                 }
-                print(f"DEBUG_TASK: Preparing to save file '{file_data['path']}'. Imports found in JSON: {file_data.get('imports')}")
                 code_file_obj, _ = CodeFile.objects.update_or_create(
                     repository=repo,
                     file_path=file_data.get('path'),
                     defaults=file_defaults
                 )
                 
-                # Process top-level functions
-                for func_data in file_data.get('functions', []):
-                    uid = func_data.get('unique_id')
-                    if not uid: continue
-                    processed_unique_ids_from_rust.add(uid)
-                    
-                    # Initial defaults, not including documentation_status yet
-                    func_defaults = {
-                        'code_class': None,
-                        'name': func_data.get('name'), 'start_line': func_data.get('start_line'),
-                        'end_line': func_data.get('end_line'), 'content_hash': func_data.get('content_hash'),
-                        'is_orphan': False,'loc': func_data.get('loc'),
-                            'cyclomatic_complexity': func_data.get('cyclomatic_complexity'),'existing_docstring': func_data.get('docstring'), # from the JSON
-        'signature_end_location': func_data.get('signature_end_location'), # from the JSON
-                    }
-                    
-                    symbol_obj, created = CodeSymbol.objects.update_or_create(
-                        unique_id=uid,
-                        code_file=code_file_obj,
-                        defaults=func_defaults
-                    )
-                    if created and symbol_obj.existing_docstring:
-                        # If we're seeing this symbol for the first time and it already has a docstring
-                        symbol_obj.documentation_status = CodeSymbol.DocStatus.FRESH
-                        symbol_obj.save(update_fields=['documentation_status'])
-                    elif created and not symbol_obj.existing_docstring:
-                        # New symbol with no docstring
-                        symbol_obj.documentation_status = CodeSymbol.DocStatus.NONE
-                        symbol_obj.save(update_fields=['documentation_status'])
-
-                    if created:
-                        added_symbols_data.append({'id': symbol_obj.id, 'name': symbol_obj.name, 'file_path': file_data.get('path')})
-                    elif uid in existing_symbols_map and existing_symbols_map[uid].content_hash != symbol_obj.content_hash:
-                        modified_symbols_data.append({'id': symbol_obj.id, 'name': symbol_obj.name, 'file_path': file_data.get('path')})
-                    else:
-                        print(f"Updated Symbol: {uid} - doc_status preserved")
-                        # For updates, documentation_status is preserved (not in defaults).
-                        # The staleness check later will handle setting FRESH/STALE.
-
-                    symbol_map_for_deps[uid] = symbol_obj
-                    call_map_for_deps[uid] = func_data.get('calls', [])
-
-                # Process classes and their methods
+                # Process classes first to have class_obj available for methods
+                class_map_in_file = {}
                 for class_data in file_data.get('classes', []):
                     class_obj, _ = CodeClass.objects.update_or_create(
                         code_file=code_file_obj, 
-                        name=class_data.get('name'), # Assuming (file, class_name) is unique
+                        name=class_data.get('name'),
                         defaults={
-                            'start_line': class_data.get('start_line'), 'end_line': class_data.get('end_line'),
+                            'start_line': class_data.get('start_line'), 
+                            'end_line': class_data.get('end_line'),
                             'structure_hash': class_data.get('structure_hash')
                         }
                     )
+                    class_map_in_file[class_data.get('name')] = class_obj
+
+                # Combine top-level functions and methods into a single list for processing
+                all_symbols_data_in_file = file_data.get('functions', [])
+                for class_data in file_data.get('classes', []):
                     for method_data in class_data.get('methods', []):
-                        uid = method_data.get('unique_id')
-                        if not uid: continue
-                        processed_unique_ids_from_rust.add(uid)
+                        # Add class context to each method
+                        method_data['class_name'] = class_data.get('name')
+                        all_symbols_data_in_file.append(method_data)
 
-                        method_defaults = {
-                            'code_file': None,
-                            'name': method_data.get('name'), 
-                            'start_line': method_data.get('start_line'),
-                            'end_line': method_data.get('end_line'), 
-                            'content_hash': method_data.get('content_hash'),
-                            'is_orphan': False,
-                            'loc': method_data.get('loc'),
-                            'cyclomatic_complexity': method_data.get('cyclomatic_complexity'),
-                            'existing_docstring': method_data.get('docstring'), 
-                            'signature_end_location': method_data.get('signature_end_location'),
-                        }
+                for symbol_data in all_symbols_data_in_file:
+                    uid = symbol_data.get('unique_id')
+                    if not uid: continue
+                    processed_unique_ids_from_rust.add(uid)
 
-                        symbol_obj, created = CodeSymbol.objects.update_or_create(
-                            unique_id=uid,
-                            code_class=class_obj,
-                            defaults=method_defaults
-                        )
-                        if created and symbol_obj.existing_docstring:
-        # If we're seeing this symbol for the first time and it already has a docstring
-                            symbol_obj.documentation_status = CodeSymbol.DocStatus.FRESH
-                            symbol_obj.save(update_fields=['documentation_status'])
-                        elif created and not symbol_obj.existing_docstring:
-                            # New symbol with no docstring
-                            symbol_obj.documentation_status = CodeSymbol.DocStatus.NONE
-                            symbol_obj.save(update_fields=['documentation_status'])
+                    # 1. Get new data from the parser
+                    new_content_hash = symbol_data.get('content_hash')
+                    new_doc_hash = symbol_data.get('documentation_hash')
+                    new_docstring = symbol_data.get('docstring')
 
-                        if created:
-                            added_symbols_data.append({'id': symbol_obj.id, 'name': symbol_obj.name, 'file_path': file_data.get('path'), 'class_name': class_data.get('name')})
-                        elif uid in existing_symbols_map and existing_symbols_map[uid].content_hash != symbol_obj.content_hash:
-                            modified_symbols_data.append({'id': symbol_obj.id, 'name': symbol_obj.name, 'file_path': file_data.get('path'), 'class_name': class_data.get('name')})
-                        else:
-                            print(f"Updated Method Symbol: {uid} - doc_status preserved")
-                            # For updates, documentation_status is preserved.
+                    # 2. Check if the symbol existed before this run
+                    old_symbol = existing_symbols_map.get(uid)
+                    
+                    # 3. Determine the new documentation status BEFORE saving
+                    new_status = CodeSymbol.DocStatus.NONE # Default for new symbols
+                    if old_symbol:
+                        # It's an existing symbol, let's compare hashes
+                        code_changed = new_content_hash != old_symbol.content_hash
+                        doc_changed = new_doc_hash != old_symbol.documentation_hash
+                        
+                        if new_docstring: # If documentation exists now
+                            if code_changed and not doc_changed:
+                                new_status = CodeSymbol.DocStatus.STALE
+                                newly_stale_symbol_details.append(f"- `{symbol_data.get('name')}` in `{file_data.get('path')}`")
+                            else: # Doc was added, changed, or code didn't change but was already fresh/stale
+                                new_status = CodeSymbol.DocStatus.FRESH
+                        else: # No documentation
+                            new_status = CodeSymbol.DocStatus.NONE
+                    elif new_docstring:
+                        # It's a new symbol being created, and it has a docstring
+                        new_status = CodeSymbol.DocStatus.FRESH
 
-                        symbol_map_for_deps[uid] = symbol_obj
-                        call_map_for_deps[uid] = method_data.get('calls', [])
+                    # 4. Prepare the data for update_or_create
+                    class_name = symbol_data.get('class_name')
+                    symbol_defaults = {
+                        'name': symbol_data.get('name'),
+                        'start_line': symbol_data.get('start_line'),
+                        'end_line': symbol_data.get('end_line'),
+                        'content_hash': new_content_hash,
+                        'documentation_hash': new_doc_hash,
+                        'existing_docstring': new_docstring,
+                        'documentation_status': new_status,
+                        'loc': symbol_data.get('loc'),
+                        'cyclomatic_complexity': symbol_data.get('cyclomatic_complexity'),
+                        'signature_end_location': symbol_data.get('signature_end_location'),
+                        'is_orphan': False,
+                        # Set code_file for functions, code_class for methods
+                        'code_file': code_file_obj if not class_name else None,
+                        'code_class': class_map_in_file.get(class_name) if class_name else None,
+                    }
+
+                    # 5. Perform the database operation
+                    symbol_obj, created = CodeSymbol.objects.update_or_create(
+                        unique_id=uid,
+                        defaults=symbol_defaults
+                    )
+
+                    # 6. Track data for subsequent steps
+                    if created:
+                        added_symbols_data.append({'id': symbol_obj.id, 'name': symbol_obj.name, 'file_path': file_data.get('path')})
+                    elif old_symbol and old_symbol.content_hash != new_content_hash:
+                        modified_symbols_data.append({'id': symbol_obj.id, 'name': symbol_obj.name, 'file_path': file_data.get('path')})
+
+                    symbol_map_for_deps[uid] = symbol_obj
+                    call_map_for_deps[uid] = symbol_data.get('calls', [])
             
             # Delete symbols that were in the DB (for this repo) but not in the new Rust output
             removed_uids = set(existing_symbols_map.keys()) - processed_unique_ids_from_rust
@@ -267,7 +332,6 @@ def process_repository(repo_id):
                 (Q(code_file__repository=repo) | Q(code_class__code_file__repository=repo))
             ).delete()
 
-
             print(f"PROCESS_REPO_TASK: Finished Pass 1. Processed {len(processed_unique_ids_from_rust)} symbols from Rust output.")
 
             # PASS 1.5: Generate Embeddings
@@ -278,7 +342,6 @@ def process_repository(repo_id):
             else:
                 print("PROCESS_REPO_TASK: Skipping embedding job submission as OpenAI client is not available.")
             # --- END NEW ---
-
 
             # PASS 2: Link Dependencies
             print("PROCESS_REPO_TASK: Starting Pass 2: Linking Dependencies...")
@@ -300,51 +363,10 @@ def process_repository(repo_id):
                         CodeDependency.objects.get_or_create(caller=caller_symbol, callee=callee_symbol)
             print("PROCESS_REPO_TASK: Finished Pass 2.")
 
-            # --- Staleness Detection and Notification Logic ---
-            print(f"PROCESS_REPO_TASK: Starting staleness check for repository {repo.id} ({repo.full_name})")
-            stale_symbols_count = 0
-            newly_stale_symbol_details = []
-
-            # Fetch all symbols in this repo that have documentation and a content_hash
-            symbols_with_docs_in_repo = CodeSymbol.objects.filter(
-                (Q(code_file__repository=repo) | Q(code_class__code_file__repository=repo)),
-                documentation__isnull=False,
-                documentation__iregex=r'\S',
-                content_hash__isnull=False
-            ).select_related('code_file', 'code_class__code_file') # For file path in notification
-
-            symbols_to_bulk_update_status = []
-
-            for symbol in symbols_with_docs_in_repo:
-                is_freshly_documented = (
-                    symbol.documentation_hash is not None and
-                    symbol.documentation_hash == symbol.content_hash
-                )
-                current_db_status = symbol.documentation_status
-                new_status = current_db_status
-
-                if is_freshly_documented:
-                    if current_db_status != CodeSymbol.DocStatus.FRESH:
-                        new_status = CodeSymbol.DocStatus.FRESH
-                else: # Documentation exists, but it's now stale
-                    if current_db_status != CodeSymbol.DocStatus.STALE:
-                        new_status = CodeSymbol.DocStatus.STALE
-                        stale_symbols_count += 1
-                        file_rel_path = symbol.code_file.file_path if symbol.code_file else \
-                                        (symbol.code_class.code_file.file_path if symbol.code_class and symbol.code_class.code_file else "N/A")
-                        newly_stale_symbol_details.append(f"- `{symbol.name}` in `{file_rel_path}`")
-                
-                if new_status != current_db_status:
-                    symbol.documentation_status = new_status
-                    symbols_to_bulk_update_status.append(symbol)
-            
-            if symbols_to_bulk_update_status:
-                CodeSymbol.objects.bulk_update(symbols_to_bulk_update_status, ['documentation_status'], batch_size=100)
-                print(f"PROCESS_REPO_TASK: Updated documentation_status for {len(symbols_to_bulk_update_status)} symbols.")
-
-            print(f"PROCESS_REPO_TASK: Staleness check complete. Found {stale_symbols_count} newly stale symbols.")
+            stale_symbols_count = len(newly_stale_symbol_details)
 
             if stale_symbols_count > 0:
+                # Your existing notification logic is correct and can remain here
                 details_for_message = "\n".join(newly_stale_symbol_details[:5])
                 if len(newly_stale_symbol_details) > 5:
                     details_for_message += f"\n... and {len(newly_stale_symbol_details) - 5} more."
@@ -356,8 +378,21 @@ def process_repository(repo_id):
                     user=user_who_added_repo, repository=repo, message=notification_message,
                     notification_type=Notification.NotificationType.STALENESS_ALERT
                 )
-            # --- END Staleness Detection ---
-
+            # --- END NEW STALENESS DETECTION ---
+            lang_counter = Counter()
+            file_extensions = {
+                'py': 'Python', 'js': 'JavaScript', 'ts': 'TypeScript',
+                'java': 'Java', 'go': 'Go', 'rb': 'Ruby', 'rs': 'Rust', 'html': 'HTML', 'css': 'CSS'
+            }
+            # This assumes you have access to the file list from the analysis
+            for file_data in repo_analysis_data.get('files', []):
+                ext = file_data.get('path', '').split('.')[-1]
+                if ext in file_extensions:
+                    lang_counter[file_extensions[ext]] += 1
+            
+            primary_language = lang_counter.most_common(1)[0][0] if lang_counter else None
+            repo.primary_language = primary_language
+            
             repo.root_merkle_hash = repo_analysis_data.get('root_merkle_hash')
             repo.status = Repository.Status.COMPLETED
             repo.last_processed = timezone.now() # Added timezone
@@ -370,12 +405,22 @@ def process_repository(repo_id):
         print(f"PROCESS_REPO_TASK: Dispatching metric calculation tasks for repo {repo_id}")
         calculate_documentation_coverage_task.delay(repo_id=repo_id)
         
-        print(f"PROCESS_REPO_TASK: Dispatching insights generation for repo {repo.id} at commit {latest_commit_hash[:7]}")
-        generate_insights_on_change_task.delay(
-            repo_id=repo.id,
-            commit_hash=latest_commit_hash,
-            diff_report=diff_report
-        )
+        # Only dispatch insights generation for GitHub repositories that have commit hashes
+        if not (is_local or repo.repository_type == 'local') and 'latest_commit_hash' in locals():
+            print(f"PROCESS_REPO_TASK: Dispatching insights generation for repo {repo.id} at commit {latest_commit_hash[:7]}")
+            generate_insights_on_change_task.delay(
+                repo_id=repo.id,
+                commit_hash=latest_commit_hash,
+                diff_report=diff_report
+            )
+        else:
+            print(f"PROCESS_REPO_TASK: Skipping insights generation for local repository {repo.id}")
+            # For local repos, we can still generate insights but without commit hash
+            generate_insights_on_change_task.delay(
+                repo_id=repo.id,
+                commit_hash=None,
+                diff_report=diff_report
+            )
         print(f"PROCESS_REPO_TASK: Dispatching knowledge indexing for repo {repo.id}")
         index_repository_knowledge_task.delay(repo_id=repo.id)
         print(f"PROCESS_REPO_TASK: Successfully processed and saved analysis for repository: {repo.full_name}")
@@ -431,18 +476,11 @@ def update_docstring_in_ast(source_code: str, target_symbol_name: str, new_docst
                 self.is_in_target_class_scope = False # Reset after leaving the class
                 return node
             elif self.current_target_class_name is None:
-                # If looking for a top-level function, don't descend into classes' bodies
-                # for the purpose of setting is_in_target_class_scope for methods.
-                # However, we still need to visit children in case of nested classes (though less common).
-                # Let's refine: only visit children if not specifically targeting a class.
-                # If we are targeting a class, we only care about *that* class.
+
                 pass # Do not visit children if we are looking for a specific class and this is not it.
             
-            # If not targeting a class, or if this class is not the target,
-            # still visit its children in case of nested structures or other elements.
-            # However, the actual docstring update logic is guarded by is_in_target_class_scope.
-            return self.generic_visit(node)
 
+            return self.generic_visit(node)
 
         def visit_FunctionDef(self, node):
             if self.is_in_target_class_scope and node.name == self.current_target_symbol_name:
@@ -686,12 +724,12 @@ def call_openai_for_docstring(prompt: str, openai_client: OpenAI | None) -> str 
         print(f"ERROR_HELPER: Error calling OpenAI for docstring: {e}")
         return None
     
-    
 @app.task(bind=True, max_retries=2, default_retry_delay=180) # Fewer retries, longer delay for batch
 def batch_generate_docstrings_task(self, code_file_id: int, user_id: int):
     try:
         # user = User.objects.get(id=user_id) # Not strictly needed if PR is separate
         code_file = CodeFile.objects.select_related('repository__user').get(id=code_file_id)
+        repo_id = code_file.repository.id
         # Basic permission check (can be enhanced if needed)
         if code_file.repository.user.id != user_id:
             print(f"Permission denied: User {user_id} does not own repository for CodeFile {code_file_id}")
@@ -757,7 +795,10 @@ def batch_generate_docstrings_task(self, code_file_id: int, user_id: int):
             failed_generations += 1
         
         time.sleep(0.1) # Basic rate limiting: 0.5 seconds between OpenAI calls
-
+    
+    print(f"BATCH_DOCS_TASK: Triggering stats recalculation for repo {repo_id} after {successful_generations} successful generations.")
+    calculate_documentation_coverage_task.delay(repo_id)
+    
     summary_message = f"Batch documentation generation for file '{code_file.file_path}': {successful_generations} successful, {failed_generations} failed."
     print(summary_message)
     
@@ -781,7 +822,6 @@ def get_source_for_file_in_task(code_file_obj: CodeFile) -> str | None:
     else:
         print(f"WARNING_HELPER: Source file not found in cache: {full_file_path}")
     return None
-
 
 # Rename or create a new task for batch PRs for a file
 @app.task(bind=True, max_retries=2, default_retry_delay=120)
@@ -946,10 +986,6 @@ def create_docs_pr_for_file_task(self, code_file_id: int, user_id: int):
                 print(f"Failed to cleanup branch {new_branch_name}: {branch_delete_e}")
         raise # Re-raise for Celery to handle as a task failure
     
-
-
-
-
 @app.task(bind=True, max_retries=1, default_retry_delay=300)
 def batch_generate_docstrings_for_files_task(self, repo_id: int, user_id: int, file_ids: list[int]):
     task_id = self.request.id
@@ -1092,7 +1128,6 @@ def batch_generate_docstrings_for_files_task(self, repo_id: int, user_id: int, f
             task_status_obj.progress = int(((i + 1) / total_files_to_process) * 100)
             task_status_obj.save(update_fields=['progress', 'updated_at'])
 
-
     final_summary_message = (
         f"Batch documentation generation for repo {repo_id} complete. "
         f"Files targeted: {len(file_ids)}. Files processed: {files_processed_count}. "
@@ -1107,7 +1142,8 @@ def batch_generate_docstrings_for_files_task(self, repo_id: int, user_id: int, f
     elif overall_failed_symbol_generations > 0:
         # Could add a "PARTIAL_SUCCESS" status if desired
         final_status = AsyncTaskStatus.TaskStatus.SUCCESS # Treat as success if at least one worked
-
+    print(f"BATCH_DOCS_TASK: Triggering stats recalculation for repo {repo_id}")
+    calculate_documentation_coverage_task.delay(repo_id)
     if task_status_obj:
         task_status_obj.status = final_status
         task_status_obj.message = final_summary_message
@@ -1153,14 +1189,11 @@ def create_pr_for_multiple_files_task(self, repo_id: int, user_id: int, file_ids
     except (User.DoesNotExist, Repository.DoesNotExist) as e:
         # This case means we can't even create a status object linked to user/repo
         print(f"BATCH_PR_TASK: ERROR - User or Repository not found for task {task_id}. Cannot create status record. Error: {e}")
-        # We can't update task_status_obj if it wasn't created.
-        # The task should fail and Celery will handle it based on ack_late etc.
-        # For now, just return an error structure.
+
         return {"status": "error", "message": f"User or Repository for task status not found: {e}"}
     except Exception as e:
         print(f"BATCH_PR_TASK: ERROR - Could not create/update AsyncTaskStatus for {task_id}. Error: {e}")
-        # Task can proceed but status won't be fully tracked if task_status_obj is None.
-        # This is problematic. Better to fail if status tracking can't be initialized.
+
         return {"status": "error", "message": f"Failed to initialize task status tracking: {e}"}
 
     # Use the fetched user_obj and repo_obj (renamed to repo_model for consistency with your original code)
@@ -1168,7 +1201,6 @@ def create_pr_for_multiple_files_task(self, repo_id: int, user_id: int, file_ids
     repo_model = repo_obj
 
     try:
-        # Fetch CodeFile objects that are in file_ids_for_pr AND have at least one symbol with fresh docs
         code_files_to_process = CodeFile.objects.filter(
             id__in=file_ids_for_pr,
             repository=repo_model # Ensure files belong to the target repository
@@ -1397,142 +1429,143 @@ def create_pr_for_multiple_files_task(self, repo_id: int, user_id: int, file_ids
             except Exception as branch_delete_e:
                 print(f"BATCH_PR_TASK: Failed to cleanup branch {new_branch_name}: {branch_delete_e}")
         raise # Re-raise for Celery to handle and mark as failed
-@app.task(bind=True)
-def detect_orphan_symbols_task(self, repo_id: int, user_id: int | None = None): # user_id for potential notification
+@shared_task(bind=True)
+def detect_orphan_symbols_task(self, repo_id: int, user_id: int | None = None):
+    """
+    Detects "True Orphan" symbols in a repository. A symbol is a true orphan if:
+    1. It has no incoming calls from other symbols within the repository.
+    2. It is not explicitly imported by any other file in the repository.
+    
+    This task relies on the accurate, fully-resolved import paths provided by the
+    hybrid (Rust + Python) parsing engine.
+    """
     task_id = self.request.id
-    print(f"ORPHAN_DETECT_TASK: Started (ID: {task_id}) for repo_id={repo_id}")
-
-    task_status_obj = None
-    user_obj = None
-    repo_obj = None
+    print(f"ORPHAN_DETECT_TASK (v3 - Hybrid): Started for repo_id={repo_id}, Task ID: {task_id}")
 
     try:
-        repo_obj = Repository.objects.get(id=repo_id)
-        if user_id: # If user_id is provided (e.g., if triggered by a user action)
-            user_obj = User.objects.get(id=user_id)
-        else: # If triggered systemically (e.g., after process_repository), use repo owner
-            user_obj = repo_obj.user
-
-    except (Repository.DoesNotExist, User.DoesNotExist) as e:
-        print(f"ORPHAN_DETECT_TASK: ERROR - Repo or User not found for task {task_id}: {e}")
+        repo = Repository.objects.get(id=repo_id)
+        initiating_user = User.objects.get(id=user_id) if user_id else repo.added_by
+    except (Repository.DoesNotExist, User.DoesNotExist):
+        print(f"ORPHAN_DETECT_TASK: ERROR - Repo or User not found for task {task_id}")
         return {"status": "error", "message": "Repository or initiating user not found."}
-    except Exception as e:
-        print(f"ORPHAN_DETECT_TASK: ERROR - Creating AsyncTaskStatus for {task_id}: {e}")
 
+    # --- 1. Find symbols with no incoming calls (potential orphans) ---
+    all_symbol_ids = set(CodeSymbol.objects.filter(
+        Q(code_file__repository_id=repo_id) | Q(code_class__code_file__repository_id=repo_id)
+    ).values_list('id', flat=True))
 
-    print(f"ORPHAN_DETECT_TASK: Analyzing repository: {repo_obj.full_name}")
-
-    # --- Performant Orphan Detection ---
-    # 1. Get all symbols belonging to this repository.
-    all_symbols_in_repo_ids = CodeSymbol.objects.filter(
-        Q(code_file__repository=repo_obj) | Q(code_class__code_file__repository=repo_obj)
-    ).values_list('id', flat=True)
-
-    if not all_symbols_in_repo_ids:
-        print(f"ORPHAN_DETECT_TASK: No symbols found in repository {repo_obj.full_name}.")
-        if task_status_obj:
-            task_status_obj.status = AsyncTaskStatus.TaskStatus.SUCCESS
-            task_status_obj.message = "No symbols found in repository to analyze."
-            task_status_obj.progress = 100
-            task_status_obj.save()
+    if not all_symbol_ids:
+        print(f"ORPHAN_DETECT_TASK: No symbols found in repository {repo.full_name}.")
         return {"status": "success", "message": "No symbols found."}
 
-    # 2. Get IDs of all symbols that are *callees* (i.e., are being called).
-    #    We only care about callees that are within the current repository.
-    called_symbol_ids_in_repo = CodeDependency.objects.filter(
-        Q(callee_id__in=all_symbols_in_repo_ids) & # Callee is in this repo
-        (Q(caller__code_file__repository=repo_obj) | Q(caller__code_class__code_file__repository=repo_obj)) # Caller is also in this repo
-    ).values_list('callee_id', flat=True).distinct()
-    
-    called_symbol_ids_set = set(called_symbol_ids_in_repo)
-    all_symbols_in_repo_ids_set = set(all_symbols_in_repo_ids)
+    called_symbol_ids = set(CodeDependency.objects.filter(
+        callee_id__in=all_symbol_ids
+    ).values_list('callee_id', flat=True).distinct())
 
-    orphan_symbol_ids = list(all_symbols_in_repo_ids_set - called_symbol_ids_set)
-    
-    symbols_to_update_as_orphan = []
-    symbols_to_update_as_not_orphan = []
-    actually_marked_orphan_count = 0
+    potential_orphan_ids = all_symbol_ids - called_symbol_ids
+    print(f"ORPHAN_DETECT_TASK: Found {len(potential_orphan_ids)} symbols with no internal calls.")
 
-    # Iterate through all symbols to update their status.
-    # We could do this in two bulk updates: one for orphans, one for non-orphans.
-    for symbol_id in all_symbols_in_repo_ids_set:
-        is_potentially_orphan = symbol_id in orphan_symbol_ids
+    # --- 2. Build a set of all explicitly imported symbol paths from our new accurate data ---
+    all_imported_paths = set()
+    for code_file in CodeFile.objects.filter(repository_id=repo_id):
+        if code_file.imports:
+            # The imports are now fully-resolved absolute paths from the Python script
+            all_imported_paths.update(code_file.imports)
+    print(f"ORPHAN_DETECT_TASK: Found {len(all_imported_paths)} unique resolved import strings.")
+
+    # --- 3. Identify which potential orphans are "public" because they are imported ---
+    symbols_to_check = CodeSymbol.objects.filter(
+        id__in=potential_orphan_ids
+    ).select_related('code_file', 'code_class')
+    
+    publicly_imported_ids = set()
+    for symbol in symbols_to_check:
+        # Robustly get the file path
+        actual_code_file = symbol.code_file if symbol.code_file else (symbol.code_class.code_file if symbol.code_class else None)
+        if not actual_code_file:
+            continue
         
-        # Apply entry point heuristics (MVP)
-        # Example: Don't mark `__init__` methods as orphans for now.
-        # A more robust check would see if the CLASS containing the __init__ is instantiated/used.
-        is_known_entry_point = False
-        if is_potentially_orphan:
-            try:
-                # Fetch the symbol to check its name, only if potentially orphan to save queries
-                symbol_obj_for_check = CodeSymbol.objects.get(id=symbol_id)
-                if symbol_obj_for_check.name == "__init__":
-                    is_known_entry_point = True
-                # Add more heuristics here:
-                # e.g., if symbol_obj_for_check.name == "main" and not symbol_obj_for_check.code_class:
-                # is_known_entry_point = True
-            except CodeSymbol.DoesNotExist:
-                continue # Should not happen if ID came from all_symbols_in_repo_ids
+        # Construct the symbol's canonical Python module path
+        # This logic must perfectly mirror how Python resolves modules from the source root.
+        full_path = actual_code_file.file_path
+        source_root = repo.source_root if repo.source_root != '.' else ''
+        
+        python_path = full_path
+        if source_root and full_path.startswith(source_root):
+            # Make the path relative to the source root
+            python_path = os.path.relpath(full_path, source_root)
 
-        is_truly_orphan = is_potentially_orphan and not is_known_entry_point
-
-        # Update the symbol's is_orphan field
-        # We collect IDs to do bulk updates for performance
-        if is_truly_orphan:
-            symbols_to_update_as_orphan.append(symbol_id)
+        # Convert file path to module path (e.g., 'app/views.py' -> 'app.views')
+        # Also handle '__init__.py' files correctly, as they define the package itself.
+        if os.path.basename(python_path) == '__init__.py':
+            module_path = os.path.dirname(python_path).replace(os.path.sep, '.')
         else:
-            symbols_to_update_as_not_orphan.append(symbol_id)
-
-    # Bulk update symbols
-    if symbols_to_update_as_orphan:
-        updated_count = CodeSymbol.objects.filter(id__in=symbols_to_update_as_orphan).update(is_orphan=True)
-        actually_marked_orphan_count = updated_count
-        print(f"ORPHAN_DETECT_TASK: Marked {updated_count} symbols as ORPHAN.")
-    
-    if symbols_to_update_as_not_orphan:
-        updated_count = CodeSymbol.objects.filter(id__in=symbols_to_update_as_not_orphan).update(is_orphan=False)
-        print(f"ORPHAN_DETECT_TASK: Marked {updated_count} symbols as NOT ORPHAN.")
-
-
-    print(f"ORPHAN_DETECT_TASK: Orphan detection complete for repo {repo_obj.full_name}. Found {actually_marked_orphan_count} orphan symbols.")
-    repo_obj = Repository.objects.get(id=repo_id) # Refetch or use existing repo_obj
-    repo_obj.orphan_symbol_count = actually_marked_orphan_count
-    repo_obj.save(update_fields=['orphan_symbol_count'])
-    print(f"ORPHAN_DETECT_TASK: Repo {repo_id} orphan count updated to {actually_marked_orphan_count}")
-    # --- Notification Logic ---
-    if actually_marked_orphan_count > 0 and user_obj: # Check if user_obj was successfully fetched
-        # Fetch details for a few orphan symbols for the notification message
-        orphan_examples = CodeSymbol.objects.filter(id__in=symbols_to_update_as_orphan[:5]).select_related('code_file', 'code_class__code_file')
-        example_details = []
-        for orphan_sym in orphan_examples:
-            file_p = orphan_sym.code_file.file_path if orphan_sym.code_file else (orphan_sym.code_class.code_file.file_path if orphan_sym.code_class else "N/A")
-            example_details.append(f"- `{orphan_sym.name}` in `{file_p}`")
+            module_path = python_path.replace('.py', '').replace(os.path.sep, '.')
         
-        details_msg = "\n".join(example_details)
-        if len(symbols_to_update_as_orphan) > 5:
-            details_msg += f"\n... and {len(symbols_to_update_as_orphan) - 5} more."
+        # Construct the full canonical path for the symbol
+        if symbol.code_class:
+            canonical_path = f"{module_path}.{symbol.code_class.name}.{symbol.name}"
+        else:
+            canonical_path = f"{module_path}.{symbol.name}"
 
+        # Check if this symbol's path, or a wildcard import of its module, exists in our set
+        wildcard_path = f"{module_path}.*"
+        if canonical_path in all_imported_paths or wildcard_path in all_imported_paths:
+            publicly_imported_ids.add(symbol.id)
+
+    print(f"ORPHAN_DETECT_TASK: Identified {len(publicly_imported_ids)} potential orphans as publicly imported.")
+
+    # --- 4. Determine "True Orphans" and apply entry point heuristics ---
+    true_orphan_ids = potential_orphan_ids - publicly_imported_ids
+    
+    final_orphan_ids_to_mark = []
+    # Fetch symbols to check their names for common entry points
+    symbols_for_heuristic_check = CodeSymbol.objects.filter(id__in=true_orphan_ids)
+    for symbol in symbols_for_heuristic_check:
+        # Exclude common entry points like __init__, main, Django views, Celery tasks, etc.
+        # This list can be expanded over time.
+        if symbol.name.startswith('_') or symbol.name in ['main', 'admin', 'apps']:
+            continue
+        # A simple heuristic for Django views (often end in 'View' or are in a 'views.py')
+        if 'views.py' in symbol.code_file.file_path if symbol.code_file else False:
+            continue
+        
+        final_orphan_ids_to_mark.append(symbol.id)
+
+    print(f"ORPHAN_DETECT_TASK: After heuristics, {len(final_orphan_ids_to_mark)} symbols are considered true orphans.")
+
+    # --- 5. Bulk update the database ---
+    # Mark true orphans
+    CodeSymbol.objects.filter(id__in=final_orphan_ids_to_mark).update(is_orphan=True)
+    
+    # Un-mark everything else that is not in the final orphan list
+    ids_to_unmark = all_symbol_ids - set(final_orphan_ids_to_mark)
+    CodeSymbol.objects.filter(id__in=list(ids_to_unmark)).update(is_orphan=False)
+
+    # Update the repository-level count for the dashboard
+    repo.orphan_symbol_count = len(final_orphan_ids_to_mark)
+    repo.save(update_fields=['orphan_symbol_count'])
+    print(f"ORPHAN_DETECT_TASK: Repo {repo.id} orphan count updated to {len(final_orphan_ids_to_mark)}")
+
+    # --- 6. Notification Logic ---
+    if len(final_orphan_ids_to_mark) > 0 and initiating_user:
+        # Create a notification for the user
         notification_message = (
-            f"{actually_marked_orphan_count} potential orphan (uncalled) symbol(s) "
-            f"were detected in repository '{repo_obj.full_name}'.\n\nExamples:\n{details_msg}"
+            f"{len(final_orphan_ids_to_mark)} potential orphan symbol(s) "
+            f"were detected in repository '{repo.full_name}'."
         )
         Notification.objects.create(
-            user=user_obj, # Use the determined user object
-            repository=repo_obj,
+            user=initiating_user,
+            repository=repo,
             message=notification_message,
-            notification_type=Notification.NotificationType.STALENESS_ALERT # Re-use or add ORPHAN_ALERT type
-            # link_url=f"/repositories/{repo_obj.id}/orphans/" # Future link to a page showing orphans
+            notification_type=Notification.NotificationType.STALENESS_ALERT, # Consider adding an ORPHAN_ALERT type
+            link_url=f"/intelligence?repoId={repo.id}&tab=orphans" # A deep link to the new dashboard
         )
-        print(f"ORPHAN_DETECT_TASK: Created notification for {user_obj.username}.")
+        print(f"ORPHAN_DETECT_TASK: Created notification for {initiating_user.username}.")
 
-    if task_status_obj:
-        task_status_obj.status = AsyncTaskStatus.TaskStatus.SUCCESS
-        task_status_obj.message = f"Orphan detection complete. Found {actually_marked_orphan_count} orphan symbols."
-        task_status_obj.progress = 100
-        task_status_obj.result_data = {"orphan_count": actually_marked_orphan_count}
-        task_status_obj.save()
-        
-    return {"status": "success", "orphan_count": actually_marked_orphan_count}
+    print("ORPHAN_DETECT_TASK (v3 - Hybrid): Complete.")
+    return {"status": "success", "orphan_count": len(final_orphan_ids_to_mark)}
+
 @shared_task
 def calculate_documentation_coverage_task(repo_id):
     """Calculates and saves the documentation coverage for a repository."""
@@ -1550,8 +1583,8 @@ def calculate_documentation_coverage_task(repo_id):
         else:
             # Count symbols that are considered "well-documented"
             # Let's define this as having a status of FRESH.
-            documented_symbols_count = all_symbols.filter(
-                documentation_status=CodeSymbol.DocStatus.FRESH
+            documented_symbols_count = all_symbols.exclude(
+                documentation_status=CodeSymbol.DocStatus.NONE
             ).count()
             coverage = (documented_symbols_count / total_symbol_count) * 100.0
         
@@ -1642,74 +1675,69 @@ def submit_embedding_batch_job_task(self, repo_id: int):
         custom_metadata={"celery_task_id": task_id, "symbol_count": len(batch_requests_for_jsonl)}
     )
 
-    batch_input_file_path = None # Initialize for finally block
+    batch_input_file_path = None
+    job_record = None # Initialize job_record as None
     try:
-        # 2. Prepare your batch file (.jsonl)
+        # 1. Prepare and upload the file to OpenAI first.
         with tempfile.NamedTemporaryFile(mode='w+', suffix=".jsonl", delete=False, encoding='utf-8') as tmp_file:
             for request_data in batch_requests_for_jsonl:
                 tmp_file.write(json.dumps(request_data) + "\n")
             batch_input_file_path = tmp_file.name
         
-        print(f"EMBED_BATCH_SUBMIT_TASK: Batch input file created at {batch_input_file_path} for Job ID {job_record.id}")
-
-        # 3. Upload your batch input file to OpenAI
         with open(batch_input_file_path, "rb") as f_for_upload:
-            uploaded_file_response = OPENAI_CLIENT.files.create(
-                file=f_for_upload,
-                purpose="batch" # This purpose is required for Batch API
-            )
-        job_record.input_file_id = uploaded_file_response.id
-        print(f"EMBED_BATCH_SUBMIT_TASK: Batch input file uploaded. OpenAI File ID: {uploaded_file_response.id} for Job ID {job_record.id}")
+            uploaded_file = OPENAI_CLIENT.files.create(file=f_for_upload, purpose="batch")
 
-        # 4. Create the batch job with OpenAI
-        openai_batch_response = OPENAI_CLIENT.batches.create(
-            input_file_id=uploaded_file_response.id,
-            endpoint="/v1/embeddings", # Must match the URL in your .jsonl requests
-            completion_window="24h",   # Currently, only "24h" is supported
-            metadata={ # Optional metadata for your reference on OpenAI's side
-                "helix_cme_job_id": str(job_record.id),
-                "repository_id": str(repo.id),
-                "repository_name": repo.full_name,
-                "description": f"Helix CME: Embedding generation for {repo.full_name}"
-            }
+        job_record = EmbeddingBatchJob(
+            repository=repo,
+            job_type=EmbeddingBatchJob.JobType.KNOWLEDGE_CHUNK_EMBEDDING,
+            status=EmbeddingBatchJob.JobStatus.PENDING_SUBMISSION,
+            input_file_id=uploaded_file.id, # We already have this
         )
-        job_record.batch_id = openai_batch_response.id # This is the crucial OpenAI Batch ID
-        job_record.status = openai_batch_response.status # e.g., 'validating'
+
+        job_record.save() # Now it has an ID.
+
+        # 3. Now, create the batch job on OpenAI, passing our database ID in the metadata.
+        openai_batch = OPENAI_CLIENT.batches.create(
+            input_file_id=uploaded_file.id,
+            endpoint="/v1/embeddings",
+            completion_window="24h",
+            metadata={"helix_job_id": str(job_record.id), "repo_id": str(repo.id)}
+        )
+        
+        # 4. NOW that we have the real batch_id, update our record and save again.
+        job_record.batch_id = openai_batch.id
+        job_record.status = openai_batch.status
         job_record.submitted_to_openai_at = timezone.now()
-        job_record.openai_metadata = openai_batch_response.to_dict() # Store the full response
+        job_record.openai_metadata = openai_batch.to_dict()
         job_record.save()
         
-        print(f"EMBED_BATCH_SUBMIT_TASK: OpenAI Batch job created. OpenAI Batch ID: {openai_batch_response.id}, "
-              f"Status: {openai_batch_response.status} for Job ID {job_record.id}")
+        print(f"KNOWLEDGE_BATCH_SUBMIT_TASK: OpenAI Batch job created. Batch ID: {openai_batch.id} for Job ID {job_record.id}")
         
         return {
-            "status": "success", 
-            "message": "Embedding batch job successfully submitted to OpenAI.",
-            "helix_job_id": job_record.id,
-            "openai_batch_id": openai_batch_response.id
+            "status": "success", "message": "Batch job submitted.",
+            "helix_job_id": job_record.id, "openai_batch_id": openai_batch.id
         }
 
     except Exception as e:
-        error_message = f"Error during OpenAI file upload or batch creation for Job ID {job_record.id}: {str(e)}"
-        print(f"EMBED_BATCH_SUBMIT_TASK: {error_message}")
-        job_record.status = EmbeddingBatchJob.JobStatus.FAILED # Or a specific "submission_failed" status
-        job_record.error_details = error_message
-        job_record.save()
-        # Re-raise the exception if you want Celery to retry based on max_retries
-        # self.retry(exc=e) 
-        return {"status": "error", "message": error_message, "helix_job_id": job_record.id}
+        error_message = f"Error during batch creation: {str(e)}"
+        print(f"KNOWLEDGE_BATCH_SUBMIT_TASK: {error_message}")
+        # If the job record was created, mark it as failed.
+        if job_record and job_record.pk:
+            job_record.status = EmbeddingBatchJob.JobStatus.FAILED
+            job_record.error_details = error_message
+            job_record.save()
+        return {"status": "error", "message": error_message}
     finally:
-        # Clean up the temporary file
         if batch_input_file_path and os.path.exists(batch_input_file_path):
             os.remove(batch_input_file_path)
-            print(f"EMBED_BATCH_SUBMIT_TASK: Cleaned up temporary file {batch_input_file_path}")
             
 @app.task
-def generate_insights_on_change_task(repo_id: int, commit_hash: str, diff_report: dict):
+def generate_insights_on_change_task(repo_id: int, commit_hash: str = None, diff_report: dict = None):
     """
     Analyzes a diff report from process_repository and creates Insight records.
     """
-    print(f"INSIGHTS_TASK: Started for repo {repo_id}, commit {commit_hash[:7]}")
+    commit_display = commit_hash[:7] if commit_hash else "local"
+    print(f"INSIGHTS_TASK: Started for repo {repo_id}, commit {commit_display}")
     
     try:
         repo = Repository.objects.get(id=repo_id)
@@ -1986,13 +2014,12 @@ def index_repository_knowledge_task(repo_id: int):
     except Exception as e:
         print(f"KNOWLEDGE_INDEX_TASK: FATAL - DB error during bulk_create: {e}")
 
-
 @app.task(bind=True)
 def poll_and_process_completed_batches_task(self):
     """
-    Periodically polls for EmbeddingBatchJob records that are in progress,
-    checks their status with OpenAI, and processes completed jobs by updating
-    the corresponding KnowledgeChunk records with their new embeddings.
+    Periodically polls for in-progress EmbeddingBatchJob records, checks their
+    status with OpenAI, and processes completed jobs by updating the correct
+    model (KnowledgeChunk or CodeSymbol) based on the job_type.
     """
     task_id = self.request.id
     print(f"BATCH_POLL_TASK: Started (ID: {task_id})")
@@ -2002,7 +2029,6 @@ def poll_and_process_completed_batches_task(self):
         return
 
     # 1. Find our jobs that are currently in-flight with OpenAI.
-    # We query for any status that is not a final terminal state.
     in_progress_jobs = EmbeddingBatchJob.objects.filter(
         status__in=['validating', 'in_progress', 'finalizing']
     ).select_related('repository')
@@ -2027,15 +2053,9 @@ def poll_and_process_completed_batches_task(self):
 
             # 3. Check if the job is completed and ready for processing.
             if openai_batch.status == 'completed':
-                print(f"BATCH_POLL_TASK: Job {job.id} is COMPLETED. Processing results...")
+                print(f"BATCH_POLL_TASK: Job {job.id} (Type: {job.job_type}) is COMPLETED. Processing results...")
                 
                 output_file_id = openai_batch.output_file_id
-                error_file_id = openai_batch.error_file_id
-
-                if error_file_id:
-                    print(f"BATCH_POLL_TASK: Job {job.id} completed but with an error file ({error_file_id}).")
-                    # You could add logic here to download and inspect the error file if needed.
-
                 if not output_file_id:
                     raise Exception("Batch job completed but no output_file_id was provided by OpenAI.")
 
@@ -2043,88 +2063,76 @@ def poll_and_process_completed_batches_task(self):
                 output_file_content_response = OPENAI_CLIENT.files.content(output_file_id)
                 output_data = output_file_content_response.read().decode('utf-8')
                 
-                # 5. Parse the JSONL output file line by line.
                 output_lines = output_data.strip().split('\n')
                 print(f"BATCH_POLL_TASK: Downloaded output file for job {job.id} with {len(output_lines)} lines.")
                 
-                updates_to_perform = {} # Using a dict for efficient lookup: {chunk_pk: embedding_vector}
+                updates_to_perform = {} # {pk: embedding_vector}
 
                 for i, line in enumerate(output_lines):
-                    if not line.strip():
-                        continue
-                    
-                    print(f"BATCH_POLL_TASK: [Job {job.id} Line {i+1}] Parsing line: {line[:150]}...")
+                    if not line.strip(): continue
                     
                     try:
                         result_item = json.loads(line)
                         custom_id = result_item.get('custom_id')
 
-                        if not custom_id:
-                            print(f"BATCH_POLL_TASK: [Job {job.id} Line {i+1}] SKIPPING - No custom_id found.")
-                            continue
+                        if not custom_id: continue
+                        if result_item.get('error'): continue
 
-                        if result_item.get('error'):
-                            print(f"BATCH_POLL_TASK: [Job {job.id} Line {i+1}] SKIPPING - Item has an error in output file: {result_item['error']}")
-                            continue
-
-                        response_body = result_item.get('response', {}).get('body', {})
-                        if not response_body:
-                            print(f"BATCH_POLL_TASK: [Job {job.id} Line {i+1}] SKIPPING - 'response' or 'body' key missing for {custom_id}.")
-                            continue
-
-                        data_list = response_body.get('data')
-                        if not isinstance(data_list, list) or not data_list:
-                            print(f"BATCH_POLL_TASK: [Job {job.id} Line {i+1}] SKIPPING - 'data' array is missing or empty for {custom_id}.")
-                            continue
-
-                        embedding = data_list[0].get('embedding')
-                        if not isinstance(embedding, list):
-                            print(f"BATCH_POLL_TASK: [Job {job.id} Line {i+1}] SKIPPING - 'embedding' vector is missing or not a list for {custom_id}.")
-                            continue
+                        embedding = result_item.get('response', {}).get('body', {}).get('data', [{}])[0].get('embedding')
+                        if not isinstance(embedding, list): continue
                         
-                        if custom_id.startswith('chunk-'):
-                            chunk_pk = int(custom_id.split('-')[1])
-                            updates_to_perform[chunk_pk] = embedding
-                            print(f"BATCH_POLL_TASK: [Job {job.id} Line {i+1}] SUCCESS - Staged update for KnowledgeChunk ID {chunk_pk}.")
+                        # --- REFACTORED LOGIC: Check job_type to parse custom_id correctly ---
+                        pk = None
+                        if job.job_type == EmbeddingBatchJob.JobType.KNOWLEDGE_CHUNK_EMBEDDING and custom_id.startswith('chunk-'):
+                            pk = int(custom_id.split('-')[1])
+                        elif job.job_type == EmbeddingBatchJob.JobType.SYMBOL_EMBEDDING and custom_id.startswith('symbol-'):
+                            pk = int(custom_id.split('-')[1])
+                        
+                        if pk:
+                            updates_to_perform[pk] = embedding
+                            print(f"BATCH_POLL_TASK: [Job {job.id} Line {i+1}] SUCCESS - Staged update for {job.job_type} ID {pk}.")
                         else:
-                            print(f"BATCH_POLL_TASK: [Job {job.id} Line {i+1}] SKIPPING - custom_id '{custom_id}' has invalid format.")
+                            print(f"BATCH_POLL_TASK: [Job {job.id} Line {i+1}] SKIPPING - custom_id '{custom_id}' has invalid format for job type '{job.job_type}'.")
+                        # --- END REFACTORED LOGIC ---
 
                     except (json.JSONDecodeError, IndexError, KeyError, ValueError) as e:
-                        print(f"BATCH_POLL_TASK: [Job {job.id} Line {i+1}] FATAL PARSE ERROR - {e}\nLine: '{line}'")
+                        print(f"BATCH_POLL_TASK: [Job {job.id} Line {i+1}] FATAL PARSE ERROR - {e}")
                         continue
 
-                # 6. Perform the database update.
                 if not updates_to_perform:
-                    error_msg = "Job completed but no successful updates could be parsed from the output file. Check parsing logic and file content."
+                    error_msg = "Job completed but no successful updates could be parsed. Check output file."
                     print(f"BATCH_POLL_TASK: [Job {job.id}] {error_msg}")
-                    job.status = EmbeddingBatchJob.JobStatus.FAILED 
+                    job.status = EmbeddingBatchJob.JobStatus.RESULTS_FAILED_TO_PROCESS
                     job.error_details = error_msg
                     job.completed_at = timezone.now()
                     job.save()
                     continue
 
-                print(f"BATCH_POLL_TASK: [Job {job.id}] Preparing to update {len(updates_to_perform)} KnowledgeChunk records.")
-                
-                # Use a transaction to ensure all updates succeed or none do.
+                # --- REFACTORED LOGIC: Update the correct database model based on job_type ---
                 with transaction.atomic():
-                    chunks_to_update = list(KnowledgeChunk.objects.filter(id__in=updates_to_perform.keys()))
-                    
-                    if len(chunks_to_update) != len(updates_to_perform):
-                         print(f"BATCH_POLL_TASK: [Job {job.id}] WARNING - DB query found {len(chunks_to_update)} chunks, but expected {len(updates_to_perform)}. Some chunks may have been deleted.")
+                    if job.job_type == EmbeddingBatchJob.JobType.KNOWLEDGE_CHUNK_EMBEDDING:
+                        print(f"BATCH_POLL_TASK: [Job {job.id}] Preparing to update {len(updates_to_perform)} KnowledgeChunk records.")
+                        items_to_update = list(KnowledgeChunk.objects.filter(id__in=updates_to_perform.keys()))
+                        for item in items_to_update:
+                            item.embedding = updates_to_perform.get(item.id)
+                        KnowledgeChunk.objects.bulk_update(items_to_update, ['embedding'], batch_size=500)
+                        print(f"BATCH_POLL_TASK: [Job {job.id}] Successfully updated {len(items_to_update)} KnowledgeChunk records.")
 
-                    for chunk in chunks_to_update:
-                        embedding_vector = updates_to_perform.get(chunk.id)
-                        if embedding_vector:
-                            chunk.embedding = embedding_vector
-                    
-                    KnowledgeChunk.objects.bulk_update(chunks_to_update, ['embedding'], batch_size=500)
-                
-                print(f"BATCH_POLL_TASK: [Job {job.id}] Successfully updated {len(chunks_to_update)} KnowledgeChunk records with new embeddings.")
+                    elif job.job_type == EmbeddingBatchJob.JobType.SYMBOL_EMBEDDING:
+                        # PREREQUISITE: Your CodeSymbol model must have an 'embedding' VectorField.
+                        print(f"BATCH_POLL_TASK: [Job {job.id}] Preparing to update {len(updates_to_perform)} CodeSymbol records.")
+                        items_to_update = list(CodeSymbol.objects.filter(id__in=updates_to_perform.keys()))
+                        for item in items_to_update:
+                            item.embedding = updates_to_perform.get(item.id)
+                        CodeSymbol.objects.bulk_update(items_to_update, ['embedding'], batch_size=500)
+                        print(f"BATCH_POLL_TASK: [Job {job.id}] Successfully updated {len(items_to_update)} CodeSymbol records.")
+                # --- END REFACTORED LOGIC ---
 
                 # 7. Finalize our internal job record.
                 job.output_file_id = output_file_id
                 job.completed_at = timezone.now()
-                job.save(update_fields=['output_file_id', 'completed_at'])
+                job.status = EmbeddingBatchJob.JobStatus.RESULTS_PROCESSED
+                job.save(update_fields=['output_file_id', 'completed_at', 'status'])
 
             elif openai_batch.status in ['failed', 'expired', 'cancelled']:
                 # Handle terminal failure states.
@@ -2134,24 +2142,20 @@ def poll_and_process_completed_batches_task(self):
                 job.save(update_fields=['error_details', 'completed_at'])
             
             else:
-                # Status is still 'validating', 'in_progress', or 'finalizing'.
+                # Status is still in-flight.
                 print(f"BATCH_POLL_TASK: Job {job.id} is still in progress. Status: {openai_batch.status}")
 
         except Exception as e:
             error_message = f"An unexpected error occurred while processing job {job.id}: {str(e)}"
             print(f"BATCH_POLL_TASK: ERROR - {error_message}")
-            # Mark the job as failed in our DB to prevent retries on a potentially permanent issue.
             try:
                 job.status = EmbeddingBatchJob.JobStatus.FAILED
                 job.error_details = error_message
                 job.save()
             except Exception as save_err:
-                print(f"BATCH_POLL_TASK: CRITICAL - Could not even save failure status for job {job.id}: {save_err}")
+                print(f"BATCH_POLL_TASK: CRITICAL - Could not save failure status for job {job.id}: {save_err}")
             
-            # Continue to the next job in the loop
-            continue
-
-
+            continue # Continue to the next job in the loop
 @app.task(bind=True)
 def create_pr_with_changes_task(
     self,
@@ -2268,7 +2272,6 @@ def create_pr_with_changes_task(
         status_tracker.save()
         raise self.replace(e) # Re-raise to mark the task as failed in Celery monitoring
     
-
 @app.task
 def sync_knowledge_index_task(repo_id: int):
     """
@@ -2355,47 +2358,38 @@ def sync_knowledge_index_task(repo_id: int):
 @app.task
 def generate_and_save_module_readme_task(previous_task_result, repo_id: int, module_path: str):
     """
-    A Celery task wrapper for the generate_module_readme_stream service.
-    It generates, saves, and then triggers the final knowledge sync.
+    A Celery task wrapper that calls the stream service to generate and save the README,
+    then triggers the final knowledge sync.
     """
     print(f"README_GENERATION_TASK: Starting for repo {repo_id}, path '{module_path}'.")
-    
-    # The previous_task_result from the batch doc generation isn't strictly needed,
-    # but Celery chains require the function to accept it.
-    
-    # We need to re-initialize the client inside the task
+
     client = OPENAI_CLIENT
     if not client:
         raise Exception("OpenAI client not available in README generation task.")
 
-    # Call the existing stream generator
+    # Call the stream generator, which now handles saving internally.
     readme_stream = generate_module_readme_stream(
         repo_id=repo_id,
         module_path=module_path,
         openai_client=client
     )
     
-    # Consume the stream to get the full content
-    full_readme_content = "".join([chunk for chunk in readme_stream])
+    # We must consume the stream for the generation and saving to happen.
+    full_readme_content = "".join(list(readme_stream))
 
     if full_readme_content and not full_readme_content.strip().startswith("//"):
-        # Save the generated README to our ModuleDocumentation model
-        module_doc, created = ModuleDocumentation.objects.update_or_create(
-            repository_id=repo_id,
-            module_path=module_path,
-            defaults={'content_md': full_readme_content.strip()}
-        )
-        print(f"README_GENERATION_TASK: {'Created' if created else 'Updated'} README for '{module_path}'.")
-
+        print(f"README_GENERATION_TASK: README generation and saving completed for '{module_path}'.")
+        
         # Final step: trigger the knowledge index sync
         sync_knowledge_index_task.delay(repo_id=repo_id)
         print(f"README_GENERATION_TASK: Dispatched knowledge sync for repo {repo_id}.")
         
-        
-        return {"status": "success", "module_doc_id": module_doc.id}
+        return {"status": "success", "message": f"README for '{module_path}' processed."}
     else:
-        raise Exception("Failed to generate valid README content from AI.")
-
+        print(f"README_GENERATION_TASK: Failed to generate valid README content for '{module_path}'.")
+        # We can choose to fail gracefully or raise an exception to stop the chain.
+        # For now, we'll let it succeed but log the failure.
+        return {"status": "failure", "message": "Failed to generate README content."}
 
 # This is the new "master" task that the view will call
 @app.task(bind=True)
@@ -2432,11 +2426,6 @@ def generate_module_documentation_workflow_task(self, user_id: int, repo_id: int
         status_tracker.message = "No files found in module; nothing to do."
         status_tracker.save()
         return
-
-    # Create the Celery chain
-    # The first task generates docstrings. Its result will be passed to the next task.
-    # The second task generates the README.
-    # The final knowledge sync is triggered inside the second task.
     workflow_chain = chain(
         batch_generate_docstrings_for_files_task.s(
             repo_id=repo_id,
@@ -2452,9 +2441,6 @@ def generate_module_documentation_workflow_task(self, user_id: int, repo_id: int
     # Execute the chain
     workflow_chain.apply_async()
 
-    # We can't easily track the sub-tasks' progress on the main task tracker.
-    # The frontend will need to poll the sub-tasks if detailed progress is needed.
-    # For now, we just mark that the workflow has started.
     status_tracker.status = 'IN_PROGRESS'
     status_tracker.message = "Step 1: Generating documentation for individual files..."
     status_tracker.save()
@@ -2539,3 +2525,243 @@ def resolve_module_dependencies_task(repo_id: int):
     ModuleDependency.objects.bulk_create(dependencies_to_create, ignore_conflicts=True)
     print(f"SMART_DEPENDENCY_TASK: Created {len(dependencies_to_create)} internal module dependencies.")
     print(f"SMART_DEPENDENCY_TASK: Identified {len(external_dependencies)} unique external dependencies: {external_dependencies}")
+
+@shared_task
+def parse_coverage_report_task(repo_id: int, commit_hash: str, temp_file_path: str):
+    """
+    Parses a coverage.xml file, correlates it with database records,
+    and saves the coverage data.
+    """
+    print(f"COVERAGE_PARSE_TASK: Starting for repo {repo_id}, commit {commit_hash}")
+    try:
+        repo = Repository.objects.get(id=repo_id)
+        
+        # Read the temporary file content
+        with default_storage.open(temp_file_path, 'r') as f:
+            xml_content = f.read()
+
+        root = ET.fromstring(xml_content)
+        
+        # Get overall coverage from the root <coverage> tag
+        overall_line_rate = float(root.get('line-rate', '0.0'))
+        
+        # Create the main report object
+        report = TestCoverageReport.objects.create(
+            repository=repo,
+            commit_hash=commit_hash,
+            overall_coverage=overall_line_rate
+        )
+        print(f"COVERAGE_PARSE_TASK: Created TestCoverageReport (ID: {report.id})")
+
+        # Find all file paths from the report to do a single DB query
+        all_repo_db_files = CodeFile.objects.filter(repository=repo)
+
+        # 2. Create a map for fast lookups, but this time we'll be more flexible.
+        # We don't build a map beforehand, we'll search within the loop.
+        # This is less performant for huge repos, but more robust to path mismatches.
+        
+        file_coverage_objects = []
+        for class_node in root.findall('.//class'):
+            path_from_report = class_node.get('filename')
+            if not path_from_report:
+                continue
+
+            # 3. Find the matching database file with flexible logic.
+            found_db_file = None
+            for db_file in all_repo_db_files:
+                # Check if the database path ends with the path from the report.
+                # This handles cases like 'calculator/operations.py' (db) vs 'operations.py' (xml)
+                # or 'src/app/main.py' (db) vs 'app/main.py' (xml).
+                if db_file.file_path.endswith(path_from_report):
+                    found_db_file = db_file
+                    break # Found our match, stop searching for this file
+            
+            if not found_db_file:
+                print(f"COVERAGE_PARSE_TASK: Skipping file '{path_from_report}', no matching path found in database.")
+                continue
+            # --- END FIX ---
+
+            # Now we have the correct `found_db_file` object.
+            # The rest of the logic to parse lines and create FileCoverage objects remains the same.
+            line_rate = float(class_node.get('line-rate', '0.0'))
+            covered_lines = []
+            missed_lines = []
+            lines_node = class_node.find('lines')
+            if lines_node is not None:
+                for line_node in lines_node.findall('line'):
+                    line_number = int(line_node.get('number'))
+                    hits = int(line_node.get('hits'))
+                    if hits > 0:
+                        covered_lines.append(line_number)
+                    else:
+                        missed_lines.append(line_number)
+            
+            file_coverage_objects.append(FileCoverage(
+                report=report,
+                code_file=found_db_file, # Use the file we found
+                line_rate=line_rate,
+                covered_lines=covered_lines,
+                missed_lines=missed_lines
+            ))
+
+        FileCoverage.objects.bulk_create(file_coverage_objects)
+        print(f"COVERAGE_PARSE_TASK: Created {len(file_coverage_objects)} FileCoverage records.")
+
+    except Exception as e:
+        print(f"COVERAGE_PARSE_TASK: FATAL ERROR for repo {repo_id} - {e}")
+        # Optionally, update a task status model to reflect the failure
+    finally:
+        # Clean up the temporary file
+        if default_storage.exists(temp_file_path):
+            default_storage.delete(temp_file_path)
+            print(f"COVERAGE_PARSE_TASK: Cleaned up temporary file: {temp_file_path}")
+            
+    return f"Coverage report for repo {repo_id} processed."
+
+from celery import shared_task
+from django.conf import settings
+from e2b_code_interpreter import Sandbox
+import re
+import tempfile
+import os
+import modulefinder
+
+@shared_task(bind=True)
+def run_tests_in_sandbox_task(self, source_code: str, test_code: str):
+    """
+    Runs generated test code against source code in a secure E2B cloud sandbox.
+    It intelligently handles both single-file modules and multi-level packages
+    by parsing the test code's import statements. It automatically installs
+    missing system dependencies (like for OpenCV) and pip packages, and
+    always returns a dict with exit_code, stdout, stderr, coverage_xml, and junit_xml.
+    """
+    task_id = self.request.id
+    print(f"E2B_TASK[{task_id}]: Starting")
+
+    if not settings.E2B_API_KEY:
+        print("E2B_TASK: ERROR - E2B_API_KEY is not configured.")
+        return {"error": "Test execution service is not configured."}
+
+    # The 'base' template is a minimal Debian environment.
+    sandbox = Sandbox(template="base", api_key=settings.E2B_API_KEY)
+    try:
+        # STAGE 1: SETUP LOCAL MODULE/PACKAGE STRUCTURE
+        # Assume the first 'from ... import ...' in the test file refers to the local code.
+        # This is the key assumption that distinguishes the code-under-test from pip dependencies.
+        m = re.search(r'^\s*from\s+([a-zA-Z0-9_.]+)\s+import',
+                      test_code, re.MULTILINE)
+        
+        full_module_path = m.group(1) if m else "app"
+        print(f"E2B_TASK: Detected module path '{full_module_path}' from test code.")
+
+        path_parts = full_module_path.split('.')
+        cov_target = path_parts[0]  # The top-level package/module for coverage
+        source_file_path = f"{'/'.join(path_parts)}.py"
+
+        # If the path suggests a package (e.g., 'calculator.operations'), create the structure.
+        if len(path_parts) > 1:
+            dir_path = "/".join(path_parts[:-1])
+            print(f"E2B_TASK: Creating package structure: mkdir -p {dir_path}")
+            sandbox.commands.run(f"mkdir -p {dir_path}")
+            
+            # Create __init__.py in each directory to make it a valid Python package.
+            current_path = ""
+            for part in path_parts[:-1]:
+                current_path = f"{current_path}{part}/" if current_path else f"{part}/"
+                sandbox.files.write(f"{current_path}__init__.py", "")
+
+        print(f"E2B_TASK: Writing source to '{source_file_path}' and tests to 'test_app.py'")
+        sandbox.files.write(source_file_path, source_code)
+        sandbox.files.write("test_app.py", test_code)
+        print("E2B_TASK: Wrote source and test files.")
+
+        # STAGE 2: BOOTSTRAP INSTALLATIONS
+        # Install common system dependencies and the core Python testing tools in one go.
+        print("E2B_TASK: Installing system dependencies and base Python packages...")
+        bootstrap_cmd = (
+            "apt-get update && apt-get install -y libgl1-mesa-glx && "
+            "pip install pytest pytest-cov pillow numpy opencv-python"
+        )
+        bootstrap_proc = sandbox.commands.run(bootstrap_cmd, timeout=180)
+        if bootstrap_proc.exit_code != 0:
+            print(f"E2B_TASK: ERROR - Bootstrap install failed:\n{bootstrap_proc.stderr}")
+            return {
+                "exit_code": bootstrap_proc.exit_code, "stdout": bootstrap_proc.stdout,
+                "stderr": bootstrap_proc.stderr, "coverage_xml": None, "junit_xml": None,
+            }
+
+        # STAGE 3: PYTEST EXECUTION WITH AUTO-INSTALL RETRY LOOP
+        # This loop handles missing pip dependencies that were not in the bootstrap list.
+        pytest_cmd = (
+            f"python -m pytest --cov={cov_target} "
+            f"--cov-report=xml:coverage.xml --junitxml=results.xml"
+        )
+        exit_code = stdout = stderr = None
+
+        for attempt in range(1, 7): # Allow up to 6 attempts (1 initial + 5 for installs)
+            print(f"E2B_TASK: Pytest attempt {attempt}")
+            try:
+                result = sandbox.commands.run(pytest_cmd, timeout=120)
+                exit_code, stdout, stderr = result.exit_code, result.stdout, result.stderr
+                print(f"E2B_TASK: Pytest exited with code {exit_code}")
+            except Exception as e:
+                exit_code = getattr(e, "exit_code", -1)
+                stdout    = getattr(e, "stdout", "")
+                stderr    = getattr(e, "stderr", str(e))
+                print(f"E2B_TASK: Pytest raised an exception (code {exit_code}):\n{stderr}")
+
+            # If tests passed or we're on the last attempt, break the loop.
+            if exit_code == 0 or attempt == 6:
+                break
+
+            # If tests failed, look for a missing module error to auto-install.
+            m = re.search(r"ModuleNotFoundError: No module named ['\"]([^'\"]+)['\"]", stderr)
+            if not m:
+                print("E2B_TASK: Pytest failed for a reason other than a missing module. Breaking.")
+                break
+
+            missing_module = m.group(1)
+            print(f"E2B_TASK: Installing missing dependency '{missing_module}'")
+            install_proc = sandbox.commands.run(f"pip install {missing_module}", timeout=120)
+            if install_proc.exit_code != 0:
+                print(f"E2B_TASK: WARNING - Failed to install '{missing_module}':\n{install_proc.stderr}")
+                # We break here because if pip fails, we can't proceed.
+                break
+            else:
+                print(f"E2B_TASK: Successfully installed '{missing_module}'. Retrying tests.")
+
+        # STAGE 4: COLLECT RESULTS
+        coverage_xml = None
+        try:
+            coverage_xml = sandbox.files.read("coverage.xml")
+            print("E2B_TASK: Read coverage.xml")
+        except Exception as e:
+            print(f"E2B_TASK: WARNING - coverage.xml missing: {e}")
+
+        junit_xml = None
+        try:
+            junit_xml = sandbox.files.read("results.xml")
+            print("E2B_TASK: Read results.xml")
+        except Exception as e:
+            print(f"E2B_TASK: WARNING - results.xml missing: {e}")
+
+        return {
+            "exit_code":    exit_code,
+            "stdout":       stdout,
+            "stderr":       stderr,
+            "coverage_xml": coverage_xml,
+            "junit_xml":    junit_xml,
+        }
+
+    except Exception as e:
+        # Catch any other unexpected errors during the setup process.
+        print(f"E2B_TASK: ERROR - Unexpected failure in sandbox task: {e}")
+        return {"error": f"Unexpected error during sandbox execution: {e}"}
+
+    finally:
+        # Always ensure the sandbox is closed to prevent resource leaks.
+        try:
+            sandbox.kill()
+            print("E2B_TASK: Sandbox closed")
+        except Exception as e:
+            print(f"E2B_TASK: WARNING - Error closing sandbox: {e}")

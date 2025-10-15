@@ -1,247 +1,225 @@
 // src/components/dashboard/RepositoryCard.tsx
 import React, { useState } from 'react';
-import { Link } from 'react-router-dom';
-import axios from 'axios';
-import { toast } from 'sonner';
+import {
+    GitBranch,
+    RefreshCw,
+    Loader2,
+    Trash2,
+    MoreHorizontal,
+    FileText,
+} from 'lucide-react';
 
-// Lucide Icons
-import { Github, RefreshCw, Loader2, ShieldCheck, ShieldAlert, Clock, BookOpen } from 'lucide-react';
-
-// shadcn/ui components
-import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
-import { MoreHorizontal, Trash2 } from 'lucide-react';
-
-import {
-    DropdownMenu,
-    DropdownMenuContent,
-    DropdownMenuItem,
-    DropdownMenuLabel,
-    DropdownMenuSeparator,
-    DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import {
-    AlertDialog,
-    AlertDialogAction,
-    AlertDialogCancel,
-    AlertDialogContent,
-    AlertDialogDescription,
-    AlertDialogFooter,
-    AlertDialogHeader,
-    AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
-// Utils and Types
+import { type DashboardRepository } from '@/pages/DashboardPage';
+import { cn } from '@/lib/utils';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '../ui/dropdown-menu';
+import { AlertDialog, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '../ui/alert-dialog';
+import axios from 'axios';
+import { toast } from 'sonner';
 import { getCookie } from '@/utils';
-import { type TrackedRepository } from '@/pages/DashboardPage'; // Or from src/types.ts
 
 interface RepositoryCardProps {
-    repo: TrackedRepository;
-    // The parent (DashboardPage) will provide this function to trigger a full list refresh
-    onSyncStarted: () => void;
-    onRepoDeleted: () => void; // To tell the dashboard to refresh the list after deletion
-
+    repo: DashboardRepository;
+    onNavigate: (repo: DashboardRepository) => void;
+    onSyncRequest: (repoId: number) => void;
+    isSyncing: boolean;
+    onRepoDeleted: (repoId: number) => void;
 }
 
-// Helper to determine badge color and text based on status
-const getStatusInfo = (status: string): { variant: "default" | "secondary" | "destructive" | "outline", text: string } => {
-    switch (status.toLowerCase()) {
+const getSyncStatusBadge = (status: string, repositoryType: 'local' | 'github') => {
+    // Special handling for local repositories
+    if (repositoryType === 'local') {
+        return <Badge className="bg-purple-500/20 text-purple-400 border-purple-500/30 text-xs rounded-full px-2 py-0.5">Local</Badge>;
+    }
+
+    switch (status?.toLowerCase()) {
         case 'completed':
-            return { variant: 'default', text: 'Synced' }; // Using 'default' for a success-like state (often green if customized)
+            return <Badge className="bg-green-500/20 text-green-400 border-green-500/30 text-xs rounded-full px-2 py-0.5">Synced</Badge>;
         case 'indexing':
-            return { variant: 'secondary', text: 'Syncing...' };
+            return <Badge className="bg-blue-500/20 text-blue-400 border-blue-500/30 text-xs rounded-full px-2 py-0.5">Syncing</Badge>;
         case 'pending':
-            return { variant: 'outline', text: 'Queued' };
+            return <Badge className="bg-orange-500/20 text-orange-400 border-orange-500/30 text-xs rounded-full px-2 py-0.5">Pending</Badge>;
         case 'failed':
-            return { variant: 'destructive', text: 'Failed' };
+            return <Badge className="bg-red-500/20 text-red-400 border-red-500/30 text-xs rounded-full px-2 py-0.5">Error</Badge>;
         default:
-            return { variant: 'secondary', text: status };
+            return <Badge variant="outline" className="border-zinc-800 text-zinc-500 bg-transparent text-xs rounded-full px-2 py-0.5">{status || 'Unknown'}</Badge>;
     }
 };
 
-export const RepositoryCard: React.FC<RepositoryCardProps> = ({ repo, onSyncStarted }) => {
-    // This local state is just for the instant feedback when the button is clicked,
-    // before the parent's data refresh shows the new repo.status.
-    const [isRequestingSync, setIsRequestingSync] = useState(false);
+const getCoverageColor = (coverage: number) => {
+    if (coverage >= 80) return "text-[#22c55e]";
+    if (coverage >= 60) return "text-orange-400";
+    return "text-[#ef4444]";
+};
+
+const getCoverageBgColor = (coverage: number) => {
+    if (coverage >= 80) return "bg-[#22c55e]";
+    if (coverage >= 60) return "bg-[#fb923c]";
+    return "bg-[#ef4444]";
+};
+
+const getOrphanColor = (orphans: number) => {
+    if (orphans <= 5) return "text-[#22c55e]";
+    if (orphans <= 15) return "text-[#fb923c]";
+    return "text-[#ef4444]";
+};
+
+export const RepositoryCard: React.FC<RepositoryCardProps> = ({ repo, onNavigate, onRepoDeleted, onSyncRequest, isSyncing }) => {
+    const isActionDisabled = isSyncing || repo.status.toLowerCase() === 'indexing' || repo.status.toLowerCase() === 'pending';
+    const isLocalRepo = repo.repository_type === 'local';
+    const [owner, name] = repo.full_name.split('/');
     const [isDeleting, setIsDeleting] = useState(false);
     const [isAlertOpen, setIsAlertOpen] = useState(false);
+
+    const handleSyncClick = (e: React.MouseEvent) => {
+        e.stopPropagation();
+        onSyncRequest(repo.id);
+    };
+
     const handleDelete = async () => {
         setIsDeleting(true);
-        toast.info(`Deleting ${repo.full_name}...`);
         try {
-            await axios.delete(
-                `/api/v1/repositories/${repo.id}/`,
-                {
-                    withCredentials: true,
-                    headers: { 'X-CSRFToken': getCookie('csrftoken') || '' }
-                }
-            );
+            await axios.delete(`/api/v1/repositories/${repo.id}/`, { headers: { 'X-CSRFToken': getCookie('csrftoken') } });
             toast.success(`Successfully deleted ${repo.full_name}.`);
-            onRepoDeleted(); // Trigger parent to refetch the repo list
+            onRepoDeleted(repo.id);
         } catch (error) {
-            const errorMsg = axios.isAxiosError(error) ? error.response?.data?.error : "An unknown error occurred.";
-            console.log(error.response);
-            toast.error(`Failed to delete ${repo.full_name}`, { description: String(errorMsg) });
-            setIsDeleting(false); // Reset loading state only on failure
+            toast.error("Failed to delete repository.");
+            setIsDeleting(false);
         }
-        // No finally block needed, as the component will unmount on success
     };
-
-    const handleReProcess = async () => {
-        setIsRequestingSync(true);
-        toast.info(`Requesting sync for ${repo.full_name}...`);
-        try {
-            const response = await axios.post(
-                `/api/v1/repositories/${repo.id}/reprocess/`,
-                {},
-                {
-                    withCredentials: true,
-                    headers: { 'X-CSRFToken': getCookie('csrftoken') || '' }
-                }
-            );
-            toast.success(response.data.message || "Sync started successfully.");
-            // Tell the parent DashboardPage to refetch all repositories.
-            // This will update the repo.status prop for this card and others.
-            onSyncStarted();
-        } catch (error) {
-            const errorMsg = axios.isAxiosError(error)
-                ? error.response?.data?.message || error.response?.data?.error
-                : "An unknown error occurred.";
-            toast.error(`Failed to start sync for ${repo.full_name}`, {
-                description: String(errorMsg),
-            });
-            setIsRequestingSync(false); // Reset local loading state on failure
-        }
-        // No need for a `finally` block to set isRequestingSync to false, because on success,
-        // the parent will refetch and the repo.status prop will change to 'PENDING' or 'INDEXING',
-        // which will correctly handle the button's disabled state.
-    };
-
-    const isProcessing = repo.status === 'INDEXING' || repo.status === 'PENDING' || isRequestingSync;
-    const statusInfo = getStatusInfo(repo.status);
 
     return (
         <>
-            <Card className="flex flex-col border border-border bg-card/95 backdrop-blur-sm shadow-lg hover:shadow-primary/10 transition-shadow duration-300">
-                <CardHeader className="pb-4">
-                    <div className="flex items-start justify-between gap-4">
-                        {/* Left side: Title and Description */}
-                        <div className="flex-grow min-w-0">
-                            <CardTitle className="text-lg font-semibold flex items-center gap-2 truncate">
-                                <Github className="h-5 w-5 text-muted-foreground flex-shrink-0" />
-                                <Link to={`/repository/${repo.id}`} className="hover:text-primary hover:underline truncate" title={repo.full_name}>
-                                    {repo.full_name}
-                                </Link>
-                            </CardTitle>
-                            <CardDescription className="pt-2 text-xs flex items-center text-muted-foreground">
-                                <Clock className="h-3 w-3 mr-1.5" />
-                                Last synced: {repo.last_processed ? new Date(repo.last_processed).toLocaleString() : 'Never'}
-                            </CardDescription>
-                        </div>
-
-                        {/* Right side: Status Badge and Actions Dropdown */}
-                        <div className="flex items-center gap-2 flex-shrink-0">
-                            <Badge variant={statusInfo.variant}>{statusInfo.text}</Badge>
-                            <DropdownMenu>
-                                <DropdownMenuTrigger asChild>
-                                    <Button variant="ghost" size="icon" className="h-8 w-8">
-                                        <span className="sr-only">Open repository actions</span>
-                                        <MoreHorizontal className="h-4 w-4" />
-                                    </Button>
-                                </DropdownMenuTrigger>
-                                <DropdownMenuContent align="end">
-                                    <DropdownMenuLabel>Actions</DropdownMenuLabel>
-                                    <DropdownMenuSeparator />
-                                    <DropdownMenuItem onSelect={onSyncStarted}>
-                                        <RefreshCw className="mr-2 h-4 w-4" />
-                                        <span>Sync Now</span>
-                                    </DropdownMenuItem>
-                                    <DropdownMenuItem
-                                        onSelect={(e) => {
-                                            e.preventDefault();
-                                            setIsAlertOpen(true);
-                                        }}
-                                        className="text-destructive focus:text-destructive focus:bg-destructive/10"
-                                    >
-                                        <Trash2 className="mr-2 h-4 w-4" />
-                                        <span>Delete</span>
-                                    </DropdownMenuItem>
-                                </DropdownMenuContent>
-                            </DropdownMenu>
-                        </div>
+            <Card
+                onClick={() => onNavigate(repo)}
+                className="bg-zinc-900/20 border-zinc-900/50 hover:bg-zinc-900/30 transition-all duration-200 cursor-pointer group flex flex-col"
+            >
+                <CardHeader className="-mt-2 px-4 pb-0 pl-5 pr-5">
+                    <div className="flex items-center justify-between">
+                        <CardTitle className="text-base font-medium text-zinc-300 tracking-tight truncate">
+                            <GitBranch className="w-3.5 h-3.5 inline mr-1.5 text-zinc-500" />
+                            {owner}/<span className="font-semibold text-white">{name}</span>
+                        </CardTitle>
+                        <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                                <Button variant="ghost" size="icon" className="h-7 w-7 flex-shrink-0" onClick={(e) => e.stopPropagation()}>
+                                    <MoreHorizontal className="h-4 w-4" />
+                                </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end" className="bg-zinc-900 border-zinc-800 text-zinc-300">
+                                <DropdownMenuItem
+                                    // --- THE FIX ---
+                                    // 1. Stop the native click event from bubbling to the Card
+                                    onClick={(e) => e.stopPropagation()}
+                                    // 2. Use onSelect to perform the intended action
+                                    onSelect={() => setIsAlertOpen(true)}
+                                    className="text-red-400 focus:text-red-400 focus:bg-red-500/10 flex items-center cursor-pointer">
+                                    <Trash2 className="mr-2 h-4 w-4" />
+                                    <span>Delete</span>
+                                </DropdownMenuItem>
+                            </DropdownMenuContent>
+                        </DropdownMenu>
+                    </div>
+                    <div className="flex items-center space-x-2 mt-1">
+                        {getSyncStatusBadge(repo.status, repo.repository_type)}
+                        {repo.primary_language && (
+                            <Badge variant="outline" className="border-zinc-800 text-zinc-500 bg-transparent text-xs rounded-full px-2 py-0.5">
+                                {repo.primary_language}
+                            </Badge>
+                        )}
                     </div>
                 </CardHeader>
-
-                <CardContent className="flex-grow">
-                    {/* --- USE REAL DATA INSTEAD OF PLACEHOLDERS --- */}
-                    <div className="text-sm text-muted-foreground space-y-2">
-                        <div className="flex items-center gap-2">
-                            <BookOpen className={`h-4 w-4 ${repo.documentation_coverage >= 80 ? 'text-green-500' : repo.documentation_coverage >= 50 ? 'text-yellow-500' : 'text-orange-500'}`} />
-                            <span>{repo.documentation_coverage.toFixed(1)}% Doc Coverage</span>
+                <CardContent className="px-4 pb-2 -mt-8 flex-grow flex flex-col justify-between pl-5 pr-5">
+                    <div className="space-y-3 pt-5">
+                        <div className="flex items-center justify-between text-sm">
+                            <span className="text-zinc-500">Last synced:</span>
+                            <span className="text-zinc-400 font-mono">
+                                {repo.last_processed ? new Date(repo.last_processed).toLocaleDateString() : 'Never'}
+                            </span>
                         </div>
 
-                        {/* Conditionally render the orphan count */}
-                        <div className="flex items-center gap-2">
-                            <ShieldAlert className={`h-4 w-4 ${repo.orphan_symbol_count > 0 ? 'text-red-500' : 'text-muted-foreground'}`} />
-                            <span>{repo.orphan_symbol_count} Orphan Symbol{repo.orphan_symbol_count !== 1 ? 's' : ''}</span>
+                        <div className="space-y-2 -mt-2">
+                            <div className="flex items-center justify-between">
+                                <span className="text-sm text-zinc-500">Doc Coverage</span>
+                                <span className={cn("text-sm font-medium", getCoverageColor(repo.documentation_coverage))}>
+                                    {repo.documentation_coverage.toFixed(1)}%
+                                </span>
+                            </div>
+                            <div className="w-full bg-zinc-800 rounded-full h-1">
+                                <div
+                                    className={cn("h-1 rounded-full", getCoverageBgColor(repo.documentation_coverage))}
+                                    style={{ width: `${repo.documentation_coverage}%` }}
+                                ></div>
+                            </div>
+                        </div>
+
+                        <div className="flex items-center justify-between">
+                            <span className="text-sm text-zinc-500">Orphan Symbols</span>
+                            <span className={cn("text-sm font-medium", getOrphanColor(repo.orphan_symbol_count))}>
+                                {repo.orphan_symbol_count}
+                            </span>
                         </div>
                     </div>
+
+                    <div className="mt-4">
+                        <div className="grid grid-cols-3 gap-2 pt-3 border-t border-zinc-800/50">
+                            <div className="text-center">
+                                <p className="text-sm text-zinc-500">Size</p>
+                                <p className="text-sm font-medium text-zinc-400">{(repo.size_kb / 1024).toFixed(1)}MB</p>
+                            </div>
+                            <div className="text-center">
+                                <p className="text-sm text-zinc-500">Commits</p>
+                                <p className="text-sm font-medium text-zinc-400">{repo.commit_count}</p>
+                            </div>
+                            <div className="text-center">
+                                <p className="text-sm text-zinc-500">Contributors</p>
+                                <p className="text-sm font-medium text-zinc-400">{repo.contributor_count}</p>
+                            </div>
+                        </div>
+
+                        {!isLocalRepo && (
+                            <Button
+                                onClick={handleSyncClick}
+                                disabled={isActionDisabled}
+                                className="w-full bg-blue-500 hover:bg-blue-600 text-white text-sm h-8 mt-3 disabled:bg-zinc-700 disabled:text-zinc-400 disabled:cursor-not-allowed"
+                            >
+                                {isActionDisabled ? (
+                                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                                ) : (
+                                    <RefreshCw className="w-4 h-4 mr-2" />
+                                )}
+                                {repo.status.toLowerCase() === 'indexing' || repo.status.toLowerCase() === 'pending' ? 'Syncing...' : 'Sync with GitHub'}
+                            </Button>
+                        )}
+
+                        {isLocalRepo && (
+                            <div className="w-full bg-zinc-800 text-zinc-400 text-sm h-8 mt-3 flex items-center justify-center rounded">
+                                <FileText className="w-4 h-4 mr-2" />
+                                Local Repository
+                            </div>
+                        )}
+                    </div>
                 </CardContent>
-
-                <CardFooter className="border-t border-border pt-4">
-                    <TooltipProvider delayDuration={100}>
-                        <Tooltip>
-                            <TooltipTrigger asChild>
-                                <span className="w-full" tabIndex={isProcessing ? -1 : undefined}>
-                                    <Button
-                                        variant="secondary"
-                                        size="sm"
-                                        className="w-full"
-                                        onClick={handleReProcess}
-                                        disabled={isProcessing}
-                                    >
-                                        {isProcessing ? (
-                                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                        ) : (
-                                            <RefreshCw className="mr-2 h-4 w-4" />
-                                        )}
-                                        {isProcessing ? 'Syncing...' : 'Sync with GitHub'}
-                                    </Button>
-                                </span>
-                            </TooltipTrigger>
-                            <TooltipContent side="bottom">
-                                <p>Pull latest changes and re-analyze repository.</p>
-                            </TooltipContent>
-                        </Tooltip>
-                    </TooltipProvider>
-                </CardFooter>
             </Card>
-
             <AlertDialog open={isAlertOpen} onOpenChange={setIsAlertOpen}>
-                <AlertDialogContent>
+                <AlertDialogContent className="bg-zinc-900 border-zinc-800 text-zinc-300">
                     <AlertDialogHeader>
-                        <AlertDialogTitle>Are you absolutely sure?</AlertDialogTitle>
+                        <AlertDialogTitle className="text-white">Are you sure?</AlertDialogTitle>
                         <AlertDialogDescription>
-                            This action cannot be undone. This will permanently delete the{' '}
-                            <strong className="mx-1">{repo.full_name}</strong> repository, its
-                            analysis, insights, and all associated data from Helix.
+                            This will permanently delete <strong>{repo.full_name}</strong> and all its associated data. This action cannot be undone.
                         </AlertDialogDescription>
                     </AlertDialogHeader>
-
                     <AlertDialogFooter>
-                        <AlertDialogCancel disabled={isDeleting}>Cancel</AlertDialogCancel>
-                        <Button
-                            variant="destructive"
-                            onClick={handleDelete}
-                            disabled={isDeleting}
-                        >
+                        <AlertDialogCancel className="bg-transparent border-zinc-700 hover:bg-zinc-800">Cancel</AlertDialogCancel>
+                        <Button variant="destructive" onClick={handleDelete} disabled={isDeleting}>
                             {isDeleting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                            Yes, delete this repository
+                            Delete Repository
                         </Button>
                     </AlertDialogFooter>
                 </AlertDialogContent>
             </AlertDialog>
         </>
-    )
-}
+    );
+};

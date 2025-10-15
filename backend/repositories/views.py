@@ -3,16 +3,18 @@ import os,shutil
 import subprocess
 from django.db.models import Q,F  # <--- ADD THIS IMPORT
 from rest_framework import generics, permissions
-
+from django.core.files.storage import default_storage
+from rest_framework.parsers import MultiPartParser, FormParser
+import uuid
 from .permissions import IsMemberOfOrganization
-from .tasks import create_documentation_pr_task,batch_generate_docstrings_task # We will create this task soon
+from .tasks import calculate_documentation_coverage_task, create_documentation_pr_task,batch_generate_docstrings_task, parse_coverage_report_task # We will create this task soon
 from django.utils.decorators import method_decorator
 from rest_framework import viewsets
-from .models import CodeFile, CodeSymbol as CodeFunction, Repository, CodeSymbol,CodeDependency,AsyncTaskStatus, Notification,CodeClass,Insight
-from .ai_services import generate_class_summary_stream, generate_module_readme_stream,generate_refactor_stream # 03c03c03c NEW IMPORT
+from .models import CodeFile, CodeSymbol as CodeFunction, Repository, CodeSymbol,CodeDependency,AsyncTaskStatus, Notification,CodeClass,Insight, TestCoverageReport, Organization, OrganizationMember
+from .ai_services import generate_class_summary_stream, generate_module_readme_stream,generate_refactor_stream, generate_refactoring_suggestions # 03c03c03c NEW IMPORT
 from .tasks import process_repository # Import the Celery task
 import json
-from .serializers import CodeSymbolSerializer, DetailedOrganizationSerializer, RepositorySerializer,RepositoryDetailSerializer,NotificationSerializer
+from .serializers import CodeSymbolSerializer, DashboardRepositorySerializer, DetailedOrganizationSerializer, GraphLinkSerializer, RepositorySerializer,RepositoryDetailSerializer,NotificationSerializer, SymbolAnalysisSerializer, TestCoverageReportSerializer
 from rest_framework.views import APIView
 from django.views.decorators.csrf import csrf_exempt
 from rest_framework.response import Response
@@ -20,6 +22,7 @@ from allauth.socialaccount.models import SocialToken
 import requests,re
 from django.http import Http404, HttpResponse
 from django.http import StreamingHttpResponse # Import Django's native streaming class
+from django.utils import timezone
 from openai import OpenAI
 import tempfile,hashlib
 from rest_framework import status  # if using Django REST Framework
@@ -32,13 +35,16 @@ from .serializers import CodeSymbolSerializer,AsyncTaskStatusSerializer,InsightS
 import os
 from .models import ModuleDependency
 from .decorators import check_usage_limit
-from .serializers import RepositorySerializer, RepositoryDetailSerializer, RepositoryCreateSerializer
+from .serializers import RepositorySerializer, RepositoryDetailSerializer, RepositoryCreateSerializer,LiteRepositoryDetailSerializer
 from rest_framework import serializers
+from django.contrib.auth import get_user_model
+User = get_user_model() # <--- 2. Call the function to get the active User model
 
 REPO_CACHE_BASE_PATH = "/var/repos" # Use the same constant
 OPENAI_CLIENT_INSTANCE = OpenAIClient()
 OPENAI_EMBEDDING_MODEL_FOR_SEARCH = "text-embedding-3-small"
-@method_decorator(csrf_exempt, name="dispatch")
+from django.db import connection  # For debugging SQL queries
+
 @method_decorator(csrf_exempt, name="dispatch")
 class RepositoryViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated, IsMemberOfOrganization]
@@ -59,6 +65,8 @@ class RepositoryViewSet(viewsets.ModelViewSet):
         # --- USE OUR NEW SERIALIZER FOR THE 'create' ACTION ---
         if self.action == 'create':
             return RepositoryCreateSerializer
+        if self.action == 'retrieve':
+            return LiteRepositoryDetailSerializer
         # For all other actions, use the detailed serializer.
         return RepositoryDetailSerializer
 
@@ -87,26 +95,48 @@ class RepositoryViewSet(viewsets.ModelViewSet):
         This method is called by `create` after validation.
         It handles the security checks and saving the object.
         """
-        # 1. Get the organization_id from the validated data of our CreateSerializer
-        organization_id = serializer.validated_data.pop('organization_id')
+        organization_id = serializer.validated_data.get('organization_id')
+        if not organization_id:
+            raise serializers.ValidationError({"organization_id": "This field is required."})
 
-        # 2. Check if the user is a member of that organization
+        # --- DEBUGGING BLOCK ---
+        print("\n--- HELIX DEBUG: CHECKING MEMBERSHIP ---")
+        print(f"Attempting to verify membership for user_id='{self.request.user.id}' in organization_id='{organization_id}'")
+
+        # 2. Perform the existence check
+        membership_queryset = OrganizationMember.objects.filter(
+            organization_id=organization_id,
+            user_id=self.request.user.id
+        )
+        is_member = membership_queryset.exists()
+
+        # 3. Print the last executed SQL query
+        # Note: connection.queries is only populated if DEBUG=True in settings.py
         try:
-            membership = OrganizationMember.objects.get(organization_id=organization_id, user=self.request.user)
-        except OrganizationMember.DoesNotExist:
-            # This security check is crucial.
+            last_query = connection.queries[-1]
+            print(f"SQL Query Executed: {last_query['sql']}")
+            print(f"Query Parameters: {last_query['params']}")
+            print(f"Query Time: {last_query['time']}s")
+        except (IndexError, KeyError):
+            print("SQL Query: Could not be retrieved. Ensure DEBUG=True in your Django settings.")
+        
+        print(f"Query Result (is_member): {is_member}")
+        print("--- END HELIX DEBUG ---\n")
+        # --- END DEBUGGING BLOCK ---
+
+        if not is_member:
             raise serializers.ValidationError({"detail": "You are not a member of this workspace."})
 
-        # 3. Save the new repository with the correct context.
-        # The `serializer.save()` method will call `Repository.objects.create()` with the
-        # remaining validated data, plus the extra arguments we provide here.
-        # This is where the `organization` object is correctly passed to the model.
+        # ... The rest of your logic to save the repository ...
+        try:
+            organization_obj = Organization.objects.get(id=organization_id)
+        except Organization.DoesNotExist:
+            raise serializers.ValidationError({"detail": "Workspace not found."})
+
         repo = serializer.save(
-            organization=membership.organization,
+            organization=organization_obj,
             added_by=self.request.user
         )
-        
-        # The post_save signal on the `repo` object will now trigger the Celery task correctly.
 
     # The perform_destroy method you have is already correct and doesn't need changes.
     def perform_destroy(self, instance):
@@ -260,7 +290,7 @@ def openai_stream_generator(prompt: str, openai_client_instance: OpenAIClient | 
 
     try:
         stream = openai_client_instance.chat.completions.create(
-            model="gpt-4.1-mini", # Or your preferred model
+            model="gpt-4o-mini", # Fixed model name
             messages=[
                 {"role": "system", "content": "You are a helpful AI programming assistant specialized in writing Python docstrings."},
                 {"role": "user", "content": prompt} # The full prompt is now constructed in the view
@@ -415,6 +445,14 @@ class SaveDocstringView(APIView):
                 'code_file__repository', 
                 'code_class__code_file__repository'
             ).get(q_filter)
+            repo = symbol.code_file.repository if symbol.code_file else symbol.code_class.code_file.repository
+            is_member = OrganizationMember.objects.filter(
+                organization=repo.organization,
+                user=request.user
+            ).exists()
+
+            if not is_member:
+                 return Response({"error": "Permission denied. You are not a member of this repository's organization."}, status=status.HTTP_403_FORBIDDEN)
         except CodeSymbol.DoesNotExist:
             return Response({"error": "Symbol not found or permission denied."}, status=status.HTTP_404_NOT_FOUND)
 
@@ -455,6 +493,7 @@ class SaveDocstringView(APIView):
             # Serialize the updated symbol to send back to the frontend
             # This ensures the frontend gets the latest hashes and status
             serializer = CodeSymbolSerializer(symbol) 
+            calculate_documentation_coverage_task.delay(repo.id)
             print(f"VIEW_SAVE_DOC: Successfully saved documentation and status for symbol {symbol.id}")
             return Response(serializer.data, status=status.HTTP_200_OK)
         except Exception as e:
@@ -495,7 +534,6 @@ class SemanticSearchView(generics.ListAPIView):
             )
             query_embedding = response.data[0].embedding
 
-
             user_repos = Repository.objects.filter(user=self.request.user)
 
             similar_symbols = CodeSymbol.objects.filter(
@@ -509,7 +547,6 @@ class SemanticSearchView(generics.ListAPIView):
         except Exception as e:
             print(f"Error during semantic search: {e}")
             return CodeSymbol.objects.none()
-
 
 from .tasks import create_documentation_pr_task
 from django.core.exceptions import PermissionDenied
@@ -586,7 +623,6 @@ class GenerateArchitectureDiagramView(APIView):
         except Exception as e:
             print(f"VIEW_GEN_DIAGRAM: Error fetching symbol {symbol_id}: {e}")
             return Response({"error": "Server error fetching symbol."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
 
         # Fetch direct incoming calls (callers)
         # Ensure we select related 'caller' to get the full CodeSymbol object for the caller
@@ -740,7 +776,6 @@ class BatchGenerateDocsForSelectedFilesView(APIView):
             print(f"VIEW_BATCH_DOCS: Error dispatching Celery task for repo {repo_id}: {e}")
             return Response({"error": "Failed to initiate batch documentation generation task."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-
 @method_decorator(csrf_exempt, name='dispatch')
 class CreateBatchPRForSelectedFilesView(APIView):
     permission_classes = [permissions.IsAuthenticated]
@@ -815,7 +850,6 @@ class TaskStatusView(APIView):
             print(f"VIEW_TASK_STATUS: Error fetching task status for task_id={task_id}: {e}")
             return Response({"error": "An error occurred while fetching task status."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)   
         
-
 @method_decorator(csrf_exempt, name='dispatch')
 class ApproveDocstringView(APIView):
     permission_classes = [permissions.IsAuthenticated]
@@ -855,7 +889,6 @@ class ApproveDocstringView(APIView):
             symbol.documentation_hash = hasher.hexdigest()
             symbol.documentation_status = CodeSymbol.DocStatus.HUMAN_EDITED_PENDING_PR
             print(f"VIEW_APPROVE_DOC: Warning - Symbol {symbol.id} has no content_hash. Hashing doc text itself.")
-
 
         try:
             symbol.save(update_fields=['documentation', 'documentation_hash', 'documentation_status'])
@@ -959,7 +992,6 @@ def generate_explanation_stream(
         # Or handle more gracefully if frontend expects structured errors
         yield error_message
 
-
 @method_decorator(csrf_exempt, name='dispatch') # If using SessionAuth and POST
 class ExplainCodeView(APIView):
     permission_classes = [permissions.IsAuthenticated]
@@ -969,7 +1001,6 @@ class ExplainCodeView(APIView):
 
         openai_client = OPENAI_CLIENT_INSTANCE
 
-        
         if not openai_client:
             # Return a non-streaming error if client setup fails
             return Response(
@@ -1003,7 +1034,6 @@ class ExplainCodeView(APIView):
              print(f"VIEW_EXPLAIN_CODE: Source code retrieval failed: {source_code} for symbol {symbol_obj.name}")
              return Response({"error": f"Helix could not retrieve valid source code: {source_code}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-
         response_stream = generate_explanation_stream(symbol_obj, source_code, openai_client)
         
         # It's good practice to set appropriate headers for streaming
@@ -1012,8 +1042,6 @@ class ExplainCodeView(APIView):
         response['Cache-Control'] = 'no-cache'
         return response
     
-
-
 def generate_tests_stream(
     symbol_obj: CodeSymbol,
     source_code: str,
@@ -1043,7 +1071,7 @@ def generate_tests_stream(
         f"Here is its source code:\n```python\n{source_code}\n```\n\n"
         f"Instructions:\n"
         f"1. Focus on testing the 'happy path,' common edge cases (e.g., empty lists, zero, None values), and potential error conditions.\n"
-        f"2. The generated code should be a single, complete Python code block. Do not add any explanation outside of the code block.\n"
+        f"2. The generated code should be a single, complete Python code block. Do not add any explanation outside of the code block. Do not wrap it in ```python type markdown blocks.\n"
         f"3. Assume necessary imports like `pytest` are available. For the code under test, assume it can be imported (e.g., `from {symbol_file_path.replace('.py', '').replace('/', '.')} import {symbol_obj.code_class.name if symbol_obj.code_class else symbol_obj.name}`).\n"
         f"4. If the function is a method of a class, show how to instantiate the class in the test.\n"
         f"5. Use clear and descriptive test function names, like `test_{symbol_obj.name}_[condition_being_tested]`.\n"
@@ -1073,6 +1101,95 @@ def generate_tests_stream(
         print(f"SUGGEST_TESTS_STREAM_ERROR: {error_message}")
         yield error_message
 
+# backend/repositories/ai_services.py
+# ... imports ...
+
+def generate_cohesive_tests_stream(
+    symbol_ids: list[int],
+    user: User,
+    openai_client: OpenAIClient
+):
+    """
+    Generates a single, cohesive pytest file for a list of symbols.
+    """
+    # 1. Fetch all symbols and perform a permission check
+    q_filter = Q(id__in=symbol_ids) & (
+        Q(code_file__repository__organization__memberships__user=user) |
+        Q(code_class__code_file__repository__organization__memberships__user=user)
+    )
+    symbols = CodeSymbol.objects.filter(q_filter).select_related('code_file', 'code_class')
+
+    if len(symbols) != len(symbol_ids):
+        yield "// Error: One or more symbols were not found or you do not have permission to access them."
+        return
+
+    # 2. Assemble the context blocks for the prompt
+    context_blocks = []
+    import_paths = set()
+    file_path = symbols[0].code_file.file_path if symbols[0].code_file else symbols[0].code_class.code_file.file_path
+
+    for symbol in symbols:
+        source_code = get_source_for_symbol_from_view(symbol)
+        if not source_code or source_code.strip().startswith("# Error:"):
+            continue # Skip symbols we can't get source for
+
+        symbol_kind = "method" if symbol.code_class else "function"
+        context_blocks.append(
+            f"--- Symbol: `{symbol.name}` ({symbol_kind}) ---\n"
+            f"Source Code:\n```python\n{source_code}\n```\n---"
+        )
+        
+        # Collect necessary imports
+        module_path = symbol.code_file.file_path.replace('.py', '').replace('/', '.') if symbol.code_file else \
+                      symbol.code_class.code_file.file_path.replace('.py', '').replace('/', '.')
+        
+        if symbol.code_class:
+            import_paths.add(f"from {module_path} import {symbol.code_class.name}")
+        else:
+            import_paths.add(f"from {module_path} import {symbol.name}")
+
+    if not context_blocks:
+        yield "// Error: Could not retrieve source code for any of the selected symbols."
+        return
+
+    # 3. Construct the final "Meta-Prompt"
+    context_str = "\n\n".join(context_blocks)
+    import_str = "\n".join(sorted(list(import_paths)))
+
+    final_prompt = (
+        "You are an expert Python QA engineer. Your task is to write a single, cohesive `pytest` test file for a collection of functions and methods.\n\n"
+        f"Here are the symbols to test, all from the file `{file_path}`:\n\n"
+        f"{context_str}\n\n"
+        "Instructions:\n"
+        "1.  Create a single Python file.\n"
+        "2.  Place all necessary imports at the top of the file. Consolidate them and do not repeat imports. The required imports for the code under test are:\n"
+        "    ```python\n"
+        "import pytest\n"
+        f"{import_str}\n"
+        "    ```\n"
+        "3.  Write 2-3 critical test cases for EACH symbol provided.\n"
+        "4.  Use clear, descriptive test function names (e.g., `test_function_name_with_specific_condition`).\n"
+        "5.  If testing multiple methods from the same class, you can group them in a `TestClassName` class if it makes sense.\n"
+        "6.  Your entire response should be ONLY the raw Python code for the test file. Do not add any explanation or markdown formatting. Do not add '```python'.\n\n"
+        "Generate the complete `pytest` file now:"
+    )
+
+    print(f"DEBUG_COHESIVE_TESTS_PROMPT:\n{final_prompt}\n--------------------")
+
+    # 4. Stream the response from the LLM
+    try:
+        stream = openai_client.chat.completions.create(
+            model="gpt-4.1-mini",
+            messages=[{"role": "user", "content": final_prompt}],
+            stream=True,
+            temperature=0.3
+        )
+        for chunk in stream:
+            content = chunk.choices[0].delta.content
+            if content:
+                yield content
+    except Exception as e:
+        yield f"// Helix encountered an error: {str(e)}"
 
 # --- NEW VIEW CLASS ---
 @method_decorator(csrf_exempt, name='dispatch')
@@ -1127,7 +1244,6 @@ class ClassSummaryView(APIView):
 
         openai_client = OPENAI_CLIENT_INSTANCE
 
-        
         if not openai_client:
             return Response({"error": "Helix's AI service is currently unavailable."}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
@@ -1299,57 +1415,7 @@ class CommitHistoryView(APIView):
             print(f"VIEW_COMMIT_HISTORY: ERROR - {error_message}")
             return Response({"error": error_message}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
-@method_decorator(csrf_exempt, name='dispatch')
-class SuggestRefactorsView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
-
-    def post(self, request, symbol_id, *args, **kwargs):
-        print(f"VIEW_SUGGEST_REFACTORS: Request for symbol_id: {symbol_id} by user: {request.user.username}")
-
-        openai_client = OPENAI_CLIENT_INSTANCE
-
-        
-        if not openai_client:
-            return Response(
-                {"error": "Helix's AI service is currently unavailable."}, 
-                status=status.HTTP_503_SERVICE_UNAVAILABLE
-            )
-
-        try:
-            # --- THIS IS THE FIX ---
-            # We construct a query that checks for membership in the symbol's organization.
-            # This query ensures that the symbol exists AND the user has permission to see it.
-            
-            # This checks symbols that are directly in a file
-            q_for_file_symbols = Q(
-                code_file__repository__organization__memberships__user=request.user
-            )
-            
-            # This checks symbols that are inside a class
-            q_for_class_symbols = Q(
-                code_class__code_file__repository__organization__memberships__user=request.user
-            )
-
-            # We find the CodeSymbol with the given ID, AND it must satisfy one of the permission checks.
-            symbol_obj = CodeSymbol.objects.get(
-                Q(id=symbol_id) & (q_for_file_symbols | q_for_class_symbols)
-            )
-        except CodeSymbol.DoesNotExist:
-            return Response(
-                {"error": "Symbol not found or permission denied."}, 
-                status=status.HTTP_404_NOT_FOUND
-            )
-        
-        # Call the new service function to get the streaming generator
-        response_stream = generate_refactor_stream(symbol_obj, openai_client)
-        
-        response = StreamingHttpResponse(response_stream, content_type='text/plain; charset=utf-8')
-        response['X-Accel-Buffering'] = 'no'
-        response['Cache-Control'] = 'no-cache'
-        return response
-    
 from .ai_services import handle_chat_query_stream
-
 
 @method_decorator(csrf_exempt, name='dispatch')
 class ChatView(APIView):
@@ -1400,7 +1466,6 @@ class ChatView(APIView):
         response['Cache-Control'] = 'no-cache'
         return response
     
-
 from .tasks import create_pr_with_changes_task # 03c03c03c NEW IMPORT
 import time
 @method_decorator(csrf_exempt, name='dispatch')
@@ -1536,7 +1601,6 @@ class ModuleCoverageView(APIView):
         base_query = CodeSymbol.objects.filter(
             Q(code_file__repository_id=repo_id) | Q(code_class__code_file__repository_id=repo_id)
         )
-
 
         if module_path:
             base_query = base_query.filter(
@@ -1813,8 +1877,6 @@ class OrganizationDetailView(APIView):
             return Response(OrganizationSerializer(org).data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-
-
 import shutil
 class OrganizationDetailView(APIView):
     permission_classes = [permissions.IsAuthenticated]
@@ -1981,37 +2043,639 @@ class AcceptInviteView(APIView):
 
         return Response(OrganizationSerializer(invitation.organization).data, status=status.HTTP_200_OK)
     
-
-from users.models import BetaInviteCode
-
-class ValidateInviteCodeView(APIView):
-    permission_classes = [permissions.AllowAny] # Anyone can check a code
-
-    def post(self, request, *args, **kwargs):
-        code_str = request.data.get('code')
-        if not code_str:
-            return Response({"error": "Invite code is required."}, status=status.HTTP_400_BAD_REQUEST)
-
-        try:
-            invite_code = BetaInviteCode.objects.get(code=code_str, is_active=True)
-            
-            # Check if the code has uses left
-            if invite_code.uses >= invite_code.max_uses:
-                return Response({"error": "This invite code has already been used."}, status=status.HTTP_400_BAD_REQUEST)
-
-            # --- Store the valid code in the user's session ---
-            request.session['validated_invite_code'] = str(invite_code.code)
-            print(f"INVITE_VALIDATION: Stored code {invite_code.code} in session {request.session.session_key}")
-            
-            return Response({"message": "Invite code is valid. Please proceed to sign up."}, status=status.HTTP_200_OK)
-
-        except BetaInviteCode.DoesNotExist:
-            return Response({"error": "Invalid invite code."}, status=status.HTTP_404_NOT_FOUND)
-        
-
 from django.http import JsonResponse
 from django.views.decorators.csrf import ensure_csrf_cookie
 
 @ensure_csrf_cookie
 def set_csrf_cookie(request):
     return JsonResponse({"detail": "CSRF cookie set."})
+
+class ComplexityHotspotsView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, repo_id, *args, **kwargs):
+        
+        # --- THIS IS THE FIX ---
+        # 1. Check if a repository with the given ID exists AND
+        # 2. if the current user is a member of the organization that owns that repository.
+        # This is the new, correct permission check.
+        has_access = Repository.objects.filter(
+            id=repo_id,
+            organization__memberships__user=request.user
+        ).exists()
+
+        if not has_access:
+            return Response({"error": "Repository not found or permission denied."}, status=status.HTTP_404_NOT_FOUND)
+        # --- END FIX ---
+
+        # The rest of your query is already correct as it filters by repo_id.
+        hotspots = CodeSymbol.objects.filter(
+            Q(code_file__repository_id=repo_id) | Q(code_class__code_file__repository_id=repo_id),
+            cyclomatic_complexity__isnull=False
+        ).order_by('-cyclomatic_complexity')[:15]
+
+        serializer = CodeSymbolSerializer(hotspots, many=True)
+        return Response(serializer.data)
+    
+# backend/repositories/views.py
+from .serializers import RepositorySelectorSerializer # Import the new serializer
+
+class RepositorySelectorListView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        user = request.user
+
+        # For now, we get all repos for the user. Later, this could be filtered by active workspace.
+        organization_ids = OrganizationMember.objects.filter(user=user).values_list('organization_id', flat=True)
+
+        # 2. Filter repositories that belong to any of those organizations.
+        repos = Repository.objects.filter(organization_id__in=organization_ids).order_by('full_name')
+        serializer = RepositorySelectorSerializer(repos, many=True)
+        return Response(serializer.data)
+    
+from .serializers import OrphanSymbolSerializer
+
+class OrphanSymbolsView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, repo_id, *args, **kwargs):
+        # --- THIS IS THE FIX ---
+        # Use the correct, organization-based permission check to ensure the user
+        # has access to the repository through their organization membership.
+        has_access = Repository.objects.filter(
+            id=repo_id,
+            organization__memberships__user=request.user
+        ).exists()
+
+        if not has_access:
+            return Response({"error": "Repository not found or permission denied."}, status=status.HTTP_404_NOT_FOUND)
+        # --- END FIX ---
+
+        # The rest of the query is already correctly filtered by repo_id,
+        # so it's safe to execute after the permission check passes.
+        orphan_symbols = CodeSymbol.objects.filter(
+            (Q(code_file__repository_id=repo_id) | Q(code_class__code_file__repository_id=repo_id)),
+            is_orphan=True
+        ).select_related('code_file', 'code_class').order_by('code_file__file_path', 'start_line')
+
+        serializer = OrphanSymbolSerializer(orphan_symbols, many=True)
+        return Response(serializer.data)
+    
+class CoverageUploadView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+    parser_classes = (MultiPartParser, FormParser)
+
+    def post(self, request, repo_id, *args, **kwargs):
+        # --- REFACTORED PERMISSION CHECK ---
+        # Use the single, efficient query to check for existence and permission.
+        repo = Repository.objects.filter(
+            id=repo_id,
+            organization__memberships__user=request.user
+        ).first()
+
+        # If the query returns nothing, the user either doesn't have permission
+        # or the repository doesn't exist.
+        if not repo:
+            return Response({"error": "Repository not found or permission denied."}, status=status.HTTP_404_NOT_FOUND)
+        # --- END REFACTORED PERMISSION CHECK ---
+
+        file_obj = request.FILES.get('file')
+        commit_hash = request.data.get('commit_hash')
+
+        if not file_obj:
+            return Response({"error": "No coverage file provided."}, status=status.HTTP_400_BAD_REQUEST)
+        if not commit_hash:
+            return Response({"error": "Commit hash is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Save the uploaded file to a temporary location within the default storage
+        # (e.g., your MEDIA_ROOT or S3 bucket).
+        temp_file_name = f"coverage_uploads/{repo.id}_{uuid.uuid4()}.xml"
+        temp_file_path = default_storage.save(temp_file_name, file_obj)
+
+        # Dispatch the Celery task to process the file asynchronously
+        parse_coverage_report_task.delay(repo.id, commit_hash, temp_file_path)
+
+        return Response({"message": "Coverage report uploaded and is being processed."}, status=status.HTTP_202_ACCEPTED)
+
+class LatestCoverageReportView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, repo_id, *args, **kwargs):
+        # This view is already correct.
+        repo = Repository.objects.filter(
+            id=repo_id,
+            organization__memberships__user=request.user
+        ).first()
+
+        if not repo:
+            return Response({"error": "Repository not found or permission denied."}, status=status.HTTP_404_NOT_FOUND)
+        
+        latest_report = TestCoverageReport.objects.filter(repository=repo).order_by('-uploaded_at').first()
+        
+        if not latest_report:
+            print("Bruh 2")
+            return Response({"error": "No coverage report found for this repository."}, status=status.HTTP_404_NOT_FOUND)
+            
+        serializer = TestCoverageReportSerializer(latest_report)
+        return Response(serializer.data)
+    
+@method_decorator(csrf_exempt, name='dispatch')
+class CohesiveTestGenerationView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, *args, **kwargs):
+        symbol_ids = request.data.get('symbol_ids')
+        if not isinstance(symbol_ids, list) or not symbol_ids:
+            return Response({"error": "A list of 'symbol_ids' is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        openai_client = OPENAI_CLIENT_INSTANCE
+        if not openai_client:
+            return Response({"error": "AI service unavailable."}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+        # We will create the new service function next
+        response_stream = generate_cohesive_tests_stream(symbol_ids, request.user, openai_client)
+        
+        response = StreamingHttpResponse(response_stream, content_type='text/plain; charset=utf-8')
+        response['X-Accel-Buffering'] = 'no'
+        response['Cache-Control'] = 'no-cache'
+        return response
+    
+from .tasks import run_tests_in_sandbox_task # Import our new task
+
+class RunTestsInSandboxView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, *args, **kwargs):
+        source_code = request.data.get('source_code')
+        test_code = request.data.get('test_code')
+
+        if not source_code or not test_code:
+            return Response(
+                {"error": "Both 'source_code' and 'test_code' are required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Dispatch the task and return its ID for polling
+        task = run_tests_in_sandbox_task.delay(source_code, test_code)
+        
+        return Response({"task_id": task.id}, status=status.HTTP_202_ACCEPTED)
+
+from django.db.models import Avg, Sum, Count
+
+class ComplexityGraphView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, repo_id, *args, **kwargs):
+        # ... (permission check) ...
+
+        # 1. Get the top N most complex symbols as our "hotspot" nodes
+        hotspot_symbols = CodeSymbol.objects.filter(
+            Q(code_file__repository_id=repo_id) | Q(code_class__code_file__repository_id=repo_id),
+            cyclomatic_complexity__isnull=False
+        ).order_by('-cyclomatic_complexity')[:25] # Limit to 25 for performance
+
+        hotspot_ids = [s.id for s in hotspot_symbols]
+
+        # 2. Find all dependencies where BOTH the caller and callee are in our hotspot list
+        links = CodeDependency.objects.filter(
+            caller_id__in=hotspot_ids,
+            callee_id__in=hotspot_ids
+        )
+
+        # 3. Serialize the data
+        node_serializer = CodeSymbolSerializer(hotspot_symbols, many=True)
+        link_serializer = GraphLinkSerializer(links, many=True)
+
+        return Response({
+            "nodes": node_serializer.data,
+            "links": link_serializer.data,
+        })
+    
+class DashboardSummaryView(generics.ListAPIView):
+    """
+    Provides a summary for the main dashboard, including aggregate stats
+    and a list of repositories accessible by the authenticated user.
+    """
+    serializer_class = DashboardRepositorySerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        """
+        This logic is correct and remains unchanged. It fetches all repositories
+        belonging to the organizations the current user is a member of.
+        """
+        user = self.request.user
+        organization_ids = OrganizationMember.objects.filter(user=user).values_list('organization_id', flat=True)
+        return Repository.objects.filter(organization_id__in=organization_ids).order_by('-updated_at')
+
+    def list(self, request, *args, **kwargs):
+        """
+        Overrides the default list action to add aggregate stats to the response.
+        """
+        # 1. Get the queryset of repositories using your existing correct logic.
+        queryset = self.get_queryset()
+
+        # 2. Calculate aggregate stats based on this specific queryset.
+        stats = queryset.aggregate(
+            total_repos=Count('id'),
+            avg_coverage=Avg('documentation_coverage'),
+            total_orphans=Sum('orphan_symbol_count')
+        )
+        
+        # 3. Calculate "Needs Attention" count (example logic).
+        needs_attention_count = queryset.filter(
+            Q(status='FAILED') | 
+            Q(orphan_symbol_count__gt=10) |
+            Q(documentation_coverage__lt=50.0) # Add the new coverage condition
+        ).count()
+
+        # 4. Serialize the list of repositories.
+        repo_serializer = self.get_serializer(queryset, many=True)
+
+        # 5. Construct the final response payload.
+        response_data = {
+            "stats": {
+                "total_repositories": stats.get('total_repos') or 0,
+                # Convert to percentage and handle null case
+                "avg_coverage": (stats.get('avg_coverage') or 0),
+                "total_orphans": stats.get('total_orphans') or 0,
+                "needs_attention": needs_attention_count,
+            },
+            "repositories": repo_serializer.data
+        }
+        
+        return Response(response_data)  
+    
+class SymbolAnalysisView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, symbol_id, *args, **kwargs):
+        openai_client = OPENAI_CLIENT_INSTANCE
+        try:
+            # build one combined Q object: id must match, AND the user must belong to one of the two orgs
+            lookup = (
+                Q(id=symbol_id) &
+                (
+                    Q(code_file__repository__organization__memberships__user=request.user) |
+                    Q(code_class__code_file__repository__organization__memberships__user=request.user)
+                )
+            )
+
+            symbol = CodeSymbol.objects.select_related(
+                'code_file__repository__organization',
+                'code_class__code_file__repository__organization'
+            ).get(lookup)
+
+        except CodeSymbol.DoesNotExist:
+            return Response(
+                {"error": "Symbol not found or you do not have permission."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        # 4. Serialize and return
+        serializer = CodeSymbolSerializer(symbol) # Use the standard symbol serializer
+        return Response(serializer.data)
+    
+class SuggestRefactorsView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, symbol_id, *args, **kwargs):
+        try:
+            # build one combined Q object: id must match, AND the user must belong to one of the two orgs
+            lookup = (
+                Q(id=symbol_id) &
+                (
+                    Q(code_file__repository__organization__memberships__user=request.user) |
+                    Q(code_class__code_file__repository__organization__memberships__user=request.user)
+                )
+            )
+
+            symbol = CodeSymbol.objects.select_related(
+                'code_file__repository__organization',
+                'code_class__code_file__repository__organization'
+            ).get(lookup)
+
+        except CodeSymbol.DoesNotExist:
+            return Response(
+                {"error": "Symbol not found or you do not have permission."},
+                status=status.HTTP_404_NOT_FOUND)
+
+        # Get the OpenAI client
+        client = OPENAI_CLIENT_INSTANCE # Or however you get your client
+        if not client:
+            return Response({"error": "AI service not configured."}, status=503)
+
+        # Use your existing streaming function
+        stream = generate_refactor_stream(symbol, client)
+        
+        # Return the generator as a streaming HTTP response
+        return StreamingHttpResponse(stream, content_type='text/plain; charset=utf-8')
+    
+from django.db.models import  FloatField
+from django.db.models.functions import Cast
+from .serializers import DocActionItemSerializer, FileCoverageStatSerializer
+
+class DocumentationSummaryView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, repo_id, *args, **kwargs):
+        try:
+            repo = Repository.objects.get(id=repo_id, organization__memberships__user=request.user)
+        except Repository.DoesNotExist:
+            return Response({"error": "Repository not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        # 1. Get all relevant symbols for the repository
+        all_symbols = CodeSymbol.objects.filter(
+            (Q(code_file__repository_id=repo_id) | Q(code_class__code_file__repository_id=repo_id)),
+            code_file__isnull=False 
+        ).select_related('code_file')
+
+        if not all_symbols.exists():
+            return Response({"error": "No symbols found for analysis."}, status=status.HTTP_404_NOT_FOUND)
+
+        # 2. Calculate Summary Stats
+        total_symbols = all_symbols.count()
+        documented_symbols = all_symbols.filter(documentation_status='DOCUMENTED').count()
+        stale_docstrings = all_symbols.filter(documentation_status='STALE').count()
+        missing_docstrings = all_symbols.filter(documentation_status='MISSING').count()
+        overall_coverage = (documented_symbols / total_symbols) * 100 if total_symbols > 0 else 0
+
+        summary_stats = {
+            "overallCoverage": overall_coverage,
+            "documentedSymbols": documented_symbols,
+            "totalSymbols": total_symbols,
+            "staleDocs": stale_docstrings,
+            "missingDocs": missing_docstrings,
+        }
+
+        # 3. Calculate Coverage Hotspots (by file)
+        file_stats = all_symbols.values('code_file__file_path').annotate(
+            total=Count('id'),
+            # Use .exclude() here as well for the count of documented symbols per file.
+            documented=Count('id', filter=~Q(documentation_status=CodeSymbol.DocStatus.NONE)),
+            coverage=Cast('documented', FloatField()) / Cast('total', FloatField()) * 100
+        ).order_by('coverage')
+
+        hotspots = {
+            "needs_improvement": FileCoverageStatSerializer([
+                {'name': os.path.basename(f['code_file__file_path']), 'path': f['code_file__file_path'], 'coverage': f['coverage']}
+                for f in file_stats[:5] # Top 5 worst
+            ], many=True).data,
+            "well_documented": FileCoverageStatSerializer([
+                {'name': os.path.basename(f['code_file__file_path']), 'path': f['code_file__file_path'], 'coverage': f['coverage']}
+                for f in file_stats.reverse()[:5] # Top 5 best
+            ], many=True).data,
+        }
+
+        # 4. Serialize the full list of action items
+        action_items = DocActionItemSerializer(all_symbols, many=True).data
+
+        # 5. Construct the final response
+        response_data = {
+            "summary_stats": summary_stats,
+            "hotspots": hotspots,
+            "action_items": action_items,
+        }
+
+        return Response(response_data)
+
+from rest_framework import generics
+from .serializers import CodeFileSerializer
+class CodeFileDetailView(generics.RetrieveAPIView):
+    """
+    Provides the full details for a single CodeFile, including its
+    nested classes and symbols.
+    """
+    queryset = CodeFile.objects.all()
+    serializer_class = CodeFileSerializer # Use the original, full serializer
+    permission_classes = [permissions.IsAuthenticated] 
+
+from .tasks import generate_module_documentation_workflow_task # The Celery task
+
+class GenerateModuleReadmeView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, repo_id, *args, **kwargs):
+        # 1. Permission Check: Ensure the user has access to this repository.
+        try:
+            repo = Repository.objects.get(id=repo_id, organization__memberships__user=request.user)
+        except Repository.DoesNotExist:
+            return Response({"error": "Repository not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        # 2. Get the module path from the request body.
+        module_path = request.data.get('module_path', '').strip()
+
+        # 3. Asynchronously start the Celery workflow task.
+        #    `apply_async` immediately returns a task object without waiting.
+        task = generate_module_documentation_workflow_task.apply_async(
+            kwargs={
+                'user_id': request.user.id,
+                'repo_id': repo.id,
+                'module_path': module_path,
+            }
+        )
+
+        # 4. Immediately respond to the frontend.
+        #    This is the key part. The frontend is not left waiting.
+        return Response(
+            {"message": "Workflow started.", "task_id": task.id}, 
+            status=status.HTTP_202_ACCEPTED
+        )
+
+from django.views import View
+from django.contrib.auth.mixins import LoginRequiredMixin
+
+class StreamModuleReadmeView(LoginRequiredMixin, View):
+    
+    def get(self, request, repo_id, *args, **kwargs):
+        # Permission check (can be more robust, but this is a start)
+        if not Repository.objects.filter(id=repo_id, organization__memberships__user=request.user).exists():
+            # You can't return a DRF Response, so you'd handle errors differently
+            # For a stream, you might just close it or send an error event.
+            return StreamingHttpResponse(status=404)
+
+        module_path = request.GET.get('module_path', '').strip()
+        
+        # This is the generator function from your ai_services
+        stream_generator = generate_module_readme_stream(
+            repo_id=repo_id,
+            module_path=module_path,
+            openai_client=OPENAI_CLIENT_INSTANCE # Assuming OPENAI_CLIENT is globally available
+        )
+
+        def event_stream():
+            """A generator that yields Server-Sent Events."""
+            for chunk in stream_generator:
+                # Format the chunk as a Server-Sent Event (SSE)
+                data = json.dumps({"chunk": chunk})
+                yield f"data: {data}\n\n"
+                time.sleep(0.02) # Small sleep to prevent overwhelming the client
+            
+            # Signal the end of the stream
+            yield "event: end\n"
+            yield "data: {}\n\n"
+
+        # --- THIS IS THE KEY ---
+        # Return a StreamingHttpResponse with the correct content type
+        response = StreamingHttpResponse(event_stream(), content_type="text/event-stream")
+        response['Cache-Control'] = 'no-cache'
+        return response
+
+
+@method_decorator(csrf_exempt, name="dispatch")
+class LocalRepositoryUploadView(APIView):
+    permission_classes = [permissions.IsAuthenticated, IsMemberOfOrganization]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def post(self, request, *args, **kwargs):
+        """
+        Handle folder upload for local repositories.
+        Users can upload multiple files maintaining folder structure.
+        """
+        try:
+            # Get data from request
+            repository_name = request.data.get('repository_name')
+            uploaded_files = request.FILES.getlist('files')
+            
+            if not uploaded_files:
+                return Response(
+                    {"error": "No files uploaded"}, 
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            # Get user's first organization (workspace) automatically
+            user_membership = OrganizationMember.objects.filter(user=request.user).first()
+            if not user_membership:
+                return Response(
+                    {"error": "You are not a member of any workspace. Please create or join a workspace first."}, 
+                    status=status.HTTP_403_FORBIDDEN
+                )
+            
+            organization = user_membership.organization
+
+            # Generate repository name if not provided
+            if not repository_name:
+                repository_name = f"Local Repository {timezone.now().strftime('%Y%m%d_%H%M%S')}"
+            
+            # Create a unique full_name for the repository
+            # Check if full_name already exists and make it unique
+            base_full_name = f"local/{repository_name}"
+            full_name = base_full_name
+            counter = 1
+            
+            while Repository.objects.filter(full_name=full_name).exists():
+                full_name = f"{base_full_name}-{counter}"
+                counter += 1
+
+            # Create repository record
+            repository = Repository.objects.create(
+                name=repository_name,
+                full_name=full_name,
+                repository_type='local',
+                github_id=None,
+                organization=organization,
+                added_by=request.user,
+                status='processing'
+            )
+
+            # Create directory for this repository
+            repo_path = os.path.join(REPO_CACHE_BASE_PATH, str(repository.id))
+            os.makedirs(repo_path, exist_ok=True)
+
+            # Build a mapping of file index to relative path from frontend metadata
+            file_paths_map = {}
+            for key in request.data.keys():
+                if key.startswith('file_paths[') and key.endswith(']'):
+                    # Extract index from 'file_paths[0]'
+                    index_str = key[11:-1]  # Remove 'file_paths[' and ']'
+                    try:
+                        index = int(index_str)
+                        file_paths_map[index] = request.data[key]
+                    except ValueError:
+                        continue
+
+            # Save uploaded files maintaining folder structure
+            saved_files = []
+            total_size = 0
+            
+            for index, uploaded_file in enumerate(uploaded_files):
+                # Try to get the relative path from the metadata sent by frontend
+                file_path = None
+                
+                # 1. Check if frontend sent the relative path as metadata
+                if index in file_paths_map:
+                    file_path = file_paths_map[index]
+                # 2. Check if file object has webkitRelativePath attribute
+                elif hasattr(uploaded_file, 'webkitRelativePath') and uploaded_file.webkitRelativePath:
+                    file_path = uploaded_file.webkitRelativePath
+                # 3. Check if relative_path is set
+                elif hasattr(uploaded_file, 'relative_path') and uploaded_file.relative_path:
+                    file_path = uploaded_file.relative_path
+                # 4. Check if path is embedded in the filename
+                elif '/' in uploaded_file.name or '\\' in uploaded_file.name:
+                    file_path = uploaded_file.name.replace('\\', '/')
+                # 5. Fall back to just the filename
+                else:
+                    file_path = uploaded_file.name
+                
+                # Normalize path separators
+                file_path = file_path.replace('\\', '/')
+                
+                # Security: ensure we don't have path traversal attacks
+                if '..' in file_path or file_path.startswith('/'):
+                    continue
+                
+                # Skip non-source files and directories we don't want
+                if any(exclude in file_path for exclude in ['.git/', 'node_modules/', '__pycache__/', '.venv/', 'venv/', 'env/']):
+                    continue
+                
+                # Only process source code files (prioritize Python for now)
+                if not any(file_path.endswith(ext) for ext in ['.py', '.js', '.ts', '.jsx', '.tsx', '.java', '.cpp', '.c', '.h', '.cs', '.php', '.rb', '.go', '.rs', '.swift', '.kt']):
+                    continue
+                
+                # Create full file path
+                full_file_path = os.path.join(repo_path, file_path)
+                
+                # Create directories if they don't exist
+                os.makedirs(os.path.dirname(full_file_path), exist_ok=True)
+                
+                # Save the file
+                with open(full_file_path, 'wb+') as destination:
+                    for chunk in uploaded_file.chunks():
+                        destination.write(chunk)
+                        total_size += len(chunk)
+                
+                saved_files.append(file_path)
+
+            if not saved_files:
+                # Clean up the repository if no valid files were uploaded
+                repository.delete()
+                if os.path.exists(repo_path):
+                    shutil.rmtree(repo_path)
+                return Response(
+                    {"error": "No valid source code files found in upload"}, 
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            # Update repository size
+            repository.size_kb = total_size // 1024
+            repository.save(update_fields=['size_kb'])
+
+            # Trigger processing of the local repository
+            process_repository.delay(repository.id, is_local=True, local_path=repo_path)
+
+            # Return repository details
+            serializer = RepositoryDetailSerializer(repository)
+            return Response({
+                "repository": serializer.data,
+                "uploaded_files": saved_files,
+                "total_size_kb": total_size // 1024,
+                "message": f"Successfully uploaded {len(saved_files)} files ({total_size // 1024} KB). Processing started."
+            }, status=status.HTTP_201_CREATED)
+
+        except Exception as e:
+            return Response(
+                {"error": f"Upload failed: {str(e)}"}, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )

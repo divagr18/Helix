@@ -13,7 +13,7 @@ axios.defaults.withCredentials = true;
 
 const BASE_API_URL =
     import.meta.env.VITE_API_BASE_URL ||
-    'https://woodcock-wondrous-infinitely.ngrok-free.app';
+    'http://localhost:8000';
 
 interface AuthContextType {
     isAuthenticated: boolean;

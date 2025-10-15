@@ -66,9 +66,19 @@ class Repository(models.Model):
         null=True
     )
     
+    class RepositoryType(models.TextChoices):
+        GITHUB = 'GITHUB', 'GitHub Repository'
+        LOCAL = 'LOCAL', 'Local Upload'
+    
     name = models.CharField(max_length=255)
     full_name = models.CharField(max_length=512, unique=True) 
-    github_id = models.IntegerField(unique=True)
+    github_id = models.IntegerField(unique=True, null=True, blank=True)  # Made optional for local repos
+    repository_type = models.CharField(
+        max_length=10, 
+        choices=RepositoryType.choices, 
+        default=RepositoryType.GITHUB,
+        help_text="Whether this is a GitHub repo or local upload"
+    )
     
     class Status(models.TextChoices):
         PENDING = 'PENDING', 'Pending'
@@ -92,7 +102,31 @@ class Repository(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     documentation_coverage = models.FloatField(default=0.0)
+    primary_language = models.CharField(
+        max_length=50, 
+        null=True, 
+        blank=True, 
+        help_text="The dominant programming language of the repository."
+    )
+    size_kb = models.PositiveIntegerField(
+        default=0, 
+        help_text="The size of the repository on disk in kilobytes."
+    )
+    commit_count = models.PositiveIntegerField(
+        default=0, 
+        help_text="The total number of commits in the default branch."
+    )
+    contributor_count = models.PositiveIntegerField(
+        default=0, 
+        help_text="The number of unique contributors to the repository."
+    )
     orphan_symbol_count = models.IntegerField(default=0)
+    source_root = models.CharField(
+        max_length=255,
+        default='.',
+        blank=True,
+        help_text="The source root directory for Python imports, relative to the repo root (e.g., 'src', '.')."
+    )
     class Meta:
         db_table = 'repositories'
         verbose_name_plural = "Repositories"
@@ -204,8 +238,7 @@ class CodeSymbol(models.Model):
 
     def __str__(self):
         parent = self.code_class.name if self.code_class else self.code_file.file_path
-        return f"{self.name} in {parent}"
-    
+        return f"{self.name} in {parent}"    
 class CodeDependency(models.Model):
     # The symbol that is making the call
     caller = models.ForeignKey(CodeSymbol, on_delete=models.CASCADE, related_name='outgoing_calls')
@@ -301,7 +334,9 @@ class EmbeddingBatchJob(models.Model):
     # OpenAI specific IDs
     batch_id = models.CharField(
         max_length=100, 
-        unique=True,  # OpenAI batch IDs are unique
+        unique=True,
+        null=True, # <--- ADD THIS
+        blank=True,  # OpenAI batch IDs are unique
         db_index=True, # Good for querying by batch_id
         help_text="OpenAI Batch API Job ID"
     )
@@ -556,3 +591,40 @@ class Invitation(models.Model):
     def __str__(self):
         return f"Invitation for {self.email} to join {self.organization.name}"
 
+# backend/repositories/models.py
+
+class TestCoverageReport(models.Model):
+    """
+    Represents a single, uploaded coverage report for a specific commit.
+    """
+    repository = models.ForeignKey(Repository, on_delete=models.CASCADE, related_name='coverage_reports')
+    commit_hash = models.CharField(max_length=40, help_text="The commit hash this report is for.")
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+    overall_coverage = models.FloatField(help_text="Overall line rate (e.g., 0.95 for 95%).")
+
+    class Meta:
+        db_table = 'test_coverage_reports'
+        ordering = ['-uploaded_at']
+
+    def __str__(self):
+        return f"Coverage Report for {self.repository.name} at {self.commit_hash[:7]}"
+
+class FileCoverage(models.Model):
+    """
+    Stores coverage data for a single file within a report.
+    """
+    report = models.ForeignKey(TestCoverageReport, on_delete=models.CASCADE, related_name='file_coverages')
+    # Use SET_NULL so that if a file is deleted from our index, we don't lose the historical coverage data
+    code_file = models.ForeignKey(CodeFile, on_delete=models.SET_NULL, null=True, related_name='coverage_data')
+    
+    line_rate = models.FloatField(help_text="Line rate for this file (e.g., 0.80 for 80%).")
+    
+    # Store the line numbers in a JSONField for easy access and to avoid complex table structures
+    covered_lines = models.JSONField(default=list, help_text="List of line numbers that were executed.")
+    missed_lines = models.JSONField(default=list, help_text="List of line numbers that were not executed.")
+    # For branch coverage, you could add partial_lines here as well
+
+    class Meta:
+        db_table = 'test_file_coverage'
+        # A file should only appear once per report
+        unique_together = ('report', 'code_file')

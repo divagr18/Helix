@@ -22,18 +22,20 @@ import os
 # See https://docs.djangoproject.com/en/5.0/howto/deployment/checklist/
 env = environ.Env()
 environ.Env.read_env(BASE_DIR.parent / '.env')
+FRONTEND_URL = env.str('FRONTEND_URL', default="http://localhost:5173")
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = "django-insecure-3l^=!j%afy9=rvlems%tqa_4y*19d3+$k#_0gg)v8830c*s0zp"
+SECRET_KEY = env.str('DJANGO_SECRET_KEY', default='django-insecure-dev-key-change-in-production')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = env.bool('DJANGO_DEBUG', default=True)
 
-ALLOWED_HOSTS = ['*']
+ALLOWED_HOSTS = env.list('DJANGO_ALLOWED_HOSTS', default=['*'])
 
 READONLY_DB_USER = os.environ.get('READONLY_POSTGRES_USER')
 READONLY_DB_PASSWORD = os.environ.get('READONLY_POSTGRES_PASSWORD')
 # Application definition
+E2B_API_KEY = os.getenv('E2B_API_KEY')
 
 INSTALLED_APPS = [
     "django.contrib.admin",
@@ -46,7 +48,6 @@ INSTALLED_APPS = [
     'django.contrib.sites',
     'corsheaders',
     "repositories",
-    
     'rest_framework',
     "django_celery_beat",
     'allauth',
@@ -56,10 +57,10 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    'corsheaders.middleware.CorsMiddleware',
     "django.middleware.security.SecurityMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
-    'corsheaders.middleware.CorsMiddleware',
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
@@ -72,7 +73,7 @@ ROOT_URLCONF = "config.urls"
 TEMPLATES = [
     {
         "BACKEND": "django.template.backends.django.DjangoTemplates",
-        "DIRS": [],
+        "DIRS": [BASE_DIR / 'templates'],
         "APP_DIRS": True,
         "OPTIONS": {
             "context_processors": [
@@ -116,7 +117,8 @@ AUTH_PASSWORD_VALIDATORS = [
 ]
 
 ACCOUNT_FORMS = {
-    'signup': 'users.forms.CustomSignupForm',
+    # Remove custom signup form for social accounts
+    # 'signup': 'users.forms.CustomSignupForm',
 }
 # Internationalization
 # https://docs.djangoproject.com/en/5.0/topics/i18n/
@@ -149,58 +151,97 @@ AUTHENTICATION_BACKENDS = [
 # Add these settings at the bottom
 SITE_ID = 1
 
-ACCOUNT_DEFAULT_HTTP_PROTOCOL = "https"
+ACCOUNT_DEFAULT_HTTP_PROTOCOL = "http"
 
-LOGIN_REDIRECT_URL = "/dashboard"
-ACCOUNT_LOGOUT_REDIRECT_URL = "/"
+LOGIN_REDIRECT_URL = f"{FRONTEND_URL}/dashboard"
+ACCOUNT_LOGOUT_REDIRECT_URL = f"{FRONTEND_URL}/"
 
 # Allauth provider settings
 SOCIALACCOUNT_PROVIDERS = {
     'github': {
         'SCOPE': [
             'repo', # Ask for permission to read repositories
+            'user:email', # Explicitly request email access
         ],
+        'VERIFIED_EMAIL': True,  # Skip email verification for GitHub users
+        'EMAIL_AUTHENTICATION': True,
+    },
+    'google': {
+        'SCOPE': [
+            'profile',
+            'email',
+        ],
+        'AUTH_PARAMS': {
+            'access_type': 'online',
+        }
     }
 }
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:5173",
-    "https://7352-2405-201-1c-1029-3959-dfcc-2e4a-d18.ngrok-free.app",
-    "https://woodcock-wondrous-infinitely.ngrok-free.app" # The origin of our React frontend
+    "http://127.0.0.1:5173",
 ]
-SESSION_COOKIE_SECURE = True  # Required for HTTPS
-CSRF_COOKIE_SECURE = True
-SESSION_COOKIE_SAMESITE = 'None'  # Needed for cross-origin
-CSRF_COOKIE_SAMESITE = 'None'
+SESSION_COOKIE_SECURE = False  # Set to False for localhost (HTTP)
+CSRF_COOKIE_SECURE = False
+SESSION_COOKIE_SAMESITE = 'Lax'  # Changed from 'None' for same-origin
+CSRF_COOKIE_SAMESITE = 'Lax'
 # settings.py
 SESSION_COOKIE_DOMAIN = None  # Allow any domain
 SESSION_COOKIE_PATH = '/'
-SESSION_COOKIE_SECURE = True  # Required for ngrok (HTTPS)
-SESSION_COOKIE_SAMESITE = 'None'  # Required for cross-origin
 SESSION_COOKIE_HTTPONLY = True
 
 # Also update CSRF settings
 CSRF_COOKIE_DOMAIN = None
-CSRF_COOKIE_SECURE = True
-CSRF_COOKIE_SAMESITE = 'None'
+
 # This is the crucial setting that allows the browser to send
 # the session cookie to our backend.
 ACCOUNT_REDIRECT_WHITELIST = [
-    "https://woodcock-wondrous-infinitely.ngrok-free.app",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
 ]
 CORS_ALLOW_CREDENTIALS = True
 SOCIALACCOUNT_LOGIN_ON_GET = True
 ACCOUNT_EMAIL_VERIFICATION = 'none'
 SOCIALACCOUNT_AUTO_SIGNUP = True
+
+# Completely bypass the signup form for social accounts
+SOCIALACCOUNT_SIGNUP_FORM_CLASS = None
+
+# Skip allauth's intermediate signup page and go directly to provider
+SOCIALACCOUNT_ADAPTER = 'users.adapters.CustomSocialAccountAdapter'
+ACCOUNT_ADAPTER = 'allauth.account.adapter.DefaultAccountAdapter'
+
+# Force direct OAuth flow without intermediate pages
+ACCOUNT_SIGNUP_FORM_CLASS = None
+
+# This prevents the intermediate signup page
+ACCOUNT_EMAIL_CONFIRMATION_ANONYMOUS_REDIRECT_URL = "/dashboard"
+ACCOUNT_EMAIL_CONFIRMATION_AUTHENTICATED_REDIRECT_URL = "/dashboard"
+
+# Redirect to settings page after connecting GitHub account
+SOCIALACCOUNT_LOGIN_ON_GET = True
+
+# Additional allauth settings for proper OAuth flow
+ACCOUNT_AUTHENTICATION_METHOD = 'email'
+ACCOUNT_EMAIL_REQUIRED = True
+ACCOUNT_USERNAME_REQUIRED = False
+SOCIALACCOUNT_QUERY_EMAIL = True
+SOCIALACCOUNT_EMAIL_REQUIRED = True
+
+# Ensure allauth redirects properly
+ACCOUNT_LOGIN_ATTEMPTS_LIMIT = None
+ACCOUNT_LOGIN_ATTEMPTS_TIMEOUT = None
 CSRF_TRUSTED_ORIGINS = [
-    "https://example.com",
-    "https://www.example.com",
-    "https://subdomain.example.com",
     "http://localhost:3000",  # if you're using React/Vite locally
     "http://127.0.0.1:5173",
     "http://localhost:5173",
-      "https://woodcock-wondrous-infinitely.ngrok-free.app"  # for Vite dev server
 ]
-SOCIAL_REDIRECT_HOST = "woodcock-wondrous-infinitely.ngrok-free.app"
+SOCIAL_REDIRECT_HOST = "localhost:5173"
+
+# File upload settings
+DATA_UPLOAD_MAX_NUMBER_FILES = 10000  # Allow up to 10,000 files
+DATA_UPLOAD_MAX_MEMORY_SIZE = 2621440000  # 2.5GB in bytes
+FILE_UPLOAD_MAX_MEMORY_SIZE = 2621440000  # 2.5GB in bytes
+DATA_UPLOAD_MAX_NUMBER_FIELDS = 10000  # Allow up to 10,000 form fields
 
 
 
