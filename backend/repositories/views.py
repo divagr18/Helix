@@ -2583,21 +2583,44 @@ class LocalRepositoryUploadView(APIView):
             repo_path = os.path.join(REPO_CACHE_BASE_PATH, str(repository.id))
             os.makedirs(repo_path, exist_ok=True)
 
+            # Build a mapping of file index to relative path from frontend metadata
+            file_paths_map = {}
+            for key in request.data.keys():
+                if key.startswith('file_paths[') and key.endswith(']'):
+                    # Extract index from 'file_paths[0]'
+                    index_str = key[11:-1]  # Remove 'file_paths[' and ']'
+                    try:
+                        index = int(index_str)
+                        file_paths_map[index] = request.data[key]
+                    except ValueError:
+                        continue
+
             # Save uploaded files maintaining folder structure
             saved_files = []
             total_size = 0
             
-            for uploaded_file in uploaded_files:
-                # For folder uploads, browsers may preserve the relative path in the file name
-                # or we can reconstruct it from the file structure
-                file_path = uploaded_file.name
+            for index, uploaded_file in enumerate(uploaded_files):
+                # Try to get the relative path from the metadata sent by frontend
+                file_path = None
                 
-                # Handle file path extraction from various upload methods
-                if hasattr(uploaded_file, 'relative_path'):
+                # 1. Check if frontend sent the relative path as metadata
+                if index in file_paths_map:
+                    file_path = file_paths_map[index]
+                # 2. Check if file object has webkitRelativePath attribute
+                elif hasattr(uploaded_file, 'webkitRelativePath') and uploaded_file.webkitRelativePath:
+                    file_path = uploaded_file.webkitRelativePath
+                # 3. Check if relative_path is set
+                elif hasattr(uploaded_file, 'relative_path') and uploaded_file.relative_path:
                     file_path = uploaded_file.relative_path
+                # 4. Check if path is embedded in the filename
                 elif '/' in uploaded_file.name or '\\' in uploaded_file.name:
-                    # File path is embedded in the name
                     file_path = uploaded_file.name.replace('\\', '/')
+                # 5. Fall back to just the filename
+                else:
+                    file_path = uploaded_file.name
+                
+                # Normalize path separators
+                file_path = file_path.replace('\\', '/')
                 
                 # Security: ensure we don't have path traversal attacks
                 if '..' in file_path or file_path.startswith('/'):
@@ -2607,7 +2630,7 @@ class LocalRepositoryUploadView(APIView):
                 if any(exclude in file_path for exclude in ['.git/', 'node_modules/', '__pycache__/', '.venv/', 'venv/', 'env/']):
                     continue
                 
-                # Only process source code files
+                # Only process source code files (prioritize Python for now)
                 if not any(file_path.endswith(ext) for ext in ['.py', '.js', '.ts', '.jsx', '.tsx', '.java', '.cpp', '.c', '.h', '.cs', '.php', '.rb', '.go', '.rs', '.swift', '.kt']):
                     continue
                 

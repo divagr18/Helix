@@ -1,11 +1,12 @@
 // src/App.tsx
-import React from 'react';
+import { useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import axios from 'axios';
 
 // Providers and Hooks
 import { ThemeProvider } from "@/components/theme-provider";
 import { AuthProvider, useAuth } from './contexts/AuthContext';
+import { useChatStore } from './stores/chatStore';
 
 // Global Components
 import { Toaster } from 'sonner';
@@ -99,6 +100,40 @@ function AppRoutes() {
 // ... The rest of your App.tsx (App component, etc.) remains the same.
 
 /**
+ * Global keyboard shortcut handler for Ctrl+K to open chat
+ */
+function GlobalKeyboardHandler() {
+    const { openChat } = useChatStore();
+    const { isAuthenticated } = useAuth();
+
+    useEffect(() => {
+        if (!isAuthenticated) return;
+
+        const handleKeyDown = (e: KeyboardEvent) => {
+            // Check for Ctrl+K (or Cmd+K on Mac)
+            if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+                e.preventDefault();
+
+                // Try to get current repository ID from URL
+                const pathMatch = window.location.pathname.match(/\/repository\/(\d+)/);
+                if (pathMatch) {
+                    const repoId = parseInt(pathMatch[1]);
+                    openChat(repoId);
+                } else {
+                    // If not on a repository page, show a toast message
+                    console.log('Open a repository first to use chat');
+                }
+            }
+        };
+
+        document.addEventListener('keydown', handleKeyDown);
+        return () => document.removeEventListener('keydown', handleKeyDown);
+    }, [isAuthenticated, openChat]);
+
+    return null;
+}
+
+/**
  * The main App component sets up all the providers and global components.
  */
 function App() {
@@ -110,6 +145,7 @@ function App() {
                     {/* This prevents them from being trapped by layout styles like CSS Grid. */}
                     <Toaster richColors closeButton position="top-right" />
                     <ChatModal />
+                    <GlobalKeyboardHandler />
 
                     {/* This div is the single root for our entire visible application. */}
                     {/* It ensures a consistent full-height context for all routes. */}

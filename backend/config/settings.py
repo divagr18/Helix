@@ -22,14 +22,15 @@ import os
 # See https://docs.djangoproject.com/en/5.0/howto/deployment/checklist/
 env = environ.Env()
 environ.Env.read_env(BASE_DIR.parent / '.env')
-FRONTEND_URL="http://localhost:5173"
+FRONTEND_URL = env.str('FRONTEND_URL', default="http://localhost:5173")
+
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = "django-insecure-3l^=!j%afy9=rvlems%tqa_4y*19d3+$k#_0gg)v8830c*s0zp"
+SECRET_KEY = env.str('DJANGO_SECRET_KEY', default='django-insecure-dev-key-change-in-production')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = env.bool('DJANGO_DEBUG', default=True)
 
-ALLOWED_HOSTS = ['*']
+ALLOWED_HOSTS = env.list('DJANGO_ALLOWED_HOSTS', default=['*'])
 
 READONLY_DB_USER = os.environ.get('READONLY_POSTGRES_USER')
 READONLY_DB_PASSWORD = os.environ.get('READONLY_POSTGRES_PASSWORD')
@@ -72,7 +73,7 @@ ROOT_URLCONF = "config.urls"
 TEMPLATES = [
     {
         "BACKEND": "django.template.backends.django.DjangoTemplates",
-        "DIRS": [],
+        "DIRS": [BASE_DIR / 'templates'],
         "APP_DIRS": True,
         "OPTIONS": {
             "context_processors": [
@@ -206,7 +207,7 @@ SOCIALACCOUNT_AUTO_SIGNUP = True
 SOCIALACCOUNT_SIGNUP_FORM_CLASS = None
 
 # Skip allauth's intermediate signup page and go directly to provider
-SOCIALACCOUNT_ADAPTER = 'allauth.socialaccount.adapter.DefaultSocialAccountAdapter'
+SOCIALACCOUNT_ADAPTER = 'users.adapters.CustomSocialAccountAdapter'
 ACCOUNT_ADAPTER = 'allauth.account.adapter.DefaultAccountAdapter'
 
 # Force direct OAuth flow without intermediate pages
@@ -215,6 +216,9 @@ ACCOUNT_SIGNUP_FORM_CLASS = None
 # This prevents the intermediate signup page
 ACCOUNT_EMAIL_CONFIRMATION_ANONYMOUS_REDIRECT_URL = "/dashboard"
 ACCOUNT_EMAIL_CONFIRMATION_AUTHENTICATED_REDIRECT_URL = "/dashboard"
+
+# Redirect to settings page after connecting GitHub account
+SOCIALACCOUNT_LOGIN_ON_GET = True
 
 # Additional allauth settings for proper OAuth flow
 ACCOUNT_AUTHENTICATION_METHOD = 'email'
@@ -232,6 +236,12 @@ CSRF_TRUSTED_ORIGINS = [
     "http://localhost:5173",
 ]
 SOCIAL_REDIRECT_HOST = "localhost:5173"
+
+# File upload settings
+DATA_UPLOAD_MAX_NUMBER_FILES = 10000  # Allow up to 10,000 files
+DATA_UPLOAD_MAX_MEMORY_SIZE = 2621440000  # 2.5GB in bytes
+FILE_UPLOAD_MAX_MEMORY_SIZE = 2621440000  # 2.5GB in bytes
+DATA_UPLOAD_MAX_NUMBER_FIELDS = 10000  # Allow up to 10,000 form fields
 
 
 

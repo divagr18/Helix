@@ -253,7 +253,10 @@ export function DashboardPage() {
                                     <div className="flex-1">
                                         <h3 className="font-medium text-white">Local Upload</h3>
                                         <p className="text-sm text-zinc-400 mt-1">
-                                            Upload and analyze a folder from your local machine
+                                            Upload and analyze a Python project from your local machine
+                                        </p>
+                                        <p className="text-xs text-blue-400 mt-1">
+                                            Python (.py) files only
                                         </p>
                                         <Button
                                             onClick={() => {

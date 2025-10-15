@@ -6,7 +6,7 @@ from repositories.views import BatchDocumentModuleView, ChatView, CohesiveTestGe
 router = DefaultRouter()
 from django.urls import path # Make sure path is imported
 from users.views import AuthCheckView, LoginView, LogoutView, PasswordResetConfirmView, PasswordResetRequestView, ResendVerificationView, SignUpView, VerifyEmailView
-from users.views import UserMeView # Import the new view
+from users.views import UserMeView, GithubConnectionStatusView, DisconnectGithubView # Import the new views
 
 from repositories.views import UserNotificationsView, MarkNotificationReadView
 router.register(r'repositories', RepositoryViewSet, basename='repository')
@@ -122,6 +122,10 @@ urlpatterns += [
 
     path('repositories/<int:repo_id>/generate-module-readme/', GenerateModuleReadmeView.as_view(), name='generate-module-readme'),
     path('repositories/<int:repo_id>/generate-module-readme-stream/', StreamModuleReadmeView.as_view(), name='generate-module-readme-stream'),
+    
+    # GitHub account connection
+    path('users/github/status/', GithubConnectionStatusView.as_view(), name='github-connection-status'),
+    path('users/github/disconnect/', DisconnectGithubView.as_view(), name='github-disconnect'),
 
 
 

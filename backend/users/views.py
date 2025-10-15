@@ -306,3 +306,65 @@ class PasswordResetConfirmView(APIView):
         token.save()
 
         return Response({"message": "Your password has been reset successfully. You can now log in."}, status=status.HTTP_200_OK)
+
+
+class GithubConnectionStatusView(APIView):
+    """
+    View to check if the current user has a connected GitHub account.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        from allauth.socialaccount.models import SocialAccount
+        
+        user = request.user
+        github_account = SocialAccount.objects.filter(
+            user=user,
+            provider='github'
+        ).first()
+        
+        if github_account:
+            return Response({
+                "connected": True,
+                "github_username": github_account.extra_data.get('login'),
+                "github_id": github_account.uid,
+                "github_avatar": github_account.extra_data.get('avatar_url')
+            })
+        
+        return Response({"connected": False})
+
+
+class DisconnectGithubView(APIView):
+    """
+    View to disconnect GitHub account from the current user.
+    Only allowed if the user has a local password set.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, *args, **kwargs):
+        from allauth.socialaccount.models import SocialAccount
+        
+        user = request.user
+        
+        # Check if user has a usable password (local account)
+        if not user.has_usable_password():
+            return Response({
+                "error": "Cannot disconnect GitHub. You must set a password first to maintain account access."
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Find and delete the GitHub social account
+        github_account = SocialAccount.objects.filter(
+            user=user,
+            provider='github'
+        ).first()
+        
+        if not github_account:
+            return Response({
+                "error": "No GitHub account connected."
+            }, status=status.HTTP_404_NOT_FOUND)
+        
+        github_account.delete()
+        
+        return Response({
+            "message": "GitHub account disconnected successfully."
+        }, status=status.HTTP_200_OK)

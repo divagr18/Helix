@@ -1,9 +1,8 @@
 // src/pages/modes/IntelligenceViewPage.tsx
-import React from 'react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { RefactoringDashboard } from '@/components/intelligence/RefactoringDashboard';
 import { OrphansDashboard } from '@/components/intelligence/OrphanDashboard';
-import { DocumentationReport } from "@/components/intelligence/DocumentationReport"
+import { DocumentationReport } from "@/components/intelligence/DocumentationReport";
 
 // A new component for the documentation report page
 

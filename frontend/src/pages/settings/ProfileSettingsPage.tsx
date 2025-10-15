@@ -10,7 +10,8 @@ import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
-import { Loader2 } from 'lucide-react';
+import { Loader2, Github, Unlink } from 'lucide-react';
+import { Badge } from '@/components/ui/badge';
 
 const profileFormSchema = z.object({
     username: z.string().min(2, { message: "Username must be at least 2 characters." }),
@@ -23,6 +24,8 @@ export const ProfileSettingsPage = () => {
     const [user, setUser] = useState<any>(null);
     const [isLoading, setIsLoading] = useState(true);
     const [isDeleting, setIsDeleting] = useState(false);
+    const [githubStatus, setGithubStatus] = useState<any>(null);
+    const [isDisconnecting, setIsDisconnecting] = useState(false);
 
     const form = useForm<ProfileFormValues>({
         resolver: zodResolver(profileFormSchema),
@@ -30,16 +33,30 @@ export const ProfileSettingsPage = () => {
     });
 
     useEffect(() => {
-        axios.get('/api/v1/users/me/')
-            .then(response => {
-                setUser(response.data);
-                form.reset(response.data);
+        const fetchData = async () => {
+            try {
+                const userResponse = await axios.get('/api/v1/users/me/');
+                setUser(userResponse.data);
+                form.reset(userResponse.data);
+
+                // Try to fetch GitHub status, but don't fail if it errors
+                try {
+                    const githubResponse = await axios.get('/api/v1/users/github/status/');
+                    setGithubStatus(githubResponse.data);
+                } catch (githubError) {
+                    console.error('Failed to fetch GitHub status:', githubError);
+                    setGithubStatus({ connected: false });
+                }
+
                 setIsLoading(false);
-            })
-            .catch(() => {
+            } catch (error) {
+                console.error('Failed to load user data:', error);
                 toast.error("Failed to load your profile data.");
                 setIsLoading(false);
-            });
+            }
+        };
+
+        fetchData();
     }, [form]);
 
     const onSubmit = async (data: ProfileFormValues) => {
@@ -67,9 +84,41 @@ export const ProfileSettingsPage = () => {
         }
     };
 
+    const handleConnectGithub = () => {
+        // Redirect to GitHub OAuth connection
+        window.location.href = '/accounts/github/login/?process=connect';
+    };
+
+    const handleDisconnectGithub = async () => {
+        if (!user?.has_usable_password) {
+            toast.error("You must set a password before disconnecting GitHub to maintain account access.");
+            return;
+        }
+
+        setIsDisconnecting(true);
+        try {
+            await axios.post('/api/v1/users/github/disconnect/');
+            toast.success("GitHub account disconnected successfully.");
+
+            // Refresh GitHub status
+            const githubResponse = await axios.get('/api/v1/users/github/status/');
+            setGithubStatus(githubResponse.data);
+
+            // Refresh user data
+            const userResponse = await axios.get('/api/v1/users/me/');
+            setUser(userResponse.data);
+        } catch (error: any) {
+            toast.error(error.response?.data?.error || "Failed to disconnect GitHub account.");
+        } finally {
+            setIsDisconnecting(false);
+        }
+    };
+
     if (isLoading) {
         return <div>Loading profile...</div>;
     }
+
+    console.log('Rendering ProfileSettingsPage', { user, githubStatus });
 
     return (
         <div className="space-y-6">
@@ -106,6 +155,90 @@ export const ProfileSettingsPage = () => {
                             </Button>
                         </form>
                     </Form>
+                </CardContent>
+            </Card>
+
+            <Card>
+                <CardHeader>
+                    <CardTitle>Connected Accounts</CardTitle>
+                    <CardDescription>Manage your connected accounts and authentication methods.</CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                    <div className="flex items-center justify-between p-4 border rounded-lg">
+                        <div className="flex items-center space-x-4">
+                            <Github className="h-6 w-6" />
+                            <div>
+                                <div className="font-medium flex items-center gap-2">
+                                    GitHub
+                                    {githubStatus?.connected && (
+                                        <Badge variant="secondary" className="text-xs">Connected</Badge>
+                                    )}
+                                </div>
+                                <div className="text-sm text-muted-foreground">
+                                    {githubStatus?.connected ? (
+                                        <span>Connected as @{githubStatus.github_username}</span>
+                                    ) : (
+                                        <span>Connect your GitHub account to import repositories</span>
+                                    )}
+                                </div>
+                            </div>
+                        </div>
+                        <div>
+                            {githubStatus?.connected ? (
+                                <AlertDialog>
+                                    <AlertDialogTrigger asChild>
+                                        <Button
+                                            variant="outline"
+                                            size="sm"
+                                            disabled={!user?.has_usable_password}
+                                        >
+                                            <Unlink className="mr-2 h-4 w-4" />
+                                            Disconnect
+                                        </Button>
+                                    </AlertDialogTrigger>
+                                    <AlertDialogContent>
+                                        <AlertDialogHeader>
+                                            <AlertDialogTitle>Disconnect GitHub?</AlertDialogTitle>
+                                            <AlertDialogDescription>
+                                                This will remove your GitHub connection. You'll need to reconnect to import repositories from GitHub.
+                                                {!user?.has_usable_password && (
+                                                    <span className="block mt-2 text-destructive">
+                                                        You must set a password first to maintain account access.
+                                                    </span>
+                                                )}
+                                            </AlertDialogDescription>
+                                        </AlertDialogHeader>
+                                        <AlertDialogFooter>
+                                            <AlertDialogCancel disabled={isDisconnecting}>Cancel</AlertDialogCancel>
+                                            <AlertDialogAction
+                                                onClick={handleDisconnectGithub}
+                                                disabled={isDisconnecting || !user?.has_usable_password}
+                                            >
+                                                {isDisconnecting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                                                Disconnect
+                                            </AlertDialogAction>
+                                        </AlertDialogFooter>
+                                    </AlertDialogContent>
+                                </AlertDialog>
+                            ) : (
+                                <Button
+                                    variant="default"
+                                    size="sm"
+                                    onClick={handleConnectGithub}
+                                >
+                                    <Github className="mr-2 h-4 w-4" />
+                                    Connect GitHub
+                                </Button>
+                            )}
+                        </div>
+                    </div>
+
+                    {!user?.has_usable_password && githubStatus?.connected && (
+                        <div className="p-4 border border-yellow-500 rounded-lg bg-yellow-50 dark:bg-yellow-950 text-sm">
+                            <strong>Note:</strong> You logged in with GitHub and haven't set a password yet.
+                            Set a password before disconnecting GitHub to ensure you can still access your account.
+                        </div>
+                    )}
                 </CardContent>
             </Card>
 

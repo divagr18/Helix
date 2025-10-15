@@ -48,19 +48,87 @@ const LocalAnalysisPage: React.FC = () => {
         }
     };
 
+    // Helper function to check if a file should be filtered out
+    const shouldFilterFile = (file: File): boolean => {
+        // @ts-ignore - webkitRelativePath exists on File in browsers that support directory upload
+        const filePath = file.webkitRelativePath || file.name;
+
+        // Exclude common build/dependency directories
+        const excludedPaths = [
+            '.git/',
+            'node_modules/',
+            '__pycache__/',
+            '.venv/',
+            'venv/',
+            'env/',
+            'dist/',
+            'build/',
+            '.next/',
+            '.nuxt/',
+            'target/', // Rust/Java builds
+            'bin/',
+            'obj/',
+            '.vs/',
+            '.vscode/',
+            '.idea/',
+            'coverage/',
+            '.nyc_output/',
+            'logs/',
+            'tmp/',
+            'temp/',
+        ];
+
+        // Check if file path contains any excluded directories
+        if (excludedPaths.some(exclude => filePath.includes(exclude))) {
+            return true;
+        }
+
+        // Only allow source code files
+        const allowedExtensions = [
+            '.py', '.js', '.ts', '.jsx', '.tsx', '.java', '.cpp', '.c', '.h',
+            '.cs', '.php', '.rb', '.go', '.rs', '.swift', '.kt', '.vue', '.svelte',
+            '.html', '.css', '.scss', '.sass', '.less', '.json', '.xml', '.yaml', '.yml',
+            '.sql', '.sh', '.bash', '.zsh', '.fish', '.ps1', '.bat', '.cmd',
+            '.md', '.txt', '.rst', '.adoc', '.tex', '.r', '.m', '.scala', '.clj',
+            '.fs', '.fsx', '.ml', '.mli', '.hs', '.elm', '.dart', '.lua', '.pl',
+            '.groovy', '.gradle', '.maven', '.dockerfile', '.makefile'
+        ];
+
+        const fileName = filePath.toLowerCase();
+        const hasAllowedExtension = allowedExtensions.some(ext => fileName.endsWith(ext));
+
+        // Special cases for files without extensions but are important
+        const specialFiles = ['dockerfile', 'makefile', 'rakefile', 'gemfile', 'procfile'];
+        const isSpecialFile = specialFiles.some(special => fileName.endsWith(special));
+
+        return !(hasAllowedExtension || isSpecialFile);
+    };
+
     const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
         const files = event.target.files;
-        setSelectedFiles(files);
 
-        // Auto-generate repository name from the first folder
         if (files && files.length > 0) {
-            const firstFile = files[0];
-            // @ts-ignore - webkitRelativePath exists on File in browsers that support directory upload
-            const relativePath = firstFile.webkitRelativePath || firstFile.name;
-            const folderName = relativePath.split('/')[0];
-            if (folderName && !repositoryName) {
-                setRepositoryName(folderName);
+            // Filter out unwanted files on the frontend
+            const validFiles = Array.from(files).filter(file => !shouldFilterFile(file));
+
+            // Create a new FileList-like object with filtered files
+            const dataTransfer = new DataTransfer();
+            validFiles.forEach(file => dataTransfer.items.add(file));
+
+            setSelectedFiles(dataTransfer.files);
+
+            // Auto-generate repository name from the first folder
+            const firstFile = validFiles[0];
+            if (firstFile) {
+                // @ts-ignore - webkitRelativePath exists on File in browsers that support directory upload
+                const relativePath = firstFile.webkitRelativePath || firstFile.name;
+                const folderName = relativePath.split('/')[0];
+                if (folderName && !repositoryName) {
+                    setRepositoryName(folderName);
+                }
             }
+        } else {
+            setSelectedFiles(files);
         }
     };
 
@@ -75,10 +143,20 @@ const LocalAnalysisPage: React.FC = () => {
         setSuccess(null);
 
         try {
+            const filesArray = Array.from(selectedFiles);
+            const CHUNK_SIZE = 500; // Upload files in chunks of 500
+
+            // If we have too many files, upload in chunks
+            if (filesArray.length > CHUNK_SIZE) {
+                setError(`Too many files selected (${filesArray.length}). Please select a smaller folder or contact support for large repository uploads.`);
+                setIsLoading(false);
+                return;
+            }
+
             const formData = new FormData();
 
             // Add files to form data with their relative paths
-            Array.from(selectedFiles).forEach((file, index) => {
+            filesArray.forEach((file, index) => {
                 formData.append('files', file);
                 // Also append the relative path as metadata if available
                 // @ts-ignore
@@ -132,15 +210,19 @@ const LocalAnalysisPage: React.FC = () => {
                         Upload Local Repository
                     </h1>
                     <p className="text-muted-foreground">
-                        Upload a folder from your local machine to analyze your code
+                        Upload a Python project from your local machine for analysis
                     </p>
+                    <div className="mt-3 inline-flex items-center gap-2 px-3 py-1 bg-blue-950/30 border border-blue-800 rounded-lg">
+                        <AlertCircle className="h-4 w-4 text-blue-400" />
+                        <span className="text-sm text-blue-400">Currently supports Python (.py) files only</span>
+                    </div>
                 </div>
 
                 <Card>
                     <CardHeader>
                         <CardTitle>Folder Upload</CardTitle>
                         <CardDescription>
-                            Select a folder containing your source code. Helix will analyze the uploaded files and provide insights.
+                            Select a folder containing your Python source code. Helix will analyze the uploaded files, preserve folder structure, and provide insights including dependency diagrams and code metrics.
                         </CardDescription>
                     </CardHeader>
                     <CardContent className="space-y-6">
@@ -221,9 +303,14 @@ const LocalAnalysisPage: React.FC = () => {
                                 <p className="text-sm text-muted-foreground">
                                     {fileCount} files selected ({(totalSize / 1024 / 1024).toFixed(2)} MB)
                                 </p>
-                                {fileCount > 100 && (
+                                {fileCount > 500 && (
+                                    <p className="text-sm text-red-400 mt-1">
+                                        ⚠️ Too many files ({fileCount}). Limit is 500 files per upload. Consider uploading a smaller folder.
+                                    </p>
+                                )}
+                                {fileCount > 100 && fileCount <= 500 && (
                                     <p className="text-sm text-orange-400 mt-1">
-                                        Note: Large uploads may take some time to process
+                                        Note: Large uploads ({fileCount} files) may take some time to process
                                     </p>
                                 )}
                             </div>
@@ -260,14 +347,24 @@ const LocalAnalysisPage: React.FC = () => {
 
                         <div className="text-sm text-muted-foreground space-y-2">
                             <p><strong>Supported file types:</strong></p>
-                            <p>Python (.py), JavaScript (.js), TypeScript (.ts), Java (.java), C++ (.cpp), and more</p>
+                            <p>Source code files: Python, JavaScript, TypeScript, Java, C++, C#, PHP, Ruby, Go, Rust, Swift, Kotlin, and many more</p>
+                            <p>Config files: JSON, YAML, XML, Dockerfile, Makefile</p>
+                            <p>Documentation: Markdown, text files</p>
 
-                            <p className="mt-4"><strong>Note:</strong></p>
+                            <p className="mt-4"><strong>Automatically filtered out:</strong></p>
+                            <ul className="list-disc pl-5 space-y-1 text-xs">
+                                <li><strong>Dependencies:</strong> node_modules, __pycache__, .venv, venv, env</li>
+                                <li><strong>Build outputs:</strong> dist, build, target, bin, obj, .next, .nuxt</li>
+                                <li><strong>Version control:</strong> .git directories</li>
+                                <li><strong>IDEs:</strong> .vs, .vscode, .idea</li>
+                                <li><strong>Temporary:</strong> logs, tmp, temp, coverage, .nyc_output</li>
+                            </ul>
+
+                            <p className="mt-4"><strong>Privacy & Security:</strong></p>
                             <ul className="list-disc pl-5 space-y-1">
-                                <li>Files are uploaded securely to the Helix docker backend on your machine for analysis. No data is ever shared outside your machine.</li>
-                                <li>Common build directories (.git, node_modules, __pycache__) are automatically filtered out</li>
-                                <li>Only source code files are processed</li>
-                                <li>Upload size is limited by your browser and server configuration</li>
+                                <li>Files are processed locally on your machine - no external data sharing</li>
+                                <li>Intelligent filtering reduces upload time and improves analysis quality</li>
+                                <li>Only source code and configuration files are analyzed</li>
                             </ul>
                         </div>
                     </CardContent>

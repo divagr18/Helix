@@ -135,7 +135,7 @@ export const RefactoringPanel: React.FC<RefactoringPanelProps> = ({ symbol }) =>
                 ) : (
                     <div className="text-center py-8">
                         <p className="text-sm text-zinc-500">
-                            Click "Analyze with AI" to generate refactoring suggestions for this function.
+                            Click "Analyze with Helix" to generate refactoring suggestions for this function.
                         </p>
                     </div>
                 )}

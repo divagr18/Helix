@@ -3,6 +3,8 @@ import React, { useState } from 'react';
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { ChatConversationPanel } from '@/components/chat/ChatConversationPanel';
 import { OutputActionPanel } from '@/components/chat/OutputActionPanel';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Construction } from 'lucide-react';
 import { type ChatMessage, type ActiveOutput } from '@/types';
 
 // --- MOCKUP DATA ---
@@ -66,21 +68,34 @@ export const ChatViewPage = () => {
 
     return (
         <div className="h-full bg-zinc-950 text-white">
-            <ResizablePanelGroup direction="horizontal" className="h-full">
-                <ResizablePanel defaultSize={60} minSize={40}>
-                    <ChatConversationPanel
-                        messages={messages}
-                        input={input}
-                        onInputChange={handleInputChange}
-                        onSubmit={handleSubmit}
-                        isLoading={isLoading}
-                    />
-                </ResizablePanel>
-                <ResizableHandle withHandle className="bg-zinc-800/60 hover:bg-zinc-700/60 transition-colors" />
-                <ResizablePanel defaultSize={40} minSize={30}>
-                    <OutputActionPanel activeOutput={activeOutput} />
-                </ResizablePanel>
-            </ResizablePanelGroup>
+            {/* Development Notice */}
+            <div className="p-4 border-b border-zinc-800">
+                <Alert className="border-amber-800 bg-amber-950/30">
+                    <Construction className="h-4 w-4 text-amber-400" />
+                    <AlertDescription className="text-amber-200">
+                        <strong>Under Development:</strong> This chat interface is currently a mockup.
+                        Helix's chat functionality is currently being reworked and will be available in a future release.
+                    </AlertDescription>
+                </Alert>
+            </div>
+
+            <div className="h-[calc(100%-80px)]">
+                <ResizablePanelGroup direction="horizontal" className="h-full">
+                    <ResizablePanel defaultSize={60} minSize={40}>
+                        <ChatConversationPanel
+                            messages={messages}
+                            input={input}
+                            onInputChange={handleInputChange}
+                            onSubmit={handleSubmit}
+                            isLoading={isLoading}
+                        />
+                    </ResizablePanel>
+                    <ResizableHandle withHandle className="bg-zinc-800/60 hover:bg-zinc-700/60 transition-colors" />
+                    <ResizablePanel defaultSize={40} minSize={30}>
+                        <OutputActionPanel activeOutput={activeOutput} />
+                    </ResizablePanel>
+                </ResizablePanelGroup>
+            </div>
         </div>
     );
 };

@@ -4,7 +4,7 @@ import { useSidebarStore } from "@/stores/sidebarStore"
 import { cn } from "@/lib/utils"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { Button } from "@/components/ui/button"
-import { Code, BrainCircuit, TestTube, MessageSquare, PanelLeftClose, PanelLeftOpen } from "lucide-react"
+import { Code, BrainCircuit, TestTube, MessageSquare, PanelLeftClose, PanelLeftOpen, Home } from "lucide-react"
 import { useWorkspaceStore } from "@/stores/workspaceStore"
 
 const navItems = [
@@ -35,6 +35,40 @@ export const MasterSidebar = () => {
             )}
         >
             <div className="flex-grow p-2 pt-4 space-y-2">
+                {/* Dashboard Button */}
+                <TooltipProvider delayDuration={0}>
+                    <Tooltip>
+                        <TooltipTrigger asChild>
+                            <NavLink
+                                to="/dashboard"
+                                className={cn(
+                                    "flex items-center p-3 rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground",
+                                    "transition-colors duration-200",
+                                    location.pathname === "/dashboard" && "text-blue-400 hover:bg-zinc-800/70",
+                                )}
+                            >
+                                <Home className="h-5 w-5 flex-shrink-0" />
+                                <span
+                                    className={cn(
+                                        "ml-4 font-medium whitespace-nowrap transition-opacity duration-200",
+                                        isOpen ? "opacity-100" : "opacity-0",
+                                    )}
+                                >
+                                    Dashboard
+                                </span>
+                            </NavLink>
+                        </TooltipTrigger>
+                        {!isOpen && (
+                            <TooltipContent side="right">
+                                <p>Dashboard</p>
+                            </TooltipContent>
+                        )}
+                    </Tooltip>
+                </TooltipProvider>
+
+                {/* Separator */}
+                <div className="border-t border-border my-2"></div>
+
                 {navItems.map((item) => {
                     // --- THIS IS THE FIX ---
                     // The destination URL is now built dynamically inside the loop.
