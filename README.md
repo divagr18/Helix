@@ -2,6 +2,9 @@
 
 **Helix** is a self-hosted code intelligence platform for Python projects. It automatically generates comprehensive documentation, creates missing docstrings, updates stale docs, generates tests cases and refactor suggestions, and helps you understand unfamiliar codebases through deep static analysis and AI-powered insights.
 
+![Dashboard](screenshots/HomePage.png)
+
+
 **Import from GitHub or upload local projects.** Helix automatically analyzes your code structure, detects all classes and functions, and maps dependencies between components. Get instant metrics like cyclomatic complexity and maintainability scores.
 
 **Auto-generate documentation at every level.** Generate repository-level READMEs, module-level documentation, and function-level docstrings across your entire codebase. Keep documentation synchronized with code changes and revive outdated docs with AI assistance.
