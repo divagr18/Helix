@@ -1,6 +1,8 @@
 # Helix
 
-**Helix** is a self-hosted code intelligence platform for Python projects. It automatically generates comprehensive documentation, creates missing docstrings, updates stale docs, generates tests cases and refactor suggestions, and helps you understand unfamiliar codebases through deep static analysis and AI-powered insights.
+Helix is an innovative platform designed to transform the way engineering teams interact with their codebase. Built on a high-performance Rust engine, Helix parses your entire codebase into a verifiable Merkle-hashed graph, enabling deep code understanding. 
+
+Helix generates living documentation, surfaces architectural insights, and connects code to its runtime behavior. Refactor with confidence, generate and execute test cases, explore dependencies visually, and onboard faster with AI-powered explanations.
 
 ![Dashboard](screenshots/HomePage.png)
 
