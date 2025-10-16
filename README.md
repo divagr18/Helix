@@ -4,7 +4,7 @@ Helix is an innovative platform designed to transform the way engineering teams 
 
 Helix generates living documentation, surfaces architectural insights, and connects code to its runtime behavior. Refactor with confidence, generate and execute test cases, explore dependencies visually, and onboard faster with AI-powered explanations.
 
-![Dashboard](screenshots/demo.png)
+![Dashboard](screenshots/HomePage.png)
 
 
 **Import from GitHub or upload local projects.** Helix automatically analyzes your code structure, detects all classes and functions, and maps dependencies between components. Get instant metrics like cyclomatic complexity and maintainability scores.
